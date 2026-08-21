@@ -76,7 +76,7 @@ jobs:
             echo "## CND Municipal Ipatinga" >> "$GITHUB_STEP_SUMMARY"
             echo "Relatório não foi gerado." >> "$GITHUB_STEP_SUMMARY"
           fi
-      - name: Salvar relatório
+      - name: Salvar relatório e PDF
         if: always()
         uses: actions/upload-artifact@v4
         with:
@@ -85,12 +85,12 @@ jobs:
             scripts/ipatinga-cnd/report/
             scripts/ipatinga-cnd/output/
           if-no-files-found: ignore
-          retention-days: 14
-      - name: Salvar debug, prints e vídeos
-        if: always()
+          retention-days: 30
+      - name: Salvar diagnóstico de erro (prints e HTML)
+        if: failure()
         uses: actions/upload-artifact@v4
         with:
-          name: ipatinga-cnd-debug-${{ github.run_id }}
+          name: ipatinga-cnd-failure-debug-${{ github.run_id }}
           path: scripts/ipatinga-cnd/debug/
           if-no-files-found: ignore
-          retention-days: 14
+          retention-days: 30
