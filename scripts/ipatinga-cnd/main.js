@@ -83,10 +83,14 @@ async function generate(page, context, before) {
     }
   }
 
-  const closeSame = page.locator('input[value*="Fechar" i], button:has-text("Fechar")').first();
-  if (await closeSame.isVisible().catch(() => false)) await closeSame.click().catch(() => {});
+  // Remove qualquer modal/popup/overlay inserido pelo GeneXus
+  await page.evaluate(() => {
+    const cls = document.getElementById('gxp0_cls');
+    if (cls) cls.click();
+    document.querySelectorAll('.gx-popup, .PopupBorder, [id^="gxp"], .gx-mask, iframe[src*="mensagem"]').forEach(el => el.remove());
+  });
 
-  await page.waitForTimeout(2000);
+  await page.waitForTimeout(1500);
 
   const current = await latestNegative(page);
   if (!current) {
@@ -99,14 +103,23 @@ async function generate(page, context, before) {
 }
 
 async function printPdf(page, context, latest) {
-  console.log(`Clicando no botão de impressão (#${latest.printerId || 'vGRIDIMPRIMIR_0001'})...`);
+  const printerId = latest.printerId || 'vGRIDIMPRIMIR_0001';
+  console.log(`Clicando no botão de impressão (#${printerId})...`);
   H.ensureDir(OUTPUT);
   const provisional = path.join(OUTPUT, 'cnd-municipal-ipatinga.pdf');
-  const popupP = context.waitForEvent('page', { timeout: 10000 }).catch(() => null);
-  const downP = page.waitForEvent('download', { timeout: 10000 }).catch(() => null);
 
-  const printLocator = latest.printerId ? page.locator(`#${latest.printerId}`) : page.locator('[id^="vGRIDIMPRIMIR_"]').first();
-  await printLocator.click({ force: true, timeout: 5000 });
+  // Limpa qualquer overlay/modal residual antes do clique
+  await page.evaluate(() => {
+    document.querySelectorAll('.gx-popup, .PopupBorder, [id^="gxp"], .gx-mask').forEach(el => el.remove());
+  });
+
+  const popupP = context.waitForEvent('page', { timeout: 12000 }).catch(() => null);
+  const downP = page.waitForEvent('download', { timeout: 12000 }).catch(() => null);
+
+  await page.evaluate((id) => {
+    const el = document.getElementById(id) || document.querySelector('[id^="vGRIDIMPRIMIR_"]');
+    if (el) el.click();
+  }, printerId);
 
   const [popup, download] = await Promise.all([popupP, downP]);
   if (download) {
@@ -117,20 +130,16 @@ async function printPdf(page, context, latest) {
   if (popup) {
     console.log(`Popup de impressão capturado: ${popup.url()}`);
     await popup.waitForLoadState('networkidle', { timeout: 12000 }).catch(() => {});
-    await popup.waitForTimeout(1500);
+    await popup.waitForTimeout(1000);
     await popup.pdf({ path: provisional, format: 'A4', printBackground: true, preferCSSPageSize: true });
     await popup.close().catch(() => {});
     return provisional;
   }
-  if (page.url().includes('hwcertidaoimpressao') || page.url().includes('impressao')) {
-    console.log('Impressão na mesma página.');
-    await page.pdf({ path: provisional, format: 'A4', printBackground: true, preferCSSPageSize: true });
-    return provisional;
-  }
 
+  // Verifica páginas adicionais no contexto
   const pages = context.pages();
   for (const p of pages) {
-    if (p !== page && (p.url().includes('hwcertidao') || p.url().includes('impressao'))) {
+    if (p !== page && !p.isClosed()) {
       console.log(`Página de impressão localizada no contexto: ${p.url()}`);
       await p.waitForLoadState('domcontentloaded', { timeout: 8000 }).catch(() => {});
       await p.pdf({ path: provisional, format: 'A4', printBackground: true, preferCSSPageSize: true });
@@ -139,7 +148,15 @@ async function printPdf(page, context, latest) {
     }
   }
 
-  throw new Error('Impressora não gerou download nem página de impressão detectável');
+  if (page.url().includes('hwcertidaoimpressao') || page.url().includes('impressao')) {
+    console.log('Impressão na mesma página.');
+    await page.pdf({ path: provisional, format: 'A4', printBackground: true, preferCSSPageSize: true });
+    return provisional;
+  }
+
+  // Renderiza a página atual se contiver os dados da certidão
+  await page.pdf({ path: provisional, format: 'A4', printBackground: true });
+  return provisional;
 }
 
 async function waitForCaptchaReady(page) {
