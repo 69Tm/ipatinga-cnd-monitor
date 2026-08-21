@@ -121,11 +121,11 @@ async function readImageGemini(buffer, maxAttempts = 3) {
         contents: [{
           role: 'user',
           parts: [
-            { text: 'Você é um especialista em OCR de alta precisão para captchas numéricos da Prefeitura de Ipatinga. A imagem contém EXATAMENTE 4 dígitos numéricos (apenas algarismos de 0 a 9). Não há letras. Desconsidere ruídos, pontilhados, linhas de interferência e variações de tamanho de fonte entre os dígitos. Identifique atentamente os 4 números da esquerda para a direita e retorne EXCLUSIVAMENTE os 4 dígitos numéricos (ex: 8483), sem espaços, letras, pontuações ou explicações.' },
+            { text: 'A imagem contém um captcha com exatamente 4 dígitos numéricos. Identifique os 4 números da esquerda para a direita, ignorando linhas ou ruídos de fundo, e responda apenas com os 4 dígitos.' },
             { inline_data: { mime_type: 'image/png', data: buffer.toString('base64') } }
           ]
         }],
-        generationConfig: { temperature: 0, maxOutputTokens: 16 }
+        generationConfig: { temperature: 0, maxOutputTokens: 256 }
       })
     });
 
