@@ -15,7 +15,7 @@ let tempCertPath = null;
 async function loadCertificate() {
   const password = CONFIG.CERT.PASSWORD;
   if (!password) {
-    throw new Error('NFE_CERT_PASSWORD não configurado. Certificado A1 requer senha.');
+    throw new Error('NFE_CERT_PASSWORD nao configurado. Certificado A1 requer senha.');
   }
 
   let pfxBuffer = null;
@@ -31,15 +31,15 @@ async function loadCertificate() {
     }
     tempCertPath = path.join(CONFIG.PATHS.TEMP, `cert_${Date.now()}.pfx`);
     
-    // Valida se não é o PDF de instalação antes de baixar
+    // Valida se nao e o PDF de instalacao antes de baixar
     try {
       const meta = await getDriveFileMetadata(CONFIG.CERT.FILE_ID);
       if (meta.name && meta.name.toLowerCase().endsWith('.pdf')) {
-        throw new Error(`O arquivo '${meta.name}' no Google Drive é um PDF, não o certificado PFX.`);
+        throw new Error(`O arquivo '${meta.name}' no Google Drive e um PDF, nao o certificado PFX.`);
       }
     } catch (err) {
       if (err.message.includes('PDF')) throw err;
-      // Se não conseguir metadados, tenta baixar normalmente
+      // Se nao conseguir metadados, tenta baixar normalmente
     }
 
     await downloadDriveFile(CONFIG.CERT.FILE_ID, tempCertPath);
@@ -54,17 +54,17 @@ async function loadCertificate() {
     const p12Der = pfxBuffer.toString('binary');
     p12Asn1 = forge.asn1.fromDer(p12Der);
   } catch (err) {
-    throw new Error('Arquivo PFX corrompido ou formato binário inválido: ' + err.message);
+    throw new Error('Arquivo PFX corrompido ou formato binario invalido: ' + err.message);
   }
 
   let p12;
   try {
     p12 = forge.pkcs12.pkcs12FromAsn1(p12Asn1, password);
   } catch (err) {
-    throw new Error('Falha ao abrir certificado A1 com a senha fornecida (senha incorreta ou formato inválido).');
+    throw new Error('Falha ao abrir certificado A1 com a senha fornecida (senha incorreta ou formato invalido).');
   }
 
-  // Extração do certificado e chave privada
+  // Extracao do certificado e chave privada
   let certObj = null;
   let keyObj = null;
   const caCerts = [];
@@ -98,7 +98,7 @@ async function loadCertificate() {
   const isExpired = now.getTime() > notAfter.getTime();
   const isNotYetValid = now.getTime() < notBefore.getTime();
 
-  // Informações do Titular
+  // Informacoes do Titular
   let commonName = '';
   for (const attr of certObj.subject.attributes) {
     if (attr.name === 'commonName' || attr.type === forge.pki.oids.commonName) {
@@ -109,8 +109,7 @@ async function loadCertificate() {
 
   const pemCert = forge.pki.certificateToPem(certObj);
   const pemKey = forge.pki.privateKeyToPem(keyObj);
-  const pemCa = caCerts.map(c => forge.pki.certificateToPem(c)).join('
-');
+  const pemCa = caCerts.map(c => forge.pki.certificateToPem(c)).join('\n');
 
   return {
     commonName,
@@ -128,7 +127,7 @@ async function loadCertificate() {
 }
 
 /**
- * Remove com segurança o arquivo PFX temporário
+ * Remove com seguranca o arquivo PFX temporario
  */
 function cleanupCertificate() {
   if (tempCertPath && fs.existsSync(tempCertPath)) {
