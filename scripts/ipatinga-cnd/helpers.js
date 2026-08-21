@@ -203,22 +203,43 @@ function validateCert(text, cnpj) {
 async function uploadPdf(file, folder) {
   const a = auth();
   const drive = google.drive({ version: 'v3', auth: a });
+  const fId = folderId(folder);
+  const fileName = path.basename(file);
+
+  // 1. Tenta localizar arquivo existente da CND Municipal de Ipatinga na pasta para atualizar (in-place update)
+  // Atualizar arquivo existente utiliza a cota do proprietário da pasta (evita erro de cota da Service Account)
   try {
-    const res = await drive.files.create({
+    const listRes = await drive.files.list({
+      q: `'${fId}' in parents and trashed = false and (name contains 'CND Municipal' or name contains 'Ipatinga')`,
+      fields: 'files(id, name, webViewLink)',
       supportsAllDrives: true,
-      requestBody: { name: path.basename(file), parents: [folderId(folder)] },
-      media: { mimeType: 'application/pdf', body: fs.createReadStream(file) },
-      fields: 'id,name,webViewLink'
+      includeItemsFromAllDrives: true
     });
-    return res.data;
-  } catch (err) {
-    console.warn(`[Drive] Aviso ao enviar para Google Drive: ${err.message}`);
-    return {
-      id: 'LOCAL_' + Date.now(),
-      name: path.basename(file),
-      webViewLink: null
-    };
+
+    const existingFile = (listRes.data.files || [])[0];
+    if (existingFile) {
+      console.log(`[Drive] Atualizando arquivo existente no Drive: "${existingFile.name}" (ID: ${existingFile.id}) -> "${fileName}"`);
+      const updateRes = await drive.files.update({
+        fileId: existingFile.id,
+        requestBody: { name: fileName },
+        media: { mimeType: 'application/pdf', body: fs.createReadStream(file) },
+        fields: 'id,name,webViewLink',
+        supportsAllDrives: true
+      });
+      return updateRes.data;
+    }
+  } catch (findErr) {
+    console.warn(`[Drive] Não foi possível buscar/atualizar arquivo existente: ${findErr.message}`);
   }
+
+  // 2. Se não existir, tenta criar novo arquivo
+  const createRes = await drive.files.create({
+    supportsAllDrives: true,
+    requestBody: { name: fileName, parents: [fId] },
+    media: { mimeType: 'application/pdf', body: fs.createReadStream(file) },
+    fields: 'id,name,webViewLink'
+  });
+  return createRes.data;
 }
 
 async function updateControl(rowInfo, { emissao, validade, driveFile, numero, codigoControle, result }) {
