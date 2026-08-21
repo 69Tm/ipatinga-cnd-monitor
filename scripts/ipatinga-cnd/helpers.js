@@ -317,9 +317,35 @@ function saveReport(report, dir) {
 }
 
 async function alerts(report, success, attachmentPath = null) {
-  console.log('[Alerts] Alertas Bark e E-mail desativados temporariamente.');
-  report.alerts.bark = 'DESATIVADO_TEMPORARIAMENTE';
-  report.alerts.email = 'DESATIVADO_TEMPORARIAMENTE';
+  const certificate = report.newCertificate || {};
+  const title = success ? 'CND Municipal Ipatinga Renovada' : 'Falha no Monitor CND Ipatinga';
+  const body = success
+    ? `Certidão ${certificate.numero || ''} emitida com sucesso! Nova validade: ${certificate.validade || ''}`
+    : `A execução falhou: ${report.error || 'erro não informado'}`;
+
+  // Notificação Push via Bark (se BARK_KEY configurada)
+  if (process.env.BARK_KEY) {
+    try {
+      await sendBark({ title, body, level: success ? 'timeSensitive' : 'active', url: report.driveUrl || runUrl() });
+      report.alerts.bark = 'SENT';
+    } catch (error) {
+      report.alerts.bark = `FAILED: ${error.message}`;
+    }
+  }
+
+  // Notificação via E-mail (se SMTP configurado)
+  if (process.env.SMTP_USER && process.env.SMTP_PASSWORD && process.env.ALERT_EMAIL) {
+    try {
+      await sendEmail({
+        subject: `[CND Ipatinga] ${title}`,
+        text: `${body}\n\nPDF Drive: ${report.driveUrl || 'Disponível nos anexos'}\nDetalhes do Workflow: ${runUrl() || 'Execução agendada GitHub'}`,
+        attachmentPath
+      });
+      report.alerts.email = 'SENT';
+    } catch (error) {
+      report.alerts.email = `FAILED: ${error.message}`;
+    }
+  }
 }
 
 module.exports = {
