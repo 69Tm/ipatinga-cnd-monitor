@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<ConsultarNfseFaixaResposta xmlns="http://www.abrasf.org.br/nfse.xsd">
+  <ListaMensagemRetorno>
+    <MensagemRetorno>
+      <Codigo>L000</Codigo>
+      <Mensagem>Nenhum registro encontrado para os parametros informados.</Mensagem>
+      <Correcao>Informe novos parametros para pesquisa.</Correcao>
+    </MensagemRetorno>
+  </ListaMensagemRetorno>
+</ConsultarNfseFaixaResposta>
