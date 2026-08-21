@@ -179,7 +179,7 @@ async function reloadCaptcha(page) {
   await page.waitForTimeout(500);
 }
 
-async function solveCaptchaAndSearch(page, report, maxAttempts = 5) {
+async function solveCaptchaAndSearch(page, report, maxAttempts = 3) {
   // 1. Tipo de Certidão
   const tipoSelect = page.locator('#vVTIPOCERTIDAO');
   await tipoSelect.waitFor({ state: 'visible', timeout: 8000 });
@@ -215,7 +215,6 @@ async function solveCaptchaAndSearch(page, report, maxAttempts = 5) {
     let buffer;
     try {
       // EXTRAÇÃO INFALÍVEL VIA HTML5 CANVAS
-      // Não importa se a imagem está oculta por CSS, scroll ou sobreposta. Se ela existe na memória, será capturada!
       const base64 = await page.evaluate(() => {
         const img = document.querySelector('#W0054CAPTCHAHTML img');
         if (!img || !img.complete || img.naturalWidth === 0) throw new Error('Imagem corrompida ou não carregada no DOM.');
@@ -246,7 +245,7 @@ async function solveCaptchaAndSearch(page, report, maxAttempts = 5) {
       continue;
     }
 
-    // 3. Preenchimento rápido do Captcha
+    // 3. Preenchimento do Captcha
     await page.evaluate((code) => {
       const el = document.getElementById('W0054vVCAPTCHA');
       if (el) {
@@ -258,37 +257,40 @@ async function solveCaptchaAndSearch(page, report, maxAttempts = 5) {
       }
     }, recog.code);
 
-    await page.waitForTimeout(500);
+    await page.waitForTimeout(300);
 
     console.log(`[Captcha] Clicando em Pesquisar...`);
     const respPromise = page.waitForResponse(
       res => res.url().includes('hwpcgeracertidaonegativa') && res.request().method() === 'POST',
-      { timeout: 10000 }
+      { timeout: 8000 }
     ).catch(() => null);
 
     await page.evaluate(() => {
-      document.querySelectorAll('.ErrorMessages, .gx-warning-message, [id*="vERROR"], .toast-message, #gxErrorViewer').forEach(el => el.remove());
+      const errViewer = document.getElementById('W0054gxErrorViewer');
+      if (errViewer) errViewer.innerText = '';
       const btn = document.getElementById('W0054BUTTON1');
       if (btn) btn.click();
     });
 
     await respPromise;
-    await page.waitForTimeout(1500);
+    await page.waitForTimeout(1000);
 
-    // 4. Avaliação inteligente: Espera pelo Grid OU pela mensagem de erro do site
+    // 4. Avaliação inteligente: Checa se a grade de resultados foi renderizada
     const outcome = await page.waitForFunction(() => {
-      const grid = document.querySelector('#Grid1ContainerRow_0001, #GridcertidaoContainerTbl');
-      const err = document.querySelector('.ErrorMessages, .gx-warning-message, [id*="vERROR"], .toast-message, #gxErrorViewer');
+      const grid = document.querySelector('#Grid1ContainerRow_0001, #GridcertidaoContainerRow_0001, #GridcertidaoContainerTbl');
+      const err = document.querySelector('#W0054gxErrorViewer, .ErrorMessages, .gx-warning-message');
       
-      if (grid && grid.offsetHeight > 0) return 'SUCCESS';
-      if (err && err.offsetHeight > 0 && err.innerText.trim() !== '') return 'ERROR';
+      if (grid) return 'SUCCESS';
+      if (err && err.innerText && err.innerText.trim().length > 0) return 'ERROR';
       return null;
-    }, { timeout: 10000, polling: 500 }).catch(() => null);
+    }, { timeout: 8000, polling: 200 }).catch(() => null);
 
-    if (outcome === 'SUCCESS') {
+    const isGridPresent = await page.evaluate(() => !!document.querySelector('#Grid1ContainerRow_0001, #GridcertidaoContainerRow_0001'));
+
+    if (outcome === 'SUCCESS' || isGridPresent) {
       report.imageRecognized = true;
       await page.screenshot({ path: path.join(DEBUG, `step-pos-pesquisa-tentativa-${attempt}.png`), fullPage: true }).catch(() => {});
-      console.log(`[Captcha] Sucesso!`);
+      console.log(`[Captcha] Sucesso! Painel de resultados carregado.`);
       return true;
     } else {
       console.warn(`[Captcha] Tentativa ${attempt} falhou: Captcha incorreto ou erro do servidor.`);
@@ -362,7 +364,7 @@ async function main() {
       await page.goto(URL, { waitUntil: 'domcontentloaded', timeout: 20000 });
       await page.locator('#vINCTBCPFCNPJ').waitFor({ state: 'visible', timeout: 15000 });
 
-      await solveCaptchaAndSearch(page, report, 5);
+      await solveCaptchaAndSearch(page, report, 3);
 
       const rc = await page.locator('#span_vGRIDCTBCPFCNPJMASC_0001').first().textContent().catch(() => '');
       const rn = await page.locator('#Grid1ContainerRow_0001 [id^="span_vGRIDCTBNOMERAZSOC_"]').first().textContent().catch(() => '');
