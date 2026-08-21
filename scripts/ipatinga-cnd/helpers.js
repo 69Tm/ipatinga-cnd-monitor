@@ -121,11 +121,11 @@ async function readImageGemini(buffer, maxAttempts = 3) {
         contents: [{
           role: 'user',
           parts: [
-            { text: 'Você é um especialista em OCR de captchas para sistemas públicos brasileiros. A imagem contém um captcha com 4 caracteres (frequentemente 4 dígitos numéricos ou letras maiúsculas/minúsculas). Identifique atentamente os 4 caracteres da esquerda para a direita, desconsiderando linhas de interferência, e retorne exclusivamente os 4 caracteres, sem espaços ou pontuações.' },
+            { text: 'Você é um especialista em OCR de alta precisão para captchas numéricos da Prefeitura de Ipatinga. A imagem contém EXATAMENTE 4 dígitos numéricos (apenas algarismos de 0 a 9). Não há letras. Desconsidere ruídos, pontilhados, linhas de interferência e variações de tamanho de fonte entre os dígitos. Identifique atentamente os 4 números da esquerda para a direita e retorne EXCLUSIVAMENTE os 4 dígitos numéricos (ex: 8483), sem espaços, letras, pontuações ou explicações.' },
             { inline_data: { mime_type: 'image/png', data: buffer.toString('base64') } }
           ]
         }],
-        generationConfig: { temperature: 0, maxOutputTokens: 256 }
+        generationConfig: { temperature: 0, maxOutputTokens: 16 }
       })
     });
 
@@ -133,10 +133,16 @@ async function readImageGemini(buffer, maxAttempts = 3) {
     if (!res.ok) throw new Error(`Gemini HTTP ${res.status}: ${txt.slice(0, 300)}`);
     const data = JSON.parse(txt);
     last = data?.candidates?.[0]?.content?.parts?.map(p => p.text || '').join('') || '';
-    const code = last.replace(/[^A-Za-z0-9]/g, '').trim();
-    if (/^[A-Za-z0-9]{4}$/.test(code)) return { code, attempt: i };
+    
+    // Normalização e correção de caracteres comuns confundidos pelo OCR
+    let code = last.trim();
+    const charMap = { 'O': '0', 'o': '0', 'D': '0', 'I': '1', 'i': '1', 'l': '1', '|': '1', 'Z': '2', 'z': '2', 'S': '5', 's': '5', 'G': '6', 'b': '6', 'B': '8' };
+    code = code.split('').map(c => charMap[c] || c).join('');
+    code = code.replace(/[^0-9]/g, '').trim();
+
+    if (/^[0-9]{4}$/.test(code)) return { code, attempt: i };
   }
-  throw new Error(`Gemini não retornou 4 caracteres válidos. Última resposta: ${last}`);
+  throw new Error(`Gemini não retornou 4 dígitos numéricos válidos. Última resposta: ${last}`);
 }
 
 async function sendBark({ title, body, level = 'timeSensitive', url = null, call = 0 }) {
