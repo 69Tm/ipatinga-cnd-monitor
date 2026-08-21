@@ -45,7 +45,15 @@ function reportBase() {
 async function debug(page, name) {
   H.ensureDir(DEBUG);
   await page.screenshot({ path: path.join(DEBUG, `${name}.png`), fullPage: true }).catch(() => {});
-  fs.writeFileSync(path.join(DEBUG, `${name}.html`), await page.content().catch(() => ''));
+  const html = await page.content().catch(() => '');
+  fs.writeFileSync(path.join(DEBUG, `${name}.html`), html);
+  const metadata = {
+    timestamp: new Date().toISOString(),
+    url: page.url(),
+    title: await page.title().catch(() => ''),
+    htmlLength: html.length
+  };
+  fs.writeFileSync(path.join(DEBUG, `${name}-info.json`), JSON.stringify(metadata, null, 2));
 }
 
 async function latestNegative(page) {
@@ -358,13 +366,16 @@ async function main() {
       slowMo: HEADLESS ? 0 : 50
     });
 
-    const context = await browser.newContext({
+    const contextOptions = {
       locale: 'pt-BR',
       acceptDownloads: true,
-      recordVideo: { dir: VIDEOS, size: { width: 1280, height: 720 } },
       userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
       viewport: { width: 1280, height: 720 }
-    });
+    };
+    if (process.env.RECORD_VIDEO === 'true') {
+      contextOptions.recordVideo = { dir: VIDEOS, size: { width: 1280, height: 720 } };
+    }
+    const context = await browser.newContext(contextOptions);
 
     const page = await context.newPage();
     page.on('dialog', d => d.accept().catch(() => {}));
