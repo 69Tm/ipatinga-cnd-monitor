@@ -179,7 +179,7 @@ async function reloadCaptcha(page) {
   await page.waitForTimeout(500);
 }
 
-async function solveCaptchaAndSearch(page, report, maxAttempts = 3) {
+async function solveCaptchaAndSearch(page, report, maxAttempts = 5) {
   // 1. Tipo de Certidão
   const tipoSelect = page.locator('#vVTIPOCERTIDAO');
   await tipoSelect.waitFor({ state: 'visible', timeout: 8000 });
@@ -262,6 +262,7 @@ async function solveCaptchaAndSearch(page, report, maxAttempts = 3) {
 
     console.log(`[Captcha] Clicando em Pesquisar...`);
     await page.evaluate(() => {
+      document.querySelectorAll('.ErrorMessages, .gx-warning-message, [id*="vERROR"], .toast-message').forEach(el => el.remove());
       const btn = document.getElementById('W0054BUTTON1');
       if (btn) btn.click();
     });
@@ -353,7 +354,7 @@ async function main() {
       await page.goto(URL, { waitUntil: 'domcontentloaded', timeout: 20000 });
       await page.locator('#vINCTBCPFCNPJ').waitFor({ state: 'visible', timeout: 15000 });
 
-      await solveCaptchaAndSearch(page, report, 3);
+      await solveCaptchaAndSearch(page, report, 5);
 
       const rc = await page.locator('#span_vGRIDCTBCPFCNPJMASC_0001').first().textContent().catch(() => '');
       const rn = await page.locator('#Grid1ContainerRow_0001 [id^="span_vGRIDCTBNOMERAZSOC_"]').first().textContent().catch(() => '');
