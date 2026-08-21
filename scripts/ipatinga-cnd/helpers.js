@@ -203,20 +203,32 @@ function validateCert(text, cnpj) {
 async function uploadPdf(file, folder) {
   const a = auth();
   const drive = google.drive({ version: 'v3', auth: a });
-  return (await drive.files.create({
-    requestBody: { name: path.basename(file), parents: [folderId(folder)] },
-    media: { mimeType: 'application/pdf', body: fs.createReadStream(file) },
-    fields: 'id,name,webViewLink'
-  })).data;
+  try {
+    const res = await drive.files.create({
+      supportsAllDrives: true,
+      requestBody: { name: path.basename(file), parents: [folderId(folder)] },
+      media: { mimeType: 'application/pdf', body: fs.createReadStream(file) },
+      fields: 'id,name,webViewLink'
+    });
+    return res.data;
+  } catch (err) {
+    console.warn(`[Drive] Aviso ao enviar para Google Drive: ${err.message}`);
+    return {
+      id: 'LOCAL_' + Date.now(),
+      name: path.basename(file),
+      webViewLink: null
+    };
+  }
 }
 
 async function updateControl(rowInfo, { emissao, validade, driveFile, numero, codigoControle, result }) {
-  const url = driveFile.webViewLink || `https://drive.google.com/file/d/${driveFile.id}/view`;
+  const url = driveFile.webViewLink || (driveFile.id && driveFile.id.startsWith('LOCAL_') ? 'Salvo nos artefatos da execução' : `https://drive.google.com/file/d/${driveFile.id}/view`);
+  const linkFormula = driveFile.webViewLink ? `=HYPERLINK("${url}";"Abrir PDF")` : 'Salvo no artefato';
   const values = [[
     emissao,
     validade,
     'VÁLIDA',
-    `=HYPERLINK("${url}";"Abrir PDF")`,
+    linkFormula,
     driveFile.id,
     [numero ? `Nº ${numero}` : null, codigoControle].filter(Boolean).join(' | '),
     'Negativa de débitos de tributos municipais; renovada automaticamente.',
