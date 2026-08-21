@@ -284,29 +284,9 @@ function saveReport(report, dir) {
 }
 
 async function alerts(report, success, attachmentPath = null) {
-  const certificate = report.newCertificate || {};
-  const title = success ? 'CND Municipal renovada' : 'Falha na CND Municipal';
-  const body = success
-    ? `Certidão ${certificate.numero || ''} — validade ${certificate.validade || ''}`
-    : `A execução falhou: ${report.error || 'erro não informado'}`;
-
-  try {
-    await sendBark({ title, body, level: success ? 'timeSensitive' : 'active', url: report.driveUrl || runUrl() });
-    report.alerts.bark = 'SENT';
-  } catch (error) {
-    report.alerts.bark = `FAILED: ${error.message}`;
-  }
-
-  try {
-    await sendEmail({
-      subject: title,
-      text: `${body}\n\nRelatório: ${runUrl() || 'execução local'}`,
-      attachmentPath
-    });
-    report.alerts.email = 'SENT';
-  } catch (error) {
-    report.alerts.email = `FAILED: ${error.message}`;
-  }
+  console.log('[Alerts] Alertas Bark e E-mail desativados temporariamente.');
+  report.alerts.bark = 'DESATIVADO_TEMPORARIAMENTE';
+  report.alerts.email = 'DESATIVADO_TEMPORARIAMENTE';
 }
 
 module.exports = {
