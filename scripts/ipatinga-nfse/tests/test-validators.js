@@ -38,7 +38,7 @@ assert.strictEqual(parseAliquot('2,291%'), 2.291);
 assert.strictEqual(parseAliquot('0.02291'), 2.291);
 assert.strictEqual(parseAliquot('2%'), 2);
 assert.strictEqual(parseAliquot(0.02), 2);
-assert.strictEqual(formatAliquot(2.291), '2,2910%');
+assert.strictEqual(formatAliquot(2.291), '2,291%');
 assert.strictEqual(formatAliquot(2.0), '2,00%');
 
 // 4. Dates & Competência
