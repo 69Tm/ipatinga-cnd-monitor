@@ -19,33 +19,33 @@ function generateReport(summaryData) {
 
   // 2. Monta Markdown
   const mdLines = [];
-  mdLines.push('# 📋 Relatório de Execução — NFS-e DEXMED (Ipatinga ABRASF 2.04)');
+  mdLines.push('# Relatorio de Execucao - NFS-e DEXMED (Ipatinga ABRASF 2.04)');
   mdLines.push('');
-  mdLines.push(`- **Operação:** \`${sanitizedData.operation}\``);
+  mdLines.push(`- **Operacao:** \`${sanitizedData.operation}\``);
   mdLines.push(`- **Ambiente:** \`${sanitizedData.environment}\``);
   mdLines.push(`- **Modo:** \`${sanitizedData.mode || 'N/A'}\``);
-  mdLines.push(`- **Dry Run:** \`${sanitizedData.dryRun ? 'Sim' : 'Não'}\``);
+  mdLines.push(`- **Dry Run:** \`${sanitizedData.dryRun ? 'Sim' : 'Nao'}\``);
   mdLines.push(`- **Data/Hora:** \`${sanitizedData.timestamp}\``);
-  mdLines.push(`- **Duração:** \`${sanitizedData.durationSec || 0}s\``);
+  mdLines.push(`- **Duracao:** \`${sanitizedData.durationSec || 0}s\``);
   mdLines.push('');
 
   if (sanitizedData.operation === 'sync') {
-    mdLines.push('## 📊 Resumo da Sincronização');
+    mdLines.push('## Resumo da Sincronizacao');
     mdLines.push('');
     mdLines.push(`- **Total Retornado pela API:** ${sanitizedData.totalRetornadoApi || 0}`);
     mdLines.push(`- **Primeira NFS-e Encontrada:** ${sanitizedData.primeiraNfEncontrada || 'N/A'}`);
-    mdLines.push(`- **Última NFS-e Encontrada:** ${sanitizedData.ultimaNfEncontrada || 'N/A'}`);
+    mdLines.push(`- **Ultima NFS-e Encontrada:** ${sanitizedData.ultimaNfEncontrada || 'N/A'}`);
     mdLines.push('');
 
     const upsert = sanitizedData.upsertResult || {};
-    mdLines.push('### 🔄 Impacto na Planilha (Aba Notas)');
+    mdLines.push('### Impacto na Planilha (Aba Notas)');
     mdLines.push(`- **Novas Notas Inseridas:** ${upsert.totalNew || 0}`);
     mdLines.push(`- **Notas Existentes Atualizadas:** ${upsert.totalUpdated || 0}`);
     mdLines.push(`- **Notas Canceladas Detectadas:** ${upsert.totalCanceled || 0}`);
     mdLines.push('');
 
     if (sanitizedData.regressionCheck) {
-      mdLines.push('### 🩺 Verificação de Regressão (Notas Conhecidas)');
+      mdLines.push('### Verificacao de Regressao (Notas Conhecidas)');
       mdLines.push('| NFS-e | Status API | Tomador | Valor |');
       mdLines.push('| :--- | :--- | :--- | :--- |');
       for (const [key, val] of Object.entries(sanitizedData.regressionCheck)) {
@@ -58,32 +58,30 @@ function generateReport(summaryData) {
       mdLines.push('');
     }
   } else if (sanitizedData.operation === 'prepare') {
-    mdLines.push('## 📝 Resultado da Preparação Fiscal (Dry-Run)');
+    mdLines.push('## Resultado da Preparacao Fiscal (Dry-Run)');
     mdLines.push(`- **Request ID:** \`${sanitizedData.requestId}\``);
-    mdLines.push(`- **Status Validação:** \`${sanitizedData.validationStatus}\``);
+    mdLines.push(`- **Status Validacao:** \`${sanitizedData.validationStatus}\``);
     mdLines.push(`- **Tomador:** ${sanitizedData.tomador || 'N/A'}`);
     mdLines.push(`- **Valor:** R$ ${sanitizedData.valor || 0}`);
-    mdLines.push(`- **Competência:** ${sanitizedData.competencia || 'N/A'}`);
+    mdLines.push(`- **Competencia:** ${sanitizedData.competencia || 'N/A'}`);
     mdLines.push('');
   }
 
   if (sanitizedData.errors && sanitizedData.errors.length > 0) {
-    mdLines.push('## ⚠️ Erros / Advertências');
+    mdLines.push('## Erros / Advertencias');
     sanitizedData.errors.forEach(err => {
       mdLines.push(`- ${typeof err === 'object' ? JSON.stringify(err) : err}`);
     });
     mdLines.push('');
   }
 
-  const mdContent = mdLines.join('
-');
+  const mdContent = mdLines.join('\n');
   fs.writeFileSync(mdPath, mdContent, 'utf8');
 
   // Se estiver no GitHub Actions, anexa ao Step Summary
   if (process.env.GITHUB_STEP_SUMMARY) {
     try {
-      fs.appendFileSync(process.env.GITHUB_STEP_SUMMARY, mdContent + '
-', 'utf8');
+      fs.appendFileSync(process.env.GITHUB_STEP_SUMMARY, mdContent + '\n', 'utf8');
     } catch (_) {}
   }
 
