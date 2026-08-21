@@ -426,6 +426,7 @@ async function main() {
       });
 
       report.newCertificate = { numero: data.numero, emissao: latest.emissao, validade: data.validade, codigoControle: data.codigoControle };
+      await H.rescheduleWorkflowCron(data.validade);
       await H.alerts(report, true, final);
 
       report.status = 'SUCCESS';
