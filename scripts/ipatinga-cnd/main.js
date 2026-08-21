@@ -261,21 +261,29 @@ async function solveCaptchaAndSearch(page, report, maxAttempts = 5) {
     await page.waitForTimeout(500);
 
     console.log(`[Captcha] Clicando em Pesquisar...`);
+    const respPromise = page.waitForResponse(
+      res => res.url().includes('hwpcgeracertidaonegativa') && res.request().method() === 'POST',
+      { timeout: 10000 }
+    ).catch(() => null);
+
     await page.evaluate(() => {
-      document.querySelectorAll('.ErrorMessages, .gx-warning-message, [id*="vERROR"], .toast-message').forEach(el => el.remove());
+      document.querySelectorAll('.ErrorMessages, .gx-warning-message, [id*="vERROR"], .toast-message, #gxErrorViewer').forEach(el => el.remove());
       const btn = document.getElementById('W0054BUTTON1');
       if (btn) btn.click();
     });
 
+    await respPromise;
+    await page.waitForTimeout(1500);
+
     // 4. Avaliação inteligente: Espera pelo Grid OU pela mensagem de erro do site
     const outcome = await page.waitForFunction(() => {
-      const grid = document.querySelector('#Grid1ContainerRow_0001');
-      const err = document.querySelector('.ErrorMessages, .gx-warning-message, [id*="vERROR"], .toast-message');
+      const grid = document.querySelector('#Grid1ContainerRow_0001, #GridcertidaoContainerTbl');
+      const err = document.querySelector('.ErrorMessages, .gx-warning-message, [id*="vERROR"], .toast-message, #gxErrorViewer');
       
       if (grid && grid.offsetHeight > 0) return 'SUCCESS';
       if (err && err.offsetHeight > 0 && err.innerText.trim() !== '') return 'ERROR';
       return null;
-    }, { timeout: 15000, polling: 500 }).catch(() => null);
+    }, { timeout: 10000, polling: 500 }).catch(() => null);
 
     if (outcome === 'SUCCESS') {
       report.imageRecognized = true;
