@@ -1,0 +1,16 @@
+{
+  "name": "ipatinga-nfse",
+  "version": "1.0.0",
+  "description": "Automacao e Sincronizacao NFS-e DEXMED - Prefeitura de Ipatinga ABRASF 2.04",
+  "main": "main.js",
+  "scripts": {
+    "start": "node main.js",
+    "preflight": "node -e \"require('./main.js').preflight()\"",
+    "test": "node tests/test-runner.js"
+  },
+  "dependencies": {
+    "fast-xml-parser": "^4.4.1",
+    "googleapis": "^140.0.1",
+    "node-forge": "^1.3.1"
+  }
+}
