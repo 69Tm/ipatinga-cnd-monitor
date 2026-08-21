@@ -84,11 +84,14 @@ function parseCompNfse(compNode) {
   ]);
   const infDps = dpsNode ? (getXmlNode(dpsNode, ['InfDeclaracaoPrestacaoServico', 'tc:InfDeclaracaoPrestacaoServico']) || dpsNode) : null;
 
-  const competenciaRaw = infDps ? getXmlValue(infDps, ['Competencia', 'tc:Competencia']) : null;
-  const chaveAcesso = infDps ? getXmlValue(infDps, ['ChaveAcesso', 'tc:ChaveAcesso']) : null;
+  const competenciaRaw = (infDps && getXmlValue(infDps, ['Competencia', 'tc:Competencia'])) ||
+                         getXmlValue(infNfse, ['Competencia', 'tc:Competencia']);
+  const chaveAcesso = (infDps && getXmlValue(infDps, ['ChaveAcesso', 'tc:ChaveAcesso'])) ||
+                      getXmlValue(infNfse, ['ChaveAcesso', 'tc:ChaveAcesso']);
 
   // Serviço & Valores
-  const servicoNode = infDps ? getXmlNode(infDps, ['Servico', 'tc:Servico']) : getXmlNode(infNfse, ['Servico', 'tc:Servico']);
+  const servicoNode = (infDps && getXmlNode(infDps, ['Servico', 'tc:Servico'])) ||
+                      getXmlNode(infNfse, ['Servico', 'tc:Servico']);
   const valoresServicoNode = servicoNode ? getXmlNode(servicoNode, ['Valores', 'tc:Valores']) : null;
   const valoresNfseNode = getXmlNode(infNfse, ['ValoresNfse', 'tc:ValoresNfse']);
 
@@ -100,17 +103,18 @@ function parseCompNfse(compNode) {
   const municipioIncidencia = servicoNode ? getXmlValue(servicoNode, ['MunicipioIncidencia', 'tc:MunicipioIncidencia']) : '';
   const issRetido = servicoNode ? getXmlValue(servicoNode, ['IssRetido', 'tc:IssRetido']) : '2';
 
-  const valorServicos = valoresServicoNode ? getXmlValue(valoresServicoNode, ['ValorServicos', 'tc:ValorServicos']) : getXmlValue(valoresNfseNode, ['ValorServicos', 'tc:ValorServicos']);
-  const valorLiquido = valoresServicoNode ? getXmlValue(valoresServicoNode, ['ValorLiquidoNfse', 'tc:ValorLiquidoNfse']) : getXmlValue(valoresNfseNode, ['ValorLiquidoNfse', 'tc:ValorLiquidoNfse']);
+  const valorServicos = valoresServicoNode ? getXmlValue(valoresServicoNode, ['ValorServicos', 'tc:ValorServicos']) : (valoresNfseNode ? getXmlValue(valoresNfseNode, ['ValorServicos', 'tc:ValorServicos']) : null);
+  const valorLiquido = valoresServicoNode ? getXmlValue(valoresServicoNode, ['ValorLiquidoNfse', 'tc:ValorLiquidoNfse']) : (valoresNfseNode ? getXmlValue(valoresNfseNode, ['ValorLiquidoNfse', 'tc:ValorLiquidoNfse']) : valorServicos);
   const baseCalculo = valoresNfseNode ? getXmlValue(valoresNfseNode, ['BaseCalculo', 'tc:BaseCalculo']) : (valoresServicoNode ? getXmlValue(valoresServicoNode, ['BaseCalculo', 'tc:BaseCalculo']) : null);
   const aliquota = valoresNfseNode ? getXmlValue(valoresNfseNode, ['Aliquota', 'tc:Aliquota']) : (valoresServicoNode ? getXmlValue(valoresServicoNode, ['Aliquota', 'tc:Aliquota']) : null);
   const valorIss = valoresNfseNode ? getXmlValue(valoresNfseNode, ['ValorIss', 'tc:ValorIss']) : (valoresServicoNode ? getXmlValue(valoresServicoNode, ['ValorIss', 'tc:ValorIss']) : null);
 
   // Tomador
-  const tomadorNode = infDps ? getXmlNode(infDps, ['Tomador', 'tc:Tomador', 'TomadorServico', 'tc:TomadorServico']) : getXmlNode(infNfse, ['TomadorServico', 'tc:TomadorServico']);
+  const tomadorNode = (infDps && getXmlNode(infDps, ['Tomador', 'tc:Tomador', 'TomadorServico', 'tc:TomadorServico'])) ||
+                      getXmlNode(infNfse, ['TomadorServico', 'tc:TomadorServico', 'Tomador', 'tc:Tomador']);
   const identTomador = tomadorNode ? getXmlNode(tomadorNode, ['IdentificacaoTomador', 'tc:IdentificacaoTomador']) : null;
   const cpfCnpjTomador = identTomador ? getXmlNode(identTomador, ['CpfCnpj', 'tc:CpfCnpj']) : null;
-  const cnpjTomador = cpfCnpjTomador ? (getXmlValue(cpfCnpjTomador, ['Cnpj', 'tc:Cnpj']) || getXmlValue(cpfCnpjTomador, ['Cpf', 'tc:Cpf'])) : null;
+  const cnpjTomador = cpfCnpjTomador ? (getXmlValue(cpfCnpjTomador, ['Cnpj', 'tc:Cnpj']) || getXmlValue(cpfCnpjTomador, ['Cpf', 'tc:Cpf'])) : (tomadorNode ? (getXmlValue(tomadorNode, ['Cnpj', 'tc:Cnpj']) || getXmlValue(tomadorNode, ['Cpf', 'tc:Cpf'])) : null);
   const razaoSocialTomador = tomadorNode ? getXmlValue(tomadorNode, ['RazaoSocial', 'tc:RazaoSocial']) : '';
 
   // Situação (Normal, Cancelada, Substituída)
