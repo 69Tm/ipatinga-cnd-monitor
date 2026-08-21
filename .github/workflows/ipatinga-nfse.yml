@@ -1,0 +1,99 @@
+name: Sincronização NFS-e DEXMED (Ipatinga)
+
+on:
+  workflow_dispatch:
+    inputs:
+      operation:
+        description: 'Operação fiscal a executar'
+        required: true
+        default: 'sync'
+        type: choice
+        options:
+          - sync
+          - prepare
+          - preflight
+          - issue
+      sync_mode:
+        description: 'Modo de sincronização de notas'
+        required: true
+        default: 'incremental'
+        type: choice
+        options:
+          - incremental
+          - full
+      environment:
+        description: 'Ambiente fiscal (produção permitida para consulta)'
+        required: true
+        default: 'production'
+        type: choice
+        options:
+          - production
+          - homologation
+      from_number:
+        description: 'Número inicial (opcional para filtro específico)'
+        required: false
+        default: ''
+        type: string
+      to_number:
+        description: 'Número final (opcional para filtro específico)'
+        required: false
+        default: ''
+        type: string
+      request_id:
+        description: 'ID da demanda para operação prepare'
+        required: false
+        default: ''
+        type: string
+      dry_run:
+        description: 'Modo simulação sem escrita no Google Sheets'
+        required: false
+        default: false
+        type: boolean
+
+jobs:
+  nfse-automation:
+    name: NFS-e ${{ inputs.operation }} (${{ inputs.environment }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout do Repositório
+        uses: actions/checkout@v4
+
+      - name: Configurar Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Instalar Dependências NFS-e
+        working-directory: scripts/ipatinga-nfse
+        run: npm install
+
+      - name: Executar Bateria de Testes Unitários
+        working-directory: scripts/ipatinga-nfse
+        run: npm test
+
+      - name: Executar Automação NFS-e
+        working-directory: scripts/ipatinga-nfse
+        env:
+          INPUT_OPERATION: ${{ inputs.operation }}
+          INPUT_SYNC_MODE: ${{ inputs.sync_mode }}
+          INPUT_ENVIRONMENT: ${{ inputs.environment }}
+          INPUT_FROM_NUMBER: ${{ inputs.from_number }}
+          INPUT_TO_NUMBER: ${{ inputs.to_number }}
+          INPUT_REQUEST_ID: ${{ inputs.request_id }}
+          INPUT_DRY_RUN: ${{ inputs.dry_run }}
+          GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
+          DRIVE_FOLDER_ID: ${{ secrets.DRIVE_FOLDER_ID }}
+          NFE_CERT_DRIVE_FILE_ID: ${{ secrets.NFE_CERT_DRIVE_FILE_ID || vars.NFE_CERT_DRIVE_FILE_ID }}
+          NFE_CERT_PASSWORD: ${{ secrets.NFE_CERT_PASSWORD }}
+          NFE_SPREADSHEET_ID: ${{ secrets.NFE_SPREADSHEET_ID || vars.NFE_SPREADSHEET_ID || '1-qnJjv0YuZkrAHnfiyJuyKiU3lR3VzFl76nNQ1DCHWo' }}
+        run: node main.js
+
+      - name: Upload Relatório de Execução
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: nfse-run-report
+          path: scripts/ipatinga-nfse/report/
+          retention-days: 14
