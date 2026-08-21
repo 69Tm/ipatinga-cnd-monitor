@@ -19,16 +19,17 @@ on:
         type: boolean
         default: false
   schedule:
-    - cron: '23 12 * * *' # 09:23 Brasília
+    - cron: '23 12 4-19 11 *' # 09:23 Brasília na janela de vencimento (04/11 a 19/11)
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
   cnd:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       DEXMED_CNPJ: ${{ secrets.DEXMED_CNPJ }}
       DRIVE_FOLDER_ID: ${{ secrets.DRIVE_FOLDER_ID }}
       GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
