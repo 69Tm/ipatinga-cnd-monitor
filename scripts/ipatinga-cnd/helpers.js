@@ -268,6 +268,58 @@ async function updateControl(rowInfo, { emissao, validade, driveFile, numero, co
   return url;
 }
 
+async function rescheduleWorkflowCron(validityBrDate) {
+  const d = parseBrDate(validityBrDate);
+  if (!d) return;
+
+  const windowStart = new Date(d.getTime() - (15 * 86400000));
+  const startDay = windowStart.getUTCDate();
+  const endDay = d.getUTCDate();
+  const month = d.getUTCMonth() + 1;
+
+  const daysRange = startDay <= endDay ? `${startDay}-${endDay}` : `${startDay}-31`;
+  const cronExpression = `23 12 ${daysRange} ${month} *`;
+
+  console.log(`[Schedule] Programando próxima execução no workflow: "${cronExpression}" (Validade: ${validityBrDate})`);
+
+  const workflowPath = path.join(__dirname, '../../.github/workflows/cnd.yml');
+  if (fs.existsSync(workflowPath)) {
+    let content = fs.readFileSync(workflowPath, 'utf8');
+    content = content.replace(/cron:\s*['"][^'"]+['"](\s*#.*)?/, `cron: '${cronExpression}' # 09:23 Brasília na janela de vencimento (${validityBrDate})`);
+    fs.writeFileSync(workflowPath, content);
+  }
+
+  const token = process.env.GH_TOKEN || process.env.GITHUB_TOKEN;
+  const repo = process.env.GITHUB_REPOSITORY;
+  if (repo && token) {
+    try {
+      const uri = `https://api.github.com/repos/${repo}/contents/.github/workflows/cnd.yml`;
+      const headers = { 'Authorization': `token ${token}`, 'User-Agent': 'Antigravity-Agent', 'Accept': 'application/vnd.github.v3+json' };
+      
+      const fileRes = await fetch(uri, { headers });
+      if (fileRes.ok) {
+        const fileData = await fileRes.json();
+        let content = Buffer.from(fileData.content, 'base64').toString('utf8');
+        content = content.replace(/cron:\s*['"][^'"]+['"](\s*#.*)?/, `cron: '${cronExpression}' # 09:23 Brasília na janela de vencimento (${validityBrDate})`);
+        
+        await fetch(uri, {
+          method: 'PUT',
+          headers: { ...headers, 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            message: `chore: reschedule workflow cron for expiration window (${validityBrDate})`,
+            content: Buffer.from(content).toString('base64'),
+            sha: fileData.sha,
+            branch: 'main'
+          })
+        });
+        console.log(`[Schedule] Workflow cron atualizado com sucesso no GitHub Actions para "${cronExpression}"!`);
+      }
+    } catch (e) {
+      console.warn(`[Schedule] Aviso ao atualizar cron no GitHub: ${e.message}`);
+    }
+  }
+}
+
 function ghOutput(name, value) {
   if (process.env.GITHUB_OUTPUT) fs.appendFileSync(process.env.GITHUB_OUTPUT, `${name}=${value}\n`);
   else console.log(`${name}=${value}`);
@@ -364,6 +416,7 @@ module.exports = {
   validateCert,
   uploadPdf,
   updateControl,
+  rescheduleWorkflowCron,
   alerts,
   ghOutput,
   runUrl,
