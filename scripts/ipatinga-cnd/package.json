@@ -1,0 +1,16 @@
+{
+  "name": "ipatinga-cnd-monitor",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "start": "node main.js",
+    "gate": "node main.js --gate-only",
+    "test-alert": "node main.js --test-alert"
+  },
+  "dependencies": {
+    "googleapis": "^156.0.0",
+    "nodemailer": "^7.0.6",
+    "pdf-parse": "^1.1.1",
+    "playwright": "^1.55.0"
+  }
+}
