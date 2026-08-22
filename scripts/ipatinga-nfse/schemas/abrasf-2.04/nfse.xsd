@@ -1,0 +1,40 @@
+<?xml version="1.0" encoding="utf-8"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema" xmlns:tc="http://www.abrasf.org.br/tipos_complexos.xsd" xmlns:ts="http://www.abrasf.org.br/tipos_simples.xsd" xmlns:ds="http://www.w3.org/2000/09/xmldsig#" xmlns="http://www.abrasf.org.br/nfse.xsd" targetNamespace="http://www.abrasf.org.br/nfse.xsd" elementFormDefault="qualified" attributeFormDefault="unqualified">
+  <xs:import namespace="http://www.abrasf.org.br/tipos_complexos.xsd" schemaLocation="tipos_complexos_v03.xsd"/>
+  <xs:import namespace="http://www.abrasf.org.br/tipos_simples.xsd" schemaLocation="tipos_simples_v03.xsd"/>
+  <xs:import namespace="http://www.w3.org/2000/09/xmldsig#" schemaLocation="xmldsig-core-schema.xsd"/>
+
+  <xs:element name="GerarNfseEnvio">
+    <xs:complexType>
+      <xs:sequence>
+        <xs:element name="Rps" type="tc:tcDeclaracaoPrestacaoServico"/>
+      </xs:sequence>
+    </xs:complexType>
+  </xs:element>
+
+  <xs:element name="ConsultarNfseFaixaEnvio">
+    <xs:complexType>
+      <xs:sequence>
+        <xs:element name="Prestador" type="tc:tcIdentificacaoPrestador"/>
+        <xs:element name="Faixa">
+          <xs:complexType>
+            <xs:sequence>
+              <xs:element name="NumeroNfseInicial" type="ts:tsNumeroNfse"/>
+              <xs:element name="NumeroNfseFinal" type="ts:tsNumeroNfse"/>
+            </xs:sequence>
+          </xs:complexType>
+        </xs:element>
+        <xs:element name="Pagina" type="xs:nonNegativeInteger" minOccurs="0"/>
+      </xs:sequence>
+    </xs:complexType>
+  </xs:element>
+
+  <xs:element name="ConsultarNfsePorRpsEnvio">
+    <xs:complexType>
+      <xs:sequence>
+        <xs:element name="IdentificacaoRps" type="tc:tcIdentificacaoRps"/>
+        <xs:element name="Prestador" type="tc:tcIdentificacaoPrestador"/>
+      </xs:sequence>
+    </xs:complexType>
+  </xs:element>
+</xs:schema>

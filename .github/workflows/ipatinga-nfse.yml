@@ -51,6 +51,10 @@ on:
         default: false
         type: boolean
 
+concurrency:
+  group: nfse-${{ inputs.operation == 'issue' && 'issue-homologation' || 'default' }}
+  cancel-in-progress: false
+
 jobs:
   nfse-automation:
     name: NFS-e ${{ inputs.operation }} (${{ inputs.environment }})

@@ -1,0 +1,98 @@
+<?xml version="1.0" encoding="utf-8"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema" xmlns:tc="http://www.abrasf.org.br/tipos_complexos.xsd" xmlns:ts="http://www.abrasf.org.br/tipos_simples.xsd" xmlns:ds="http://www.w3.org/2000/09/xmldsig#" targetNamespace="http://www.abrasf.org.br/tipos_complexos.xsd" elementFormDefault="qualified" attributeFormDefault="unqualified">
+  <xs:import namespace="http://www.abrasf.org.br/tipos_simples.xsd" schemaLocation="tipos_simples_v03.xsd"/>
+  <xs:import namespace="http://www.w3.org/2000/09/xmldsig#" schemaLocation="xmldsig-core-schema.xsd"/>
+  
+  <xs:complexType name="tcCpfCnpj">
+    <xs:choice>
+      <xs:element name="Cpf" type="ts:tsCpf"/>
+      <xs:element name="Cnpj" type="ts:tsCnpj"/>
+    </xs:choice>
+  </xs:complexType>
+
+  <xs:complexType name="tcIdentificacaoRps">
+    <xs:sequence>
+      <xs:element name="Numero" type="ts:tsNumeroRps"/>
+      <xs:element name="Serie" type="ts:tsSerieRps"/>
+      <xs:element name="Tipo" type="ts:tsTipoRps"/>
+    </xs:sequence>
+  </xs:complexType>
+
+  <xs:complexType name="tcIdentificacaoPrestador">
+    <xs:sequence>
+      <xs:element name="CpfCnpj" type="tc:tcCpfCnpj" minOccurs="0"/>
+      <xs:element name="InscricaoMunicipal" type="ts:tsInscricaoMunicipal" minOccurs="0"/>
+    </xs:sequence>
+  </xs:complexType>
+
+  <xs:complexType name="tcIdentificacaoTomador">
+    <xs:sequence>
+      <xs:element name="CpfCnpj" type="tc:tcCpfCnpj" minOccurs="0"/>
+      <xs:element name="InscricaoMunicipal" type="ts:tsInscricaoMunicipal" minOccurs="0"/>
+    </xs:sequence>
+  </xs:complexType>
+
+  <xs:complexType name="tcDadosTomador">
+    <xs:sequence>
+      <xs:element name="IdentificacaoTomador" type="tc:tcIdentificacaoTomador" minOccurs="0"/>
+      <xs:element name="RazaoSocial" type="ts:tsRazaoSocial" minOccurs="0"/>
+    </xs:sequence>
+  </xs:complexType>
+
+  <xs:complexType name="tcValoresDeclaracaoServico">
+    <xs:sequence>
+      <xs:element name="ValorServicos" type="ts:tsValor"/>
+      <xs:element name="ValorDeducoes" type="ts:tsValor" minOccurs="0"/>
+      <xs:element name="ValorPis" type="ts:tsValor" minOccurs="0"/>
+      <xs:element name="ValorCofins" type="ts:tsValor" minOccurs="0"/>
+      <xs:element name="ValorInss" type="ts:tsValor" minOccurs="0"/>
+      <xs:element name="ValorIr" type="ts:tsValor" minOccurs="0"/>
+      <xs:element name="ValorCsll" type="ts:tsValor" minOccurs="0"/>
+      <xs:element name="OutrasRetencoes" type="ts:tsValor" minOccurs="0"/>
+      <xs:element name="ValorIss" type="ts:tsValor" minOccurs="0"/>
+      <xs:element name="Aliquota" type="ts:tsAliquota" minOccurs="0"/>
+      <xs:element name="DescontoIncondicionado" type="ts:tsValor" minOccurs="0"/>
+      <xs:element name="DescontoCondicionado" type="ts:tsValor" minOccurs="0"/>
+    </xs:sequence>
+  </xs:complexType>
+
+  <xs:complexType name="tcDadosServico">
+    <xs:sequence>
+      <xs:element name="Valores" type="tc:tcValoresDeclaracaoServico"/>
+      <xs:element name="IssRetido" type="ts:tsSimNao"/>
+      <xs:element name="ItemListaServico" type="ts:tsItemListaServico"/>
+      <xs:element name="CodigoCnae" type="ts:tsCodigoCnae" minOccurs="0"/>
+      <xs:element name="CodigoTributacaoMunicipio" type="ts:tsCodigoTributacaoMunicipio" minOccurs="0"/>
+      <xs:element name="Discriminacao" type="ts:tsDiscriminacao"/>
+      <xs:element name="CodigoMunicipio" type="ts:tsCodigoMunicipioIbge"/>
+    </xs:sequence>
+  </xs:complexType>
+
+  <xs:complexType name="tcRps">
+    <xs:sequence>
+      <xs:element name="IdentificacaoRps" type="tc:tcIdentificacaoRps"/>
+      <xs:element name="DataEmissao" type="xs:date"/>
+      <xs:element name="Status" type="ts:tsStatusRps"/>
+    </xs:sequence>
+  </xs:complexType>
+
+  <xs:complexType name="tcInfDeclaracaoPrestacaoServico">
+    <xs:sequence>
+      <xs:element name="Rps" type="tc:tcRps" minOccurs="0"/>
+      <xs:element name="Competencia" type="xs:date"/>
+      <xs:element name="Servico" type="tc:tcDadosServico"/>
+      <xs:element name="Prestador" type="tc:tcIdentificacaoPrestador"/>
+      <xs:element name="Tomador" type="tc:tcDadosTomador" minOccurs="0"/>
+      <xs:element name="OptanteSimplesNacional" type="ts:tsSimNao"/>
+      <xs:element name="IncentivoFiscal" type="ts:tsSimNao"/>
+    </xs:sequence>
+    <xs:attribute name="Id" type="ts:tsIdTag"/>
+  </xs:complexType>
+
+  <xs:complexType name="tcDeclaracaoPrestacaoServico">
+    <xs:sequence>
+      <xs:element name="InfDeclaracaoPrestacaoServico" type="tc:tcInfDeclaracaoPrestacaoServico"/>
+      <xs:element ref="ds:Signature" minOccurs="0"/>
+    </xs:sequence>
+  </xs:complexType>
+</xs:schema>

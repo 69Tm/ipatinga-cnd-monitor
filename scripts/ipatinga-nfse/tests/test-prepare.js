@@ -13,10 +13,10 @@ const {
 console.log('Running test-prepare.js...');
 
 const demandasRaw = [
-  ['Message ID', 'Período', 'Notas solicitadas', 'Valores', 'Descrição obrigatória', 'Status', 'NFS-e resultantes', 'Números RPS', 'Séries RPS', 'Tipos RPS'],
-  ['req-hic', '08/2026', 'HIC — Plantões PS SUS; HIC — Produção PS SUS', '1000,00; 200,00', 'Descrição plantões vinda do e-mail || Descrição produção vinda do e-mail', 'PENDENTE', '', '101;102', 'A;A', '1;1'],
-  ['req-cisurg', '08/2026', 'CISURG — Plantões credenciamento', '4199,40', 'DESCRIÇÃO EXATA DO ESPELHO MENSAL', 'PENDENTE', '', '103', 'A', '1'],
-  ['req-done', '07/2026', 'CISURG', '4199,40', 'descrição', 'CONCLUÍDA', '15', '', '', '']
+  ['Message ID', 'Período', 'Notas solicitadas', 'Valores', 'Descrição obrigatória', 'Status', 'NFS-e resultantes'],
+  ['req-hic', '08/2026', 'HIC — Plantões PS SUS; HIC — Produção PS SUS', '1000,00; 200,00', 'Descrição plantões vinda do e-mail || Descrição produção vinda do e-mail', 'PENDENTE', ''],
+  ['req-cisurg', '08/2026', 'CISURG — Plantões credenciamento', '4199,40', 'DESCRIÇÃO EXATA DO ESPELHO MENSAL', 'PENDENTE', ''],
+  ['req-done', '07/2026', 'CISURG', '4199,40', 'descrição', 'CONCLUÍDA', '15']
 ];
 const tomadoresRaw = [
   ['CNPJ', 'Razão Social', 'Nome Curto', 'Município', 'Categorias Conhecidas', 'Status Homologação'],
@@ -40,13 +40,16 @@ assert.notStrictEqual(hic.candidates[0].patternId, hic.candidates[1].patternId);
 assert.strictEqual(hic.candidates[0].valor, 1000);
 assert.strictEqual(hic.candidates[1].valor, 200);
 assert.strictEqual(hic.candidates[0].aliquotaIss, null);
+assert.strictEqual(hic.candidates[0].rpsStatus, 'PENDING_ALLOCATION');
 assert.strictEqual(XMLValidator.validate(hic.candidates[0].xmlCandidate), true);
-assert.deepStrictEqual(hic.blockingReasons, ['OFFICIAL_ABRASF_XSD_NOT_AVAILABLE_TO_EXECUTOR']);
+assert.strictEqual(hic.validationStatus, 'READY_TO_ISSUE');
+assert.strictEqual(hic.blockingReasons.length, 0);
 
 const cisurg = prepareDemand({ requestId: 'req-cisurg', demandas, tomadores, patterns });
 assert.strictEqual(cisurg.candidates[0].descricao, 'DESCRIÇÃO EXATA DO ESPELHO MENSAL');
 assert.ok(!cisurg.blockingReasons.includes('CISURG_MONTHLY_MIRROR_DESCRIPTION_REQUIRED'));
 assert.ok(cisurg.candidates[0].xmlCandidate.includes('DESCRIÇÃO EXATA DO ESPELHO MENSAL'));
+assert.strictEqual(cisurg.validationStatus, 'READY_TO_ISSUE');
 
 const done = prepareDemand({ requestId: 'req-done', demandas, tomadores, patterns });
 assert.deepStrictEqual(done.blockingReasons, ['DUPLICATE_ALREADY_ISSUED']);
@@ -54,13 +57,12 @@ assert.strictEqual(done.candidates.length, 0);
 
 const missingCritical = prepareDemand({
   requestId: 'req-cisurg',
-  demandas: demandRows([demandasRaw[0], ['req-cisurg', '08/2026', 'CISURG', '4199,40', '', 'PENDENTE', '', '', '', '']]),
+  demandas: demandRows([demandasRaw[0], ['req-cisurg', '08/2026', 'CISURG', '4199,40', '', 'PENDENTE', '']]),
   tomadores,
   patterns
 });
 assert.ok(missingCritical.blockingReasons.includes('DESCRIPTION_SOURCE_REQUIRED'));
 assert.ok(missingCritical.blockingReasons.includes('CISURG_MONTHLY_MIRROR_DESCRIPTION_REQUIRED'));
-assert.ok(missingCritical.blockingReasons.includes('RPS_NUMBER_MISSING'));
 
 async function run() {
   let writes = 0;

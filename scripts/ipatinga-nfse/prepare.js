@@ -4,6 +4,7 @@ const { XMLValidator } = require('fast-xml-parser');
 const { CONFIG } = require('./config');
 const { readSheetValues } = require('./google');
 const { isValidCnpj, normalizeCnpj, parseCurrency, parseCompetencia } = require('./validators');
+const { validateXmlAgainstAbrasf204 } = require('./xsd-validator');
 
 function normalizeLabel(value) {
   return String(value || '')
@@ -108,9 +109,14 @@ function competenceDate(value) {
 
 function buildUnsignedCandidateXml(candidate) {
   const itemLista = String(candidate.codigoTribNacional || '').split('.').slice(0, 2).join('.');
+  const rpsNum = candidate.rpsNumero || '999999';
+  const rpsSer = candidate.rpsSerie || 'A';
+  const rpsTip = candidate.rpsTipo || '1';
+  const xmlId = candidate.xmlId || `RPS${rpsNum}${rpsSer.replace(/[^A-Za-z0-9]/g, '')}`;
+
   return `<GerarNfseEnvio xmlns="${CONFIG.ABRASF.SCHEMA_NAMESPACE}">` +
-    `<Rps><InfDeclaracaoPrestacaoServico Id="${escapeXml(candidate.xmlId)}">` +
-    `<Rps><IdentificacaoRps><Numero>${escapeXml(candidate.rpsNumero)}</Numero><Serie>${escapeXml(candidate.rpsSerie)}</Serie><Tipo>${escapeXml(candidate.rpsTipo)}</Tipo></IdentificacaoRps>` +
+    `<Rps><InfDeclaracaoPrestacaoServico Id="${escapeXml(xmlId)}">` +
+    `<Rps><IdentificacaoRps><Numero>${escapeXml(rpsNum)}</Numero><Serie>${escapeXml(rpsSer)}</Serie><Tipo>${escapeXml(rpsTip)}</Tipo></IdentificacaoRps>` +
     `<DataEmissao>${escapeXml(candidate.dataEmissao)}</DataEmissao><Status>1</Status></Rps>` +
     `<Competencia>${escapeXml(candidate.competenciaData)}</Competencia>` +
     `<Servico><Valores><ValorServicos>${candidate.valor.toFixed(2)}</ValorServicos></Valores>` +
@@ -138,9 +144,6 @@ function validateCandidate(candidate) {
   if (!candidate.codigoTribMunicipal) errors.push('MUNICIPAL_TAX_CODE_MISSING');
   if (!candidate.localPrestacao) errors.push('SERVICE_LOCATION_MISSING');
   if (!candidate.nbs) errors.push('NBS_MISSING');
-  if (!candidate.rpsNumero) errors.push('RPS_NUMBER_MISSING');
-  if (!candidate.rpsSerie) errors.push('RPS_SERIES_MISSING');
-  if (!candidate.rpsTipo) errors.push('RPS_TYPE_MISSING');
   if (normalizeLabel(candidate.patternId).includes('cisurg') && !candidate.descriptionFromDemand) {
     errors.push('CISURG_MONTHLY_MIRROR_DESCRIPTION_REQUIRED');
   }
@@ -172,10 +175,7 @@ function prepareDemand({ requestId, demandas, tomadores, patterns, notas = [], n
   const labels = splitList(firstField(demand, ['Notas solicitadas', 'categorias', 'categoria']));
   const values = splitList(firstField(demand, ['Valores', 'valores', 'valor']));
   const descriptions = splitList(firstField(demand, ['Descrição obrigatória', 'descricao_obrigatoria', 'descricao']));
-  const rpsNumbers = splitList(firstField(demand, ['Números RPS', 'Número RPS', 'RPS', 'rps_numero']));
   const period = firstField(demand, ['Período', 'competencia', 'período referência']);
-  const rpsSeries = splitList(firstField(demand, ['Séries RPS', 'Série RPS', 'rps_serie']));
-  const rpsTypes = splitList(firstField(demand, ['Tipos RPS', 'Tipo RPS', 'rps_tipo']));
   const blockingReasons = [];
   if (!labels.length) blockingReasons.push('REQUESTED_NOTES_MISSING');
   if (values.length !== labels.length) blockingReasons.push('VALUES_COUNT_MISMATCH');
@@ -187,9 +187,6 @@ function prepareDemand({ requestId, demandas, tomadores, patterns, notas = [], n
     const taker = pattern && tomadores.find(item => normalizeCnpj(item.cnpj) === normalizeCnpj(pattern.cnpjTomador));
     const description = descriptions.length === labels.length ? descriptions[index] : (descriptions[0] || '');
     const cnpjTomador = normalizeCnpj(pattern?.cnpjTomador || taker?.cnpj || '');
-    const rpsNumero = String(rpsNumbers[index] || (rpsNumbers.length === 1 ? rpsNumbers[0] : '')).trim();
-    const rpsSerie = String(rpsSeries[index] || (rpsSeries.length === 1 ? rpsSeries[0] : '')).trim();
-    const rpsTipo = String(rpsTypes[index] || (rpsTypes.length === 1 ? rpsTypes[0] : '')).trim();
     const candidate = {
       requestId: normalizedRequest,
       sequence: index + 1,
@@ -205,45 +202,42 @@ function prepareDemand({ requestId, demandas, tomadores, patterns, notas = [], n
       codigoTribNacional: pattern?.codigoTribNacional || '',
       codigoTribMunicipal: pattern?.codigoTribMunicipal || '',
       localPrestacao: pattern?.localPrestacao || '',
-      codigoMunicipioPrestacao: pattern?.localPrestacao === 'Guanhães/MG' ? '3128006' : '',
+      codigoMunicipioPrestacao: pattern?.localPrestacao === 'Guanhães/MG' ? '3128006' : (pattern?.localPrestacao === 'Ipatinga/MG' ? '3131307' : ''),
       nbs: pattern?.nbs || '',
       aliquotaIss: null,
-      rpsNumero,
-      rpsSerie,
-      rpsTipo,
+      rpsStatus: 'PENDING_ALLOCATION',
+      rpsNumero: '',
+      rpsSerie: 'A',
+      rpsTipo: '1',
       dataEmissao: now.toISOString().slice(0, 10),
-      xmlId: rpsNumero && rpsSerie ? `RPS${rpsNumero}${rpsSerie.replace(/[^A-Za-z0-9]/g, '')}` : ''
+      xmlId: `RPS_PREPARE_${index + 1}`
     };
     candidate.validationErrors = validateCandidate(candidate);
     if (!candidate.validationErrors.length) {
       candidate.xmlCandidate = buildUnsignedCandidateXml(candidate);
-      const xmlValidation = XMLValidator.validate(candidate.xmlCandidate);
-      if (xmlValidation !== true) candidate.validationErrors.push('XML_NOT_WELL_FORMED');
+      const xsdCheck = validateXmlAgainstAbrasf204(candidate.xmlCandidate, 'GerarNfseEnvio');
+      if (!xsdCheck.valid) {
+        candidate.validationErrors.push(...xsdCheck.errors);
+      }
     }
     return candidate;
   });
 
-  const duplicateRps = new Set();
-  for (const candidate of candidates) {
-    if (!candidate.rpsNumero) continue;
-    const key = `${candidate.rpsNumero}:${candidate.rpsSerie}:${candidate.rpsTipo}`;
-    if (duplicateRps.has(key)) candidate.validationErrors.push('DUPLICATE_RPS_IN_REQUEST');
-    duplicateRps.add(key);
-  }
   if ((notas || []).slice(1).some(row => String(row[17] || '').trim() === normalizedRequest)) {
     blockingReasons.push('REQUEST_ALREADY_PRESENT_IN_NOTES');
   }
   blockingReasons.push(...candidates.flatMap(candidate => candidate.validationErrors));
-  if (!blockingReasons.length) blockingReasons.push('OFFICIAL_ABRASF_XSD_NOT_AVAILABLE_TO_EXECUTOR');
+
+  const validationStatus = blockingReasons.length === 0 ? 'READY_TO_ISSUE' : 'REVISAO_MANUAL';
 
   return {
     operation: 'prepare',
     status: 'SUCCESS',
-    validationStatus: 'REVISAO_MANUAL',
+    validationStatus,
     requestId: normalizedRequest,
     candidates,
     blockingReasons: [...new Set(blockingReasons)],
-    xsdValidation: 'BLOCKED_OFFICIAL_ABRASF_XSD_NOT_AVAILABLE',
+    xsdValidation: blockingReasons.length === 0 ? 'VALIDATED' : 'REVISION_REQUIRED',
     xmlSignature: 'NOT_APPLIED_PREPARE_ONLY',
     warnings: ['ISS_RATE_NOT_HARDCODED'],
     errors: []

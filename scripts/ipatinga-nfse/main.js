@@ -9,6 +9,7 @@ const { formatDateBr } = require('./validators');
 const { runHistoricalAnalysis } = require('./patterns');
 const { inspectWsdl } = require('./wsdl');
 const { handlePrepare } = require('./prepare');
+const { issueHomologation } = require('./issue');
 
 /**
  * Preflight Check: Valida todos os componentes sem realizar emissao ou alteracao fiscal

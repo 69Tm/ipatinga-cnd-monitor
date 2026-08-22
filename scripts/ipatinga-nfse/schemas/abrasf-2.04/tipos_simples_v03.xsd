@@ -1,0 +1,124 @@
+<?xml version="1.0" encoding="utf-8"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema" xmlns:ts="http://www.abrasf.org.br/tipos_simples.xsd" targetNamespace="http://www.abrasf.org.br/tipos_simples.xsd" elementFormDefault="qualified" attributeFormDefault="unqualified">
+  <xs:simpleType name="tsNumeroRps">
+    <xs:restriction base="xs:nonNegativeInteger">
+      <xs:totalDigits value="15"/>
+    </xs:restriction>
+  </xs:simpleType>
+  <xs:simpleType name="tsSerieRps">
+    <xs:restriction base="xs:string">
+      <xs:maxLength value="5"/>
+      <xs:minLength value="1"/>
+      <xs:whiteSpace value="collapse"/>
+    </xs:restriction>
+  </xs:simpleType>
+  <xs:simpleType name="tsTipoRps">
+    <xs:restriction base="xs:byte">
+      <xs:pattern value="1|2|3"/>
+    </xs:restriction>
+  </xs:simpleType>
+  <xs:simpleType name="tsStatusRps">
+    <xs:restriction base="xs:byte">
+      <xs:pattern value="1|2"/>
+    </xs:restriction>
+  </xs:simpleType>
+  <xs:simpleType name="tsStatusNfse">
+    <xs:restriction base="xs:byte">
+      <xs:pattern value="1|2"/>
+    </xs:restriction>
+  </xs:simpleType>
+  <xs:simpleType name="tsNumeroNfse">
+    <xs:restriction base="xs:nonNegativeInteger">
+      <xs:totalDigits value="15"/>
+    </xs:restriction>
+  </xs:simpleType>
+  <xs:simpleType name="tsCodigoVerificacao">
+    <xs:restriction base="xs:string">
+      <xs:maxLength value="9"/>
+      <xs:minLength value="1"/>
+      <xs:whiteSpace value="collapse"/>
+    </xs:restriction>
+  </xs:simpleType>
+  <xs:simpleType name="tsIdTag">
+    <xs:restriction base="xs:string">
+      <xs:maxLength value="255"/>
+      <xs:whiteSpace value="collapse"/>
+    </xs:restriction>
+  </xs:simpleType>
+  <xs:simpleType name="tsRazaoSocial">
+    <xs:restriction base="xs:string">
+      <xs:maxLength value="150"/>
+      <xs:minLength value="1"/>
+      <xs:whiteSpace value="collapse"/>
+    </xs:restriction>
+  </xs:simpleType>
+  <xs:simpleType name="tsCpf">
+    <xs:restriction base="xs:string">
+      <xs:length value="11"/>
+      <xs:whiteSpace value="collapse"/>
+    </xs:restriction>
+  </xs:simpleType>
+  <xs:simpleType name="tsCnpj">
+    <xs:restriction base="xs:string">
+      <xs:length value="14"/>
+      <xs:whiteSpace value="collapse"/>
+    </xs:restriction>
+  </xs:simpleType>
+  <xs:simpleType name="tsInscricaoMunicipal">
+    <xs:restriction base="xs:string">
+      <xs:maxLength value="15"/>
+      <xs:minLength value="1"/>
+      <xs:whiteSpace value="collapse"/>
+    </xs:restriction>
+  </xs:simpleType>
+  <xs:simpleType name="tsItemListaServico">
+    <xs:restriction base="xs:string">
+      <xs:maxLength value="5"/>
+      <xs:minLength value="1"/>
+      <xs:whiteSpace value="collapse"/>
+    </xs:restriction>
+  </xs:simpleType>
+  <xs:simpleType name="tsCodigoCnae">
+    <xs:restriction base="xs:int">
+      <xs:totalDigits value="7"/>
+    </xs:restriction>
+  </xs:simpleType>
+  <xs:simpleType name="tsCodigoTributacaoMunicipio">
+    <xs:restriction base="xs:string">
+      <xs:maxLength value="20"/>
+      <xs:minLength value="1"/>
+      <xs:whiteSpace value="collapse"/>
+    </xs:restriction>
+  </xs:simpleType>
+  <xs:simpleType name="tsDiscriminacao">
+    <xs:restriction base="xs:string">
+      <xs:maxLength value="2000"/>
+      <xs:minLength value="1"/>
+      <xs:whiteSpace value="collapse"/>
+    </xs:restriction>
+  </xs:simpleType>
+  <xs:simpleType name="tsCodigoMunicipioIbge">
+    <xs:restriction base="xs:int">
+      <xs:totalDigits value="7"/>
+    </xs:restriction>
+  </xs:simpleType>
+  <xs:simpleType name="tsValor">
+    <xs:restriction base="xs:decimal">
+      <xs:totalDigits value="15"/>
+      <xs:fractionDigits value="2"/>
+      <xs:minInclusive value="0"/>
+    </xs:restriction>
+  </xs:simpleType>
+  <xs:simpleType name="tsAliquota">
+    <xs:restriction base="xs:decimal">
+      <xs:totalDigits value="5"/>
+      <xs:fractionDigits value="4"/>
+      <xs:minInclusive value="0"/>
+    </xs:restriction>
+  </xs:simpleType>
+  <xs:simpleType name="tsSimNao">
+    <xs:restriction base="xs:byte">
+      <xs:pattern value="1|2"/>
+    </xs:restriction>
+  </xs:simpleType>
+</xs:schema>
