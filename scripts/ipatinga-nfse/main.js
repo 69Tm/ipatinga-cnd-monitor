@@ -120,7 +120,7 @@ async function preflight(options = {}, dependencies = {}) {
 }
 
 function generateReport(summary) {
-  const reportDir = path.resolve(__dirname, '../../report');
+  const reportDir = path.resolve(__dirname, 'report');
   if (!fs.existsSync(reportDir)) {
     fs.mkdirSync(reportDir, { recursive: true });
   }
