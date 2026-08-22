@@ -22,6 +22,8 @@ assert.strictEqual(hicPlantoes.codigoTribNacional, '04.03.01');
 assert.strictEqual(hicPlantoes.codigoTribMunicipal, '403');
 assert.strictEqual(hicPlantoes.localPrestacao, 'Guanhães/MG');
 assert.strictEqual(hicPlantoes.confianca, 'ALTA');
+assert.ok(hicPlantoes.camposFixos.includes('Inter'));
+assert.ok(!hicPlantoes.camposFixos.includes('BB'));
 
 // 2. HIC Produção
 const hicProd = KNOWN_PATTERNS.find(p => p.patternId === 'HIC_PRODUCAO_PS_SUS');
