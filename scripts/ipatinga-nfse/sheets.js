@@ -39,6 +39,13 @@ function competenceKey(value) {
   return match ? `${match[2]}-${match[1]}` : String(value ?? '').trim();
 }
 
+function taxCodeKey(value) {
+  const text = String(value ?? '').trim();
+  if (!text) return '';
+  if (!/^\d+(?:\.\d+)*$/.test(text)) return text;
+  return text.split('.').map(part => String(Number.parseInt(part, 10))).join('.');
+}
+
 function semanticallyEqual(columnIndex, left, right) {
   if ([8, 13].includes(columnIndex)) {
     return Math.abs(parseCurrency(left) - parseCurrency(right)) < 0.000001;
@@ -48,6 +55,7 @@ function semanticallyEqual(columnIndex, left, right) {
   }
   if (columnIndex === 3) return dateKey(left) === dateKey(right);
   if (columnIndex === 2) return competenceKey(left) === competenceKey(right);
+  if ([9, 10].includes(columnIndex)) return taxCodeKey(left) === taxCodeKey(right);
   return String(left ?? '').trim() === String(right ?? '').trim();
 }
 
@@ -323,5 +331,6 @@ module.exports = {
   upsertNotas,
   semanticallyEqual,
   dateKey,
-  competenceKey
+  competenceKey,
+  taxCodeKey
 };
