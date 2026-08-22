@@ -3,7 +3,7 @@
 const { CONFIG, sanitize } = require('./config');
 const { checkCertificateAccess, loadCertificate, cleanupCertificate } = require('./certificate');
 const { syncNfse } = require('./sync');
-const { generateReport } = require('./report');
+const { generateReport, buildConsoleSummary } = require('./report');
 const { readSheetValues } = require('./google');
 const { buildCabecalho, buildConsultarNfseFaixaEnvio } = require('./abrasf');
 const { callSoapOperation } = require('./soap');
@@ -275,6 +275,7 @@ async function main() {
     if (summary) {
       generateReport(summary);
       console.log('📄 Relatorio de execucao gerado com sucesso em report/run-summary.md');
+      console.log(`NFSE_RUN_RESULT=${JSON.stringify(buildConsoleSummary(summary))}`);
       if (summary.status === 'FAILED') process.exitCode = 1;
     }
   } catch (err) {

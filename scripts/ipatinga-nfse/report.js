@@ -113,6 +113,30 @@ function generateReport(summaryData) {
   };
 }
 
+function buildConsoleSummary(summaryData) {
+  const data = sanitize(summaryData || {});
+  const upsert = data.upsertResult || {};
+
+  return {
+    operation: data.operation || null,
+    status: data.status || 'UNKNOWN',
+    environment: data.environment || null,
+    mode: data.mode || null,
+    dryRun: Boolean(data.dryRun),
+    completedRanges: Array.isArray(data.completedRanges) ? data.completedRanges.length : 0,
+    totalApi: data.totalApi || 0,
+    totalNormalized: data.totalNormalized || 0,
+    new: upsert.totalNew || 0,
+    updated: upsert.totalUpdated || 0,
+    unchanged: upsert.totalUnchanged || 0,
+    canceled: upsert.totalCanceled || 0,
+    substituted: upsert.totalSubstituted || 0,
+    errors: Array.isArray(data.errors) ? data.errors.length : 0,
+    warnings: Array.isArray(data.warnings) ? data.warnings.length : 0
+  };
+}
+
 module.exports = {
-  generateReport
+  generateReport,
+  buildConsoleSummary
 };
