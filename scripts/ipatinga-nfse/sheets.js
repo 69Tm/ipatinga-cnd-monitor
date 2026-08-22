@@ -159,6 +159,14 @@ async function upsertNotas(apiNotas, spreadsheetId = null, dryRun = false, depen
   let totalUnchanged = 0;
   let totalCanceled = 0;
   let totalSubstituted = 0;
+  const changeAudit = [];
+  const columnNames = [
+    'numero', 'periodoRef', 'competencia', 'emissao', 'tomador', 'cnpjTomador',
+    'categoria', 'discriminacao', 'valorServico', 'codTribNacional', 'codTribMunicipal',
+    'localPrestacao', 'aliquota', 'issApurado', 'nbs', 'chaveAcesso', 'fonte',
+    'emailOrigem', 'status', 'observacoes', 'fonteApi', 'ultimaSync',
+    'codVerificacao', 'situacaoApi'
+  ];
 
   for (const item of apiNotas) {
     const cleanNum = String(parseInt(onlyDigits(item.numero), 10) || item.numero);
@@ -205,9 +213,13 @@ async function upsertNotas(apiNotas, spreadsheetId = null, dryRun = false, depen
       const comparableNew = [...newRow];
       comparableNew[21] = existingRec.ultimaSync || '';
       const comparableOld = Array.from({ length: 24 }, (_, index) => existingRec.rawRow[index] ?? '');
-      const changed = comparableNew.some((value, index) => String(value ?? '') !== String(comparableOld[index] ?? ''));
+      const changedIndexes = comparableNew
+        .map((value, index) => String(value ?? '') !== String(comparableOld[index] ?? '') ? index : -1)
+        .filter(index => index >= 0);
+      const changed = changedIndexes.length > 0;
       if (changed) {
         rowsToUpdate.push({ range: `${tab}!A${existingRec.rowNumber}:X${existingRec.rowNumber}`, values: [newRow] });
+        changeAudit.push({ numero: item.numero, fields: changedIndexes.map(index => columnNames[index]) });
         totalUpdated++;
       } else {
         totalUnchanged++;
@@ -264,6 +276,7 @@ async function upsertNotas(apiNotas, spreadsheetId = null, dryRun = false, depen
     totalUnchanged,
     totalCanceled,
     totalSubstituted,
+    changeAudit,
     dryRun
   };
 }

@@ -51,7 +51,7 @@ async function run() {
     ultimaSync: '', codVerificacao: '', situacaoApi: '', rawRow: raw
   };
   let updated;
-  await upsertNotas([note()], null, false, {
+  const updateResult = await upsertNotas([note()], null, false, {
     ensureHeaders: async () => {},
     loadExistingNotas: async () => maps(record),
     batchUpdateSheetValues: async (_id, data) => { updated = data; },
@@ -65,6 +65,8 @@ async function run() {
   assert.strictEqual(updateRow[19], 'OBS HUMANA');
   assert.strictEqual(updateRow[8], '100,00');
   assert.strictEqual(updateRow[12], '2,291%');
+  assert.ok(updateResult.changeAudit[0].fields.includes('periodoRef') === false);
+  assert.ok(updateResult.changeAudit[0].fields.includes('valorServico'));
 
   const fallbackRecord = { ...record, chaveAcesso: '', rawRow: [...raw] };
   fallbackRecord.rawRow[15] = '';
