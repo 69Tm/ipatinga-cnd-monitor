@@ -151,17 +151,21 @@ function generateReport(summary, outDir = path.join(__dirname, 'report')) {
   }
 
   const reportPath = path.join(outDir, 'run-summary.md');
+  const sanitizedSummary = { ...summary };
+  // Previne expor XML bruto integral no relatório
+  if (sanitizedSummary.xmlCandidate) delete sanitizedSummary.xmlCandidate;
+
   const content = `# Relatório de Execução — Automação NFS-e DEXMED (Ipatinga)
 
-- **Data / Hora:** ${summary.timestamp || new Date().toISOString()}
-- **Operação:** \`${summary.operation || 'N/A'}\`
-- **Ambiente:** \`${summary.environment || 'N/A'}\`
-- **Status Final:** \`${summary.status || 'UNKNOWN'}\`
-- **Dry-Run:** \`${summary.dryRun ? 'SIM (sem escritas externas)' : 'NÃO (escrita real)'}\`
+- **Data / Hora:** ${sanitizedSummary.timestamp || new Date().toISOString()}
+- **Operação:** \`${sanitizedSummary.operation || 'N/A'}\`
+- **Ambiente:** \`${sanitizedSummary.environment || 'N/A'}\`
+- **Status Final:** \`${sanitizedSummary.status || 'UNKNOWN'}\`
+- **Dry-Run:** \`${sanitizedSummary.dryRun ? 'SIM (sem escritas externas)' : 'NÃO (escrita real)'}\`
 
 ## Detalhes da Execução
 \`\`\`json
-${JSON.stringify(summary, null, 2)}
+${JSON.stringify(sanitizedSummary, null, 2)}
 \`\`\`
 `;
 
@@ -185,6 +189,8 @@ async function main() {
   const fromNumber = process.env.INPUT_FROM_NUMBER || '';
   const toNumber = process.env.INPUT_TO_NUMBER || '';
   const requestId = process.env.INPUT_REQUEST_ID || '';
+  const itemIndexRaw = parseInt(process.env.INPUT_ITEM_INDEX || '1', 10);
+  const itemIndex = isNaN(itemIndexRaw) || itemIndexRaw < 1 ? 1 : itemIndexRaw;
   const dryRun = process.env.INPUT_DRY_RUN === 'true' || process.env.INPUT_DRY_RUN === true;
 
   enforceOperationSafety(operation, environment);
@@ -235,7 +241,7 @@ async function main() {
       }
       summary = await issueHomologation({
         requestId,
-        itemIndex: 1,
+        itemIndex,
         certData,
         dryRun
       });

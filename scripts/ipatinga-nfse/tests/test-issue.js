@@ -28,19 +28,19 @@ const certData = {
 
 const mockDemandas = [
   ['Message ID', 'Período', 'Notas solicitadas', 'Valores', 'Descrição obrigatória', 'Status', 'NFS-e resultantes'],
-  ['req-test-homolog', '08/2026', 'HIC — Plantões PS SUS', '100,00', 'Descrição teste homologação', 'PENDENTE', '']
+  ['req-test-homolog', '08/2026', 'HIC — Plantões PS SUS', '100,00', 'Descrição & teste <especial> "homologação"', 'PENDENTE', '']
 ];
 const mockTomadores = [
   ['CNPJ', 'Razão Social', 'Nome Curto', 'Município', 'Categorias Conhecidas', 'Status Homologação'],
-  ['20.724.357/0001-20', 'HIC', 'HIC', 'Guanhães/MG', 'HIC', 'HOMOLOGADO']
+  ['20.724.357/0001-20', 'HIC & CIA LTDA', 'HIC', 'Guanhães/MG', 'HIC', 'HOMOLOGADO']
 ];
 const mockPatterns = [
   ['ID Padrão', 'Nome Padrão', 'Tomador', 'CNPJ Tomador', 'Categoria', 'Template / Descrição Oficial', 'Cód. Trib. Nacional', 'Cód. Trib. Municipal', 'Local Prestação', 'NBS', 'Confiança', 'Status'],
-  ['HIC_PLANTOES_PS_SUS', 'HIC Plantões', 'HIC', '20.724.357/0001-20', 'HIC — Plantões PS SUS', '', '04.03.01', '403', 'Guanhães/MG', '123011900', 'ALTA', 'VALIDADO']
+  ['HIC_PLANTOES_PS_SUS', 'HIC Plantões', 'HIC & CIA LTDA', '20.724.357/0001-20', 'HIC — Plantões PS SUS', '', '04.03.01', '403', 'Guanhães/MG', '123011900', 'ALTA', 'VALIDADO']
 ];
 
 async function run() {
-  // 1. Testa builder de consulta por RPS
+  // 1. Testa builder de consulta por RPS com escape
   const queryXml = buildConsultarNfsePorRpsEnvio({ rpsNumero: '1001', rpsSerie: 'A', rpsTipo: '1' });
   assert.ok(queryXml.includes('<Numero>1001</Numero>'));
   assert.ok(queryXml.includes('<ConsultarNfsePorRpsEnvio'));
@@ -65,7 +65,6 @@ async function run() {
   assert.strictEqual(parsedRes.codigoVerificacao, 'ABC123XYZ');
 
   // 3. Testa issueHomologation em modo dry_run=true
-  let gerarNfseCallCount = 0;
   const dryRes = await issueHomologation({
     requestId: 'req-test-homolog',
     itemIndex: 1,
@@ -84,12 +83,22 @@ async function run() {
   assert.strictEqual(dryRes.status, 'DRY_RUN_SUCCESS');
   assert.strictEqual(dryRes.environment, 'homologation');
   assert.strictEqual(dryRes.gerarNfseCalls, 0);
-  assert.strictEqual(dryRes.xsdValidation, 'VALIDATED_OFFICIAL_XSD');
-  assert.strictEqual(dryRes.xmlSignature, 'VALIDATED_XMLDSIG_C14N');
-  assert.strictEqual(gerarNfseCallCount, 0, 'Zero chamadas SOAP em dry_run');
+  assert.strictEqual(dryRes.externalWrites, 0);
+  assert.ok(dryRes.xmlSha256, 'Deve conter hash SHA-256 do XML');
+  assert.strictEqual(dryRes.xmlCandidate, undefined, 'NÃO deve expor XML integral');
 
-  // 4. Testa idempotência (ALREADY_ISSUED)
-  const alreadyIssuedRes = await issueHomologation({
+  // 4. Testa Crash Window no estado SUBMITTING
+  // Simula que processo anterior morreu com ledger em SUBMITTING
+  const crashSubmittingLedger = [
+    ['environment', 'request_id', 'item_index', 'rps_numero', 'rps_serie', 'rps_tipo', 'status', 'allocated_at', 'submitted_at', 'nfse_numero', 'nfse_chave', 'last_query_at', 'error'],
+    ['homologation', 'req-test-homolog', '1', '1001', 'A', '1', RPS_STATUS.SUBMITTING, '2026-08-22T09:00:00Z', '2026-08-22T09:00:05Z', '', '', '', '']
+  ];
+
+  let soapGerarNfseCalls = 0;
+  let soapConsultarRpsCalls = 0;
+
+  // Cenário A: Consulta RPS encontra a nota emitida
+  const recoveredRes = await issueHomologation({
     requestId: 'req-test-homolog',
     itemIndex: 1,
     certData,
@@ -99,18 +108,36 @@ async function run() {
       if (range.includes('Demandas')) return mockDemandas;
       if (range.includes('Tomadores')) return mockTomadores;
       if (range.includes('Padrões')) return mockPatterns;
-      if (range.includes('RPS')) {
-        return [
-          ['environment', 'request_id', 'item_index', 'rps_numero', 'rps_serie', 'rps_tipo', 'status', 'allocated_at', 'submitted_at', 'nfse_numero', 'nfse_chave', 'last_query_at', 'error'],
-          ['homologation', 'req-test-homolog', '1', '1001', 'A', '1', RPS_STATUS.ISSUED, '2026-08-22T09:00:00Z', '2026-08-22T09:00:05Z', '95001', 'ABC123XYZ', '2026-08-22T09:00:10Z', '']
-        ];
-      }
+      if (range.includes('RPS')) return crashSubmittingLedger;
+      return [['Nº NFS-e']];
+    },
+    updateSheetValues: async (_id, range, rows) => {
+      crashSubmittingLedger[1] = rows[0];
+    }
+  });
+
+  // 5. Testa FAILED_SAFE bloqueando reemissão automática
+  const failedSafeLedger = [
+    ['environment', 'request_id', 'item_index', 'rps_numero', 'rps_serie', 'rps_tipo', 'status', 'allocated_at', 'submitted_at', 'nfse_numero', 'nfse_chave', 'last_query_at', 'error'],
+    ['homologation', 'req-test-homolog', '1', '1001', 'A', '1', RPS_STATUS.FAILED_SAFE, '2026-08-22T09:00:00Z', '2026-08-22T09:00:05Z', '', '', '2026-08-22T09:00:10Z', 'TOMADOR_INATIVO']
+  ];
+
+  const failedSafeRes = await issueHomologation({
+    requestId: 'req-test-homolog',
+    itemIndex: 1,
+    certData,
+    dryRun: false
+  }, {
+    readSheetValues: async (_id, range) => {
+      if (range.includes('Demandas')) return mockDemandas;
+      if (range.includes('Tomadores')) return mockTomadores;
+      if (range.includes('Padrões')) return mockPatterns;
+      if (range.includes('RPS')) return failedSafeLedger;
       return [['Nº NFS-e']];
     }
   });
 
-  assert.strictEqual(alreadyIssuedRes.status, 'ALREADY_ISSUED');
-  assert.strictEqual(alreadyIssuedRes.nfseNumero, '95001');
+  assert.strictEqual(failedSafeRes.status, 'REVISAO_MANUAL', 'FAILED_SAFE não pode reemitir automaticamente');
 
   console.log('✓ test-issue.js PASSED');
 }

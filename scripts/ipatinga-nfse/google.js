@@ -44,9 +44,6 @@ function getDriveClient() {
   return google.drive({ version: 'v3', auth });
 }
 
-/**
- * Baixa arquivo do Google Drive para buffer ou caminho temporário
- */
 async function downloadDriveFile(fileId, destinationPath = null) {
   if (!fileId) throw new Error('File ID do Drive não fornecido.');
   const drive = getDriveClient();
@@ -69,9 +66,6 @@ async function downloadDriveFile(fileId, destinationPath = null) {
   return Buffer.from(res.data);
 }
 
-/**
- * Obtém metadados de um arquivo do Google Drive
- */
 async function getDriveFileMetadata(fileId) {
   if (!fileId) throw new Error('File ID do Drive não fornecido.');
   const drive = getDriveClient();
@@ -82,9 +76,6 @@ async function getDriveFileMetadata(fileId) {
   return res.data;
 }
 
-/**
- * Lê dados de uma aba da planilha
- */
 async function readSheetValues(spreadsheetId, range, valueRenderOption = 'FORMATTED_VALUE') {
   const sheets = getSheetsClient();
   const res = await sheets.spreadsheets.values.get({
@@ -96,9 +87,6 @@ async function readSheetValues(spreadsheetId, range, valueRenderOption = 'FORMAT
   return res.data.values || [];
 }
 
-/**
- * Atualiza dados em uma aba da planilha
- */
 async function updateSheetValues(spreadsheetId, range, values, valueInputOption = 'USER_ENTERED') {
   const sheets = getSheetsClient();
   const res = await sheets.spreadsheets.values.update({
@@ -110,9 +98,6 @@ async function updateSheetValues(spreadsheetId, range, values, valueInputOption 
   return res.data;
 }
 
-/**
- * Acrescenta linhas no final da aba
- */
 async function appendSheetValues(spreadsheetId, range, values, valueInputOption = 'USER_ENTERED') {
   const sheets = getSheetsClient();
   const res = await sheets.spreadsheets.values.append({
@@ -125,9 +110,6 @@ async function appendSheetValues(spreadsheetId, range, values, valueInputOption 
   return res.data;
 }
 
-/**
- * Executa múltiplos updates em lote (batchUpdate)
- */
 async function batchUpdateSheetValues(spreadsheetId, data, valueInputOption = 'USER_ENTERED') {
   const sheets = getSheetsClient();
   const res = await sheets.spreadsheets.values.batchUpdate({
@@ -140,6 +122,38 @@ async function batchUpdateSheetValues(spreadsheetId, data, valueInputOption = 'U
   return res.data;
 }
 
+async function getSpreadsheetMetadata(spreadsheetId) {
+  const sheets = getSheetsClient();
+  const res = await sheets.spreadsheets.get({
+    spreadsheetId,
+    fields: 'sheets.properties.title'
+  });
+  return res.data;
+}
+
+async function createSheetIfNotExists(spreadsheetId, sheetTitle) {
+  const sheets = getSheetsClient();
+  const meta = await getSpreadsheetMetadata(spreadsheetId);
+  const exists = (meta.sheets || []).some(s => s.properties?.title?.toLowerCase() === sheetTitle.toLowerCase());
+  if (exists) return false;
+
+  await sheets.spreadsheets.batchUpdate({
+    spreadsheetId,
+    requestBody: {
+      requests: [
+        {
+          addSheet: {
+            properties: {
+              title: sheetTitle
+            }
+          }
+        }
+      ]
+    }
+  });
+  return true;
+}
+
 module.exports = {
   getAuth,
   getSheetsClient,
@@ -149,5 +163,7 @@ module.exports = {
   readSheetValues,
   updateSheetValues,
   appendSheetValues,
-  batchUpdateSheetValues
+  batchUpdateSheetValues,
+  getSpreadsheetMetadata,
+  createSheetIfNotExists
 };

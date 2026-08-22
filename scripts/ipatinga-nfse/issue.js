@@ -1,5 +1,6 @@
 'use strict';
 
+const crypto = require('crypto');
 const { CONFIG, sanitize } = require('./config');
 const { readSheetValues, appendSheetValues, updateSheetValues } = require('./google');
 const {
@@ -15,33 +16,36 @@ const {
 const { prepareDemand, demandRows, tomadorRows, patternRows } = require('./prepare');
 const { validateXmlAgainstOfficialXsd } = require('./xsd-validator');
 const { signXmlNode, verifyXmlSignature } = require('./xmldsig');
-const { executeSoapRequest } = require('./soap');
+const { callSoapOperation } = require('./soap');
 const { buildCabecalho, parseConsultarNfseResposta } = require('./abrasf');
 const { getXmlNode, getXmlValue, parseXml } = require('./xml');
 
-/**
- * Monta o payload ConsultarNfsePorRpsEnvio
- */
+function escapeXml(value) {
+  return String(value ?? '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&apos;');
+}
+
 function buildConsultarNfsePorRpsEnvio({ rpsNumero, rpsSerie = 'A', rpsTipo = '1', cnpj = null, im = null }) {
   const cnpjClean = cnpj || CONFIG.PRESTADOR.CNPJ_DIGITS;
   const imClean = im || CONFIG.PRESTADOR.INSCRICAO_MUNICIPAL;
 
   return `<ConsultarNfsePorRpsEnvio xmlns="${CONFIG.ABRASF.SCHEMA_NAMESPACE}">` +
     `<IdentificacaoRps>` +
-      `<Numero>${rpsNumero}</Numero>` +
-      `<Serie>${rpsSerie}</Serie>` +
-      `<Tipo>${rpsTipo}</Tipo>` +
+      `<Numero>${escapeXml(rpsNumero)}</Numero>` +
+      `<Serie>${escapeXml(rpsSerie)}</Serie>` +
+      `<Tipo>${escapeXml(rpsTipo)}</Tipo>` +
     `</IdentificacaoRps>` +
     `<Prestador>` +
-      `<CpfCnpj><Cnpj>${cnpjClean}</Cnpj></CpfCnpj>` +
-      `<InscricaoMunicipal>${imClean}</InscricaoMunicipal>` +
+      `<CpfCnpj><Cnpj>${escapeXml(cnpjClean)}</Cnpj></CpfCnpj>` +
+      `<InscricaoMunicipal>${escapeXml(imClean)}</InscricaoMunicipal>` +
     `</Prestador>` +
   `</ConsultarNfsePorRpsEnvio>`;
 }
 
-/**
- * Parse da resposta oficial de GerarNfseResposta
- */
 function parseGerarNfseResposta(xmlString) {
   const parsed = parseXml(xmlString);
   const root = getXmlNode(parsed, ['GerarNfseResposta', 'tc:GerarNfseResposta']) || parsed;
@@ -78,11 +82,51 @@ function parseGerarNfseResposta(xmlString) {
   };
 }
 
-/**
- * Executa a operação GerarNfse em Homologação com exatamente-once garantido
- */
+async function recoverViaConsultarNfsePorRps({ ledgerEntry, certData }, dependencies = {}) {
+  const consultarRpsXml = buildConsultarNfsePorRpsEnvio({
+    rpsNumero: ledgerEntry.rps_numero,
+    rpsSerie: ledgerEntry.rps_serie,
+    rpsTipo: ledgerEntry.rps_tipo
+  });
+
+  const soapCall = dependencies.callSoapOperation || callSoapOperation;
+  let queryRes = null;
+  try {
+    queryRes = await soapCall({
+      environment: 'homologation',
+      operation: 'ConsultarNfsePorRps',
+      dadosXml: consultarRpsXml,
+      certData
+    });
+  } catch (err) {
+    return { success: false, error: err.message };
+  }
+
+  const parsedQuery = parseConsultarNfseResposta(queryRes.outputXml);
+  if (parsedQuery.notas && parsedQuery.notas.length > 0) {
+    const nota = parsedQuery.notas[0];
+    const updated = await markIssued(ledgerEntry, { nfseNumero: nota.numero, nfseChave: nota.codigoVerificacao }, dependencies);
+    return {
+      success: true,
+      updatedEntry: updated,
+      status: 'ISSUED',
+      environment: 'homologation',
+      requestId: ledgerEntry.request_id,
+      itemIndex: ledgerEntry.item_index,
+      rpsNumero: ledgerEntry.rps_numero,
+      nfseNumero: nota.numero,
+      nfseChave: nota.codigoVerificacao,
+      recoveredViaRpsQuery: true
+    };
+  }
+
+  return {
+    success: false,
+    rawQuery: queryRes.outputXml
+  };
+}
+
 async function issueHomologation({ requestId, itemIndex = 1, certData, dryRun = false }, dependencies = {}) {
-  // Trava de segurança redundante: JAMAIS em produção
   if (process.env.INPUT_ENVIRONMENT === 'production') {
     throw new Error('PRODUCTION_ISSUE_DISABLED: Emissão de NFS-e em produção está estritamente bloqueada.');
   }
@@ -94,7 +138,7 @@ async function issueHomologation({ requestId, itemIndex = 1, certData, dryRun = 
   const read = dependencies.readSheetValues || readSheetValues;
   const spreadsheetId = dependencies.spreadsheetId || CONFIG.SHEETS.SPREADSHEET_ID;
 
-  // 1. Carrega dados de negócio e prepara a demanda
+  // 1. Carrega dados e prepara demanda
   const [demandasRaw, tomadoresRaw, patternsRaw, notasRaw] = await Promise.all([
     read(spreadsheetId, `${CONFIG.SHEETS.TABS.DEMANDAS}!A:Z`),
     read(spreadsheetId, `${CONFIG.SHEETS.TABS.TOMADORES}!A:J`),
@@ -119,6 +163,10 @@ async function issueHomologation({ requestId, itemIndex = 1, certData, dryRun = 
     throw new Error(`CANDIDATE_INDEX_OUT_OF_BOUNDS: index ${itemIndex}`);
   }
 
+  if (!candidate.codigoMunicipioPrestacao) {
+    throw new Error('PREPARE_NOT_READY: codigoMunicipioPrestacao indefinido para o tomador/padrão.');
+  }
+
   // 2. Consulta Ledger
   let ledgerEntries = await loadLedger(dependencies);
   let ledgerEntry = findLedgerEntry(ledgerEntries, {
@@ -127,58 +175,53 @@ async function issueHomologation({ requestId, itemIndex = 1, certData, dryRun = 
     itemIndex
   });
 
-  // 3. Verifica estado atual do Ledger
-  if (ledgerEntry && ledgerEntry.status === RPS_STATUS.ISSUED) {
-    return {
-      status: 'ALREADY_ISSUED',
-      environment: 'homologation',
-      requestId,
-      itemIndex,
-      rpsNumero: ledgerEntry.rps_numero,
-      nfseNumero: ledgerEntry.nfse_numero,
-      nfseChave: ledgerEntry.nfse_chave,
-      message: 'Nota já emitida anteriormente para este request_id e item_index (idempotente).'
-    };
-  }
-
-  // 4. Se estava em UNKNOWN_AFTER_TIMEOUT: NÃO chamar GerarNfse; recuperar via ConsultarNfsePorRps
-  if (ledgerEntry && ledgerEntry.status === RPS_STATUS.UNKNOWN_AFTER_TIMEOUT) {
-    const consultarRpsXml = buildConsultarNfsePorRpsEnvio({
-      rpsNumero: ledgerEntry.rps_numero,
-      rpsSerie: ledgerEntry.rps_serie,
-      rpsTipo: ledgerEntry.rps_tipo
-    });
-
-    const cabecalho = buildCabecalho();
-    const queryRes = await executeSoapRequest({
-      endpointUrl: CONFIG.ENDPOINTS.homologation.url,
-      soapAction: 'nfs#ConsultarNfsePorRps',
-      operation: 'ConsultarNfsePorRps',
-      cabecalhoXml: cabecalho,
-      dadosXml: consultarRpsXml,
-      certData
-    });
-
-    const parsedQuery = parseConsultarNfseResposta(queryRes.rawXml);
-    if (parsedQuery.notas && parsedQuery.notas.length > 0) {
-      const nota = parsedQuery.notas[0];
-      await markIssued(ledgerEntry, { nfseNumero: nota.numero, nfseChave: nota.codigoVerificacao }, dependencies);
+  // 3. Regra de Estados do Ledger
+  if (ledgerEntry) {
+    if (ledgerEntry.status === RPS_STATUS.ISSUED) {
       return {
-        status: 'ISSUED',
+        status: 'ALREADY_ISSUED',
         environment: 'homologation',
         requestId,
         itemIndex,
         rpsNumero: ledgerEntry.rps_numero,
-        nfseNumero: nota.numero,
-        nfseChave: nota.codigoVerificacao,
-        recoveredViaRpsQuery: true
+        nfseNumero: ledgerEntry.nfse_numero,
+        nfseChave: ledgerEntry.nfse_chave,
+        message: 'Nota já emitida anteriormente para este request_id e item_index (idempotente).'
       };
     }
 
-    throw new Error('TIMEOUT_UNCONFIRMED: Nota ainda não confirmada pela prefeitura após consulta por RPS.');
+    if (ledgerEntry.status === RPS_STATUS.FAILED_SAFE) {
+      return {
+        status: 'REVISAO_MANUAL',
+        environment: 'homologation',
+        requestId,
+        itemIndex,
+        rpsNumero: ledgerEntry.rps_numero,
+        error: ledgerEntry.error,
+        message: 'Registro em FAILED_SAFE requer intervenção/revisão manual; reemissão automática proibida.'
+      };
+    }
+
+    if (ledgerEntry.status === RPS_STATUS.UNKNOWN_AFTER_TIMEOUT || ledgerEntry.status === RPS_STATUS.SUBMITTING) {
+      const recovery = await recoverViaConsultarNfsePorRps({ ledgerEntry, certData }, dependencies);
+      if (recovery.success) {
+        return recovery;
+      }
+      if (ledgerEntry.status === RPS_STATUS.SUBMITTING) {
+        ledgerEntry = await markUnknownAfterTimeout(ledgerEntry, { error: 'CRASH_WINDOW_RECOVERY_INCONCLUSIVE' }, dependencies);
+      }
+      return {
+        status: 'SAFE_RETRY_REQUIRED',
+        environment: 'homologation',
+        requestId,
+        itemIndex,
+        rpsNumero: ledgerEntry.rps_numero,
+        message: 'Envio anterior em estado ambíguo (SUBMITTING/TIMEOUT). Consulta por RPS não localizou nota emitida. Nenhuma reemissão automática executada.'
+      };
+    }
   }
 
-  // 5. Alocação Atômica e Persistência do ALLOCATED
+  // 4. Alocação Atômica do ALLOCATED
   if (!ledgerEntry) {
     if (!dryRun) {
       ledgerEntry = await allocateRpsAtomically({
@@ -196,7 +239,8 @@ async function issueHomologation({ requestId, itemIndex = 1, certData, dryRun = 
         rps_numero: '1001',
         rps_serie: 'A',
         rps_tipo: '1',
-        status: RPS_STATUS.ALLOCATED
+        status: RPS_STATUS.ALLOCATED,
+        allocated_at: new Date().toISOString()
       };
     }
   }
@@ -206,23 +250,25 @@ async function issueHomologation({ requestId, itemIndex = 1, certData, dryRun = 
   candidate.rpsTipo = ledgerEntry.rps_tipo;
   candidate.xmlId = `RPS${ledgerEntry.rps_numero}${ledgerEntry.rps_serie.replace(/[^A-Za-z0-9]/g, '')}`;
 
-  // 6. Monta XML com elementos e tags oficiais ABRASF 2.04 / Ipatinga
+  // 5. Montagem do XML com escape seguro
   const itemLista = String(candidate.codigoTribNacional || '').split('.').slice(0, 2).join('.');
-  const codMunPrestacao = candidate.codigoMunicipioPrestacao || '3128006';
-  
+  const codMunPrestacao = candidate.codigoMunicipioPrestacao;
+  const nbsTag = candidate.nbs ? `<cNBS>${escapeXml(candidate.nbs.replace(/\D/g, ''))}</cNBS>` : '';
+  const cnaeTag = candidate.codigoCnae ? `<CodigoCnae>${escapeXml(candidate.codigoCnae)}</CodigoCnae>` : '<CodigoCnae>8610701</CodigoCnae>';
+
   const unsignedXml = `<GerarNfseEnvio xmlns="http://www.abrasf.org.br/nfse.xsd">` +
     `<Rps>` +
-      `<InfDeclaracaoPrestacaoServico Id="${candidate.xmlId}">` +
+      `<InfDeclaracaoPrestacaoServico Id="${escapeXml(candidate.xmlId)}">` +
         `<Rps>` +
           `<IdentificacaoRps>` +
-            `<Numero>${candidate.rpsNumero}</Numero>` +
-            `<Serie>${candidate.rpsSerie}</Serie>` +
-            `<Tipo>${candidate.rpsTipo}</Tipo>` +
+            `<Numero>${escapeXml(candidate.rpsNumero)}</Numero>` +
+            `<Serie>${escapeXml(candidate.rpsSerie)}</Serie>` +
+            `<Tipo>${escapeXml(candidate.rpsTipo)}</Tipo>` +
           `</IdentificacaoRps>` +
-          `<DataEmissao>${candidate.dataEmissao}</DataEmissao>` +
+          `<DataEmissao>${escapeXml(candidate.dataEmissao)}</DataEmissao>` +
           `<Status>1</Status>` +
         `</Rps>` +
-        `<Competencia>${candidate.competenciaData}</Competencia>` +
+        `<Competencia>${escapeXml(candidate.competenciaData)}</Competencia>` +
         `<Servico>` +
           `<Valores>` +
             `<ValorServicos>${candidate.valor.toFixed(2)}</ValorServicos>` +
@@ -240,32 +286,33 @@ async function issueHomologation({ requestId, itemIndex = 1, certData, dryRun = 
             `<DescontoCondicionado>0</DescontoCondicionado>` +
           `</Valores>` +
           `<IssRetido>2</IssRetido>` +
-          `<ItemListaServico>${itemLista}</ItemListaServico>` +
-          `<CodigoCnae>8610701</CodigoCnae>` +
-          `<CodigoTributacaoMunicipio>${candidate.codigoTribMunicipal}</CodigoTributacaoMunicipio>` +
-          `<Discriminacao>${candidate.descricao}</Discriminacao>` +
-          `<CodigoMunicipio>${codMunPrestacao}</CodigoMunicipio>` +
+          `<ItemListaServico>${escapeXml(itemLista)}</ItemListaServico>` +
+          cnaeTag +
+          `<CodigoTributacaoMunicipio>${escapeXml(candidate.codigoTribMunicipal)}</CodigoTributacaoMunicipio>` +
+          `<Discriminacao>${escapeXml(candidate.descricao)}</Discriminacao>` +
+          `<CodigoMunicipio>${escapeXml(codMunPrestacao)}</CodigoMunicipio>` +
           `<CodigoPais>1058</CodigoPais>` +
           `<ExigibilidadeISS>1</ExigibilidadeISS>` +
-          `<MunicipioIncidencia>${codMunPrestacao}</MunicipioIncidencia>` +
+          `<MunicipioIncidencia>${escapeXml(codMunPrestacao)}</MunicipioIncidencia>` +
+          nbsTag +
         `</Servico>` +
         `<Prestador>` +
-          `<CpfCnpj><Cnpj>${CONFIG.PRESTADOR.CNPJ_DIGITS}</Cnpj></CpfCnpj>` +
-          `<InscricaoMunicipal>${CONFIG.PRESTADOR.INSCRICAO_MUNICIPAL}</InscricaoMunicipal>` +
+          `<CpfCnpj><Cnpj>${escapeXml(CONFIG.PRESTADOR.CNPJ_DIGITS)}</Cnpj></CpfCnpj>` +
+          `<InscricaoMunicipal>${escapeXml(CONFIG.PRESTADOR.INSCRICAO_MUNICIPAL)}</InscricaoMunicipal>` +
         `</Prestador>` +
         `<TomadorServico>` +
           `<IdentificacaoTomador>` +
-            `<CpfCnpj><Cnpj>${candidate.cnpjTomador}</Cnpj></CpfCnpj>` +
+            `<CpfCnpj><Cnpj>${escapeXml(candidate.cnpjTomador)}</Cnpj></CpfCnpj>` +
           `</IdentificacaoTomador>` +
-          `<RazaoSocial>${candidate.tomador}</RazaoSocial>` +
+          `<RazaoSocial>${escapeXml(candidate.tomador)}</RazaoSocial>` +
         `</TomadorServico>` +
-        `<OptanteSimplesNacional>${CONFIG.PRESTADOR.OPTANTE_SIMPLES_NACIONAL}</OptanteSimplesNacional>` +
+        `<OptanteSimplesNacional>${escapeXml(CONFIG.PRESTADOR.OPTANTE_SIMPLES_NACIONAL)}</OptanteSimplesNacional>` +
         `<IncentivoFiscal>2</IncentivoFiscal>` +
       `</InfDeclaracaoPrestacaoServico>` +
     `</Rps>` +
   `</GerarNfseEnvio>`;
 
-  // 7. Assina com XMLDSig real (W3C Canonical XML 1.0)
+  // 6. Assina com XMLDSig W3C C14N
   const signedXml = signXmlNode({
     xml: unsignedXml,
     targetId: candidate.xmlId,
@@ -273,17 +320,17 @@ async function issueHomologation({ requestId, itemIndex = 1, certData, dryRun = 
     pemCert: certData.pemCert
   });
 
-  // 8. Verificação criptográfica independente
   const sigValid = verifyXmlSignature({ signedXml, pemCert: certData.pemCert });
   if (!sigValid) {
     throw new Error('XMLDSIG_VERIFICATION_FAILED: Assinatura XML gerada é criptograficamente inválida.');
   }
 
-  // 9. Validação XSD real contra schema_2.04.xsd oficial
   const xsdValidation = await validateXmlAgainstOfficialXsd(signedXml, 'GerarNfseEnvio');
   if (!xsdValidation.valid) {
     throw new Error(`XSD_VALIDATION_FAILED: ${xsdValidation.errors.join('; ')}`);
   }
+
+  const xmlSha256 = crypto.createHash('sha256').update(signedXml).digest('hex');
 
   if (dryRun) {
     return {
@@ -294,88 +341,58 @@ async function issueHomologation({ requestId, itemIndex = 1, certData, dryRun = 
       rpsNumero: candidate.rpsNumero,
       rpsSerie: candidate.rpsSerie,
       rpsTipo: candidate.rpsTipo,
-      xmlCandidate: signedXml,
+      xmlSha256,
       xsdValidation: 'VALIDATED_OFFICIAL_XSD',
       xmlSignature: 'VALIDATED_XMLDSIG_C14N',
-      gerarNfseCalls: 0
+      gerarNfseCalls: 0,
+      externalWrites: 0
     };
   }
 
-  // 10. Persiste estado SUBMITTING antes da chamada SOAP
-  await markSubmitting(ledgerEntry, dependencies);
+  // 7. Persiste SUBMITTING antes da chamada SOAP
+  ledgerEntry = await markSubmitting(ledgerEntry, dependencies);
 
-  // 11. Chamada SOAP GerarNfse
-  const cabecalho = buildCabecalho();
+  // 8. Chamada SOAP GerarNfse
+  const soapCall = dependencies.callSoapOperation || callSoapOperation;
   let responseXml = null;
   let timeoutOccurred = false;
 
   try {
-    const soapRes = await executeSoapRequest({
-      endpointUrl: CONFIG.ENDPOINTS.homologation.url,
-      soapAction: 'nfs#GerarNfse',
+    const soapRes = await soapCall({
+      environment: 'homologation',
       operation: 'GerarNfse',
-      cabecalhoXml: cabecalho,
       dadosXml: signedXml,
       certData
     });
-    responseXml = soapRes.rawXml;
+    responseXml = soapRes.outputXml;
   } catch (err) {
     if (String(err.message).includes('TIMEOUT') || String(err.message).includes('ECONNRESET')) {
       timeoutOccurred = true;
     } else {
-      await markFailedSafe(ledgerEntry, { error: err.message }, dependencies);
+      ledgerEntry = await markFailedSafe(ledgerEntry, { error: err.message }, dependencies);
       throw err;
     }
   }
 
-  // 12. Tratamento de timeout / resposta ambígua
+  // 9. Tratamento de Timeout
   if (timeoutOccurred || !responseXml) {
-    await markUnknownAfterTimeout(ledgerEntry, { error: 'TIMEOUT_ON_GERARNFSE' }, dependencies);
-
-    // Tenta recuperação imediata via ConsultarNfsePorRps
-    const consultarRpsXml = buildConsultarNfsePorRpsEnvio({
-      rpsNumero: candidate.rpsNumero,
-      rpsSerie: candidate.rpsSerie,
-      rpsTipo: candidate.rpsTipo
-    });
-
-    const queryRes = await executeSoapRequest({
-      endpointUrl: CONFIG.ENDPOINTS.homologation.url,
-      soapAction: 'nfs#ConsultarNfsePorRps',
-      operation: 'ConsultarNfsePorRps',
-      cabecalhoXml: cabecalho,
-      dadosXml: consultarRpsXml,
-      certData
-    });
-
-    const parsedQuery = parseConsultarNfseResposta(queryRes.rawXml);
-    if (parsedQuery.notas && parsedQuery.notas.length > 0) {
-      const nota = parsedQuery.notas[0];
-      await markIssued(ledgerEntry, { nfseNumero: nota.numero, nfseChave: nota.codigoVerificacao }, dependencies);
-      return {
-        status: 'ISSUED',
-        environment: 'homologation',
-        requestId,
-        itemIndex,
-        rpsNumero: candidate.rpsNumero,
-        nfseNumero: nota.numero,
-        nfseChave: nota.codigoVerificacao,
-        recoveredViaRpsQuery: true
-      };
+    ledgerEntry = await markUnknownAfterTimeout(ledgerEntry, { error: 'TIMEOUT_ON_GERARNFSE' }, dependencies);
+    const recovery = await recoverViaConsultarNfsePorRps({ ledgerEntry, certData }, dependencies);
+    if (recovery.success) {
+      return recovery;
     }
-
     throw new Error('TIMEOUT_UNCONFIRMED: Emissão em homologação ficou inconclusiva após timeout e consulta por RPS.');
   }
 
-  // 13. Parse oficial da resposta GerarNfseResposta
+  // 10. Parse da Resposta Oficial
   const parsedGerar = parseGerarNfseResposta(responseXml);
   if (!parsedGerar.hasNfse) {
     const errorMsg = parsedGerar.mensagens.map(m => `[${m.codigo}] ${m.mensagem}`).join('; ') || 'SEM_DADOS_NFSE';
-    await markFailedSafe(ledgerEntry, { error: errorMsg }, dependencies);
+    ledgerEntry = await markFailedSafe(ledgerEntry, { error: errorMsg }, dependencies);
     throw new Error(`GERAR_NFSE_REJECTED: ${errorMsg}`);
   }
 
-  await markIssued(ledgerEntry, { nfseNumero: parsedGerar.numero, nfseChave: parsedGerar.codigoVerificacao }, dependencies);
+  ledgerEntry = await markIssued(ledgerEntry, { nfseNumero: parsedGerar.numero, nfseChave: parsedGerar.codigoVerificacao }, dependencies);
 
   return {
     status: 'ISSUED',
@@ -393,7 +410,9 @@ async function issueHomologation({ requestId, itemIndex = 1, certData, dryRun = 
 }
 
 module.exports = {
+  escapeXml,
   buildConsultarNfsePorRpsEnvio,
   parseGerarNfseResposta,
+  recoverViaConsultarNfsePorRps,
   issueHomologation
 };

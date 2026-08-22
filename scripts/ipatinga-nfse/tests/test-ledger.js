@@ -9,6 +9,7 @@ const {
   markSubmitting,
   markIssued,
   markUnknownAfterTimeout,
+  markFailedSafe,
   RPS_STATUS
 } = require('../ledger');
 
@@ -25,7 +26,7 @@ const mockDependencies = {
     mockStorage.push(...rows);
   },
   updateSheetValues: async (_id, range, rows) => {
-    const match = range.match(/!A(d+):Md+/);
+    const match = range.match(/!A(\d+):M\d+/);
     if (match) {
       const idx = parseInt(match[1], 10) - 1;
       mockStorage[idx] = rows[0];
@@ -34,8 +35,8 @@ const mockDependencies = {
 };
 
 async function run() {
-  // 1. Alocação persistente
-  const alloc = await allocateRpsAtomically({
+  // 1. Alocação persistente no mockStorage
+  let alloc = await allocateRpsAtomically({
     environment: 'homologation',
     requestId: 'req-test-2',
     itemIndex: 1
@@ -44,26 +45,39 @@ async function run() {
   assert.strictEqual(alloc.rps_numero, '1002');
   assert.strictEqual(alloc.status, RPS_STATUS.ALLOCATED);
   assert.strictEqual(mockStorage.length, 3);
+  assert.strictEqual(mockStorage[2][3], '1002');
+  assert.strictEqual(mockStorage[2][6], RPS_STATUS.ALLOCATED);
 
-  // 2. Transição ALLOCATED -> SUBMITTING
-  const submitting = await markSubmitting(alloc, mockDependencies);
-  assert.strictEqual(submitting.status, RPS_STATUS.SUBMITTING);
-  assert.ok(submitting.submitted_at);
+  // 2. Transição ALLOCATED -> SUBMITTING (reatribuição de estado)
+  alloc = await markSubmitting(alloc, mockDependencies);
+  assert.strictEqual(alloc.status, RPS_STATUS.SUBMITTING);
+  assert.ok(alloc.submitted_at, 'submitted_at deve estar preenchido');
+  assert.strictEqual(mockStorage[2][6], RPS_STATUS.SUBMITTING);
+  assert.strictEqual(mockStorage[2][8], alloc.submitted_at);
 
-  // 3. Transição SUBMITTING -> ISSUED
-  const issued = await markIssued(submitting, { nfseNumero: '90002', nfseChave: 'CHAVE90002' }, mockDependencies);
-  assert.strictEqual(issued.status, RPS_STATUS.ISSUED);
-  assert.strictEqual(issued.nfse_numero, '90002');
+  // 3. Transição SUBMITTING -> ISSUED (preservando submitted_at na linha final do mockStorage)
+  const submittedAtSaved = alloc.submitted_at;
+  alloc = await markIssued(alloc, { nfseNumero: '90002', nfseChave: 'CHAVE90002' }, mockDependencies);
+  assert.strictEqual(alloc.status, RPS_STATUS.ISSUED);
+  assert.strictEqual(alloc.nfse_numero, '90002');
+  assert.strictEqual(mockStorage[2][6], RPS_STATUS.ISSUED);
+  assert.strictEqual(mockStorage[2][8], submittedAtSaved, 'submitted_at DEVE ser preservado na linha persistida final');
+  assert.strictEqual(mockStorage[2][9], '90002');
 
   // 4. Teste Timeout Transition
-  const allocTimeout = await allocateRpsAtomically({
+  let allocTimeout = await allocateRpsAtomically({
     environment: 'homologation',
     requestId: 'req-timeout',
     itemIndex: 1
   }, mockDependencies);
 
-  const timeoutEntry = await markUnknownAfterTimeout(allocTimeout, { error: 'ECONNRESET' }, mockDependencies);
-  assert.strictEqual(timeoutEntry.status, RPS_STATUS.UNKNOWN_AFTER_TIMEOUT);
+  allocTimeout = await markSubmitting(allocTimeout, mockDependencies);
+  const timeoutSubmittedAt = allocTimeout.submitted_at;
+
+  allocTimeout = await markUnknownAfterTimeout(allocTimeout, { error: 'ECONNRESET' }, mockDependencies);
+  assert.strictEqual(allocTimeout.status, RPS_STATUS.UNKNOWN_AFTER_TIMEOUT);
+  assert.strictEqual(mockStorage[3][6], RPS_STATUS.UNKNOWN_AFTER_TIMEOUT);
+  assert.strictEqual(mockStorage[3][8], timeoutSubmittedAt, 'submitted_at preservado pós timeout');
 
   console.log('✓ test-ledger.js PASSED');
 }

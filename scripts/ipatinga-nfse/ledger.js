@@ -1,7 +1,7 @@
 'use strict';
 
 const { CONFIG } = require('./config');
-const { readSheetValues, appendSheetValues, updateSheetValues } = require('./google');
+const { readSheetValues, appendSheetValues, updateSheetValues, createSheetIfNotExists } = require('./google');
 
 const RPS_STATUS = Object.freeze({
   ALLOCATED: 'ALLOCATED',
@@ -27,22 +27,23 @@ const LEDGER_HEADERS = [
   'error'
 ];
 
-/**
- * Garante que a aba RPS exista e possua o cabeçalho
- */
 async function ensureLedgerSheet(dependencies = {}) {
+  const createSheet = dependencies.createSheetIfNotExists || createSheetIfNotExists;
   const read = dependencies.readSheetValues || readSheetValues;
   const update = dependencies.updateSheetValues || updateSheetValues;
   const spreadsheetId = dependencies.spreadsheetId || CONFIG.SHEETS.SPREADSHEET_ID;
   const tabName = CONFIG.SHEETS.TABS.RPS || 'RPS';
 
   try {
+    if (createSheet) {
+      await createSheet(spreadsheetId, tabName);
+    }
     const raw = await read(spreadsheetId, `${tabName}!A1:M1`);
     if (!raw || raw.length === 0 || !raw[0] || raw[0].length === 0) {
       await update(spreadsheetId, `${tabName}!A1:M1`, [LEDGER_HEADERS]);
     }
   } catch (err) {
-    if (String(err.message).includes('Unable to parse range')) {
+    if (String(err.message).includes('Unable to parse range') || String(err.message).includes('not found')) {
       await update(spreadsheetId, `${tabName}!A1:M1`, [LEDGER_HEADERS]);
     } else {
       throw err;
@@ -50,9 +51,6 @@ async function ensureLedgerSheet(dependencies = {}) {
   }
 }
 
-/**
- * Lê todas as entradas da aba RPS do Ledger
- */
 async function loadLedger(dependencies = {}) {
   const read = dependencies.readSheetValues || readSheetValues;
   const spreadsheetId = dependencies.spreadsheetId || CONFIG.SHEETS.SPREADSHEET_ID;
@@ -62,7 +60,7 @@ async function loadLedger(dependencies = {}) {
   try {
     raw = await read(spreadsheetId, `${tabName}!A:M`);
   } catch (err) {
-    if (String(err.message).includes('Unable to parse range')) {
+    if (String(err.message).includes('Unable to parse range') || String(err.message).includes('not found')) {
       return [];
     }
     throw err;
@@ -80,9 +78,6 @@ async function loadLedger(dependencies = {}) {
   });
 }
 
-/**
- * Encontra entrada no Ledger pela chave lógica (environment + request_id + item_index)
- */
 function findLedgerEntry(ledgerEntries, { environment, requestId, itemIndex }) {
   const normEnv = String(environment || '').trim().toLowerCase();
   const normReq = String(requestId || '').trim();
@@ -95,9 +90,6 @@ function findLedgerEntry(ledgerEntries, { environment, requestId, itemIndex }) {
   ) || null;
 }
 
-/**
- * Aloca o próximo número de RPS para o ambiente
- */
 function allocateNextRpsNumber(ledgerEntries, environment, series = 'A', type = '1') {
   const normEnv = String(environment || '').trim().toLowerCase();
   const envEntries = ledgerEntries.filter(e => e.environment?.toLowerCase() === normEnv);
@@ -122,9 +114,6 @@ function allocateNextRpsNumber(ledgerEntries, environment, series = 'A', type = 
   };
 }
 
-/**
- * Persiste novo registro ALLOCATED no Ledger
- */
 async function allocateRpsAtomically({ environment, requestId, itemIndex = 1, series = 'A', type = '1' }, dependencies = {}) {
   const append = dependencies.appendSheetValues || appendSheetValues;
   const spreadsheetId = dependencies.spreadsheetId || CONFIG.SHEETS.SPREADSHEET_ID;
@@ -175,9 +164,6 @@ async function allocateRpsAtomically({ environment, requestId, itemIndex = 1, se
   };
 }
 
-/**
- * Atualiza status e campos de uma entrada existente no Ledger
- */
 async function updateLedgerEntry(entry, updates, dependencies = {}) {
   const update = dependencies.updateSheetValues || updateSheetValues;
   const spreadsheetId = dependencies.spreadsheetId || CONFIG.SHEETS.SPREADSHEET_ID;

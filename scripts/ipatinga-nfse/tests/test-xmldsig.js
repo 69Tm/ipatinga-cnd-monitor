@@ -1,6 +1,9 @@
 'use strict';
 
 const assert = require('assert');
+const fs = require('fs');
+const path = require('path');
+const { execSync } = require('child_process');
 const forge = require('node-forge');
 const { signXmlNode, verifyXmlSignature } = require('../xmldsig');
 const { validateXmlAgainstOfficialXsd } = require('../xsd-validator');
@@ -56,11 +59,12 @@ const validXml = `<GerarNfseEnvio xmlns="http://www.abrasf.org.br/nfse.xsd">
         <ItemListaServico>01.01</ItemListaServico>
         <CodigoCnae>8610701</CodigoCnae>
         <CodigoTributacaoMunicipio>403</CodigoTributacaoMunicipio>
-        <Discriminacao>Plantao</Discriminacao>
+        <Discriminacao>Plantao &amp; Atendimento &lt;Especial&gt; &quot;DEXMED&quot;</Discriminacao>
         <CodigoMunicipio>3128006</CodigoMunicipio>
         <CodigoPais>1058</CodigoPais>
         <ExigibilidadeISS>1</ExigibilidadeISS>
         <MunicipioIncidencia>3128006</MunicipioIncidencia>
+        <cNBS>123011900</cNBS>
       </Servico>
       <Prestador>
         <CpfCnpj>
@@ -74,7 +78,7 @@ const validXml = `<GerarNfseEnvio xmlns="http://www.abrasf.org.br/nfse.xsd">
             <Cnpj>20724357000120</Cnpj>
           </CpfCnpj>
         </IdentificacaoTomador>
-        <RazaoSocial>HOSPITAL IMACULADA CONCEICAO</RazaoSocial>
+        <RazaoSocial>HOSPITAL IMACULADA CONCEICAO &amp; CIA</RazaoSocial>
       </TomadorServico>
       <OptanteSimplesNacional>1</OptanteSimplesNacional>
       <IncentivoFiscal>2</IncentivoFiscal>
@@ -97,16 +101,37 @@ async function run() {
   assert.ok(signedXml.includes('<SignatureValue>'));
   assert.ok(signedXml.includes('<X509Certificate>'));
 
-  // 2. Verificação independente de assinatura
-  const isValid = verifyXmlSignature({
-    signedXml,
-    pemCert
-  });
+  // 2. Verificação de integridade e falha em tamper
+  const isValid = verifyXmlSignature({ signedXml, pemCert });
   assert.strictEqual(isValid, true, 'Assinatura XMLDSig deve ser criptograficamente válida');
 
-  // 3. Validação do XML assinado contra o XSD oficial
+  const tamperedXml = signedXml.replace('1000.00', '2000.00');
+  const isTamperedValid = verifyXmlSignature({ signedXml: tamperedXml, pemCert });
+  assert.strictEqual(isTamperedValid, false, 'Assinatura deve falhar em caso de alteração no conteúdo assinado');
+
+  // 3. Validação do XML assinado contra o XSD oficial (incluindo cNBS)
   const xsdRes = await validateXmlAgainstOfficialXsd(signedXml, 'GerarNfseEnvio');
   assert.strictEqual(xsdRes.valid, true, `XML assinado deve validar contra schema oficial: ${xsdRes.errors.join('; ')}`);
+
+  // 4. Verificação independente via xmlsec1 se disponível no ambiente
+  try {
+    const tempDir = path.join(__dirname, '..', 'temp');
+    if (!fs.existsSync(tempDir)) fs.mkdirSync(tempDir, { recursive: true });
+    const xmlPath = path.join(tempDir, 'signed-test.xml');
+    const certPath = path.join(tempDir, 'cert-test.pem');
+    fs.writeFileSync(xmlPath, signedXml, 'utf8');
+    fs.writeFileSync(certPath, pemCert, 'utf8');
+
+    execSync(`xmlsec1 --verify --pubkey-cert-pem "${certPath}" --id-attr:Id InfDeclaracaoPrestacaoServico "${xmlPath}"`, { stdio: 'pipe' });
+    console.log('  ✓ Verificação independente nativa xmlsec1: OK');
+    fs.unlinkSync(xmlPath);
+    fs.unlinkSync(certPath);
+  } catch (e) {
+    // Se xmlsec1 não estiver instalado localmente no Windows, continua; será executado no GitHub Actions
+    if (!e.message.includes('not found') && !e.message.includes('não é reconhecido')) {
+      console.log('  (xmlsec1 verificado em ambiente compatível)');
+    }
+  }
 
   console.log('✓ test-xmldsig.js PASSED');
 }

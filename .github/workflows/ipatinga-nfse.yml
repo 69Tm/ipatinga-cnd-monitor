@@ -41,9 +41,14 @@ on:
         default: ''
         type: string
       request_id:
-        description: 'ID da demanda para operação prepare'
+        description: 'ID da demanda para operação prepare ou issue'
         required: false
         default: ''
+        type: string
+      item_index:
+        description: 'Índice do item da demanda (1, 2, ...)'
+        required: false
+        default: '1'
         type: string
       dry_run:
         description: 'Modo simulação sem escrita no Google Sheets'
@@ -70,6 +75,9 @@ jobs:
         with:
           node-version: 22
 
+      - name: Instalar Utilitário Independente XMLSec1
+        run: sudo apt-get update && sudo apt-get install -y xmlsec1
+
       - name: Trava de Segurança — Emissão em Produção Proibida
         if: ${{ inputs.operation == 'issue' && inputs.environment == 'production' }}
         run: |
@@ -93,6 +101,7 @@ jobs:
           INPUT_FROM_NUMBER: ${{ inputs.from_number }}
           INPUT_TO_NUMBER: ${{ inputs.to_number }}
           INPUT_REQUEST_ID: ${{ inputs.request_id }}
+          INPUT_ITEM_INDEX: ${{ inputs.item_index }}
           INPUT_DRY_RUN: ${{ inputs.dry_run }}
           GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
           DRIVE_FOLDER_ID: ${{ secrets.DRIVE_FOLDER_ID }}
