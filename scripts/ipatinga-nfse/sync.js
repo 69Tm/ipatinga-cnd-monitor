@@ -132,11 +132,14 @@ async function syncNfse(options = {}, dependencies = {}) {
         certData
       });
       const parsed = parseResponse(soapResult.outputXml);
-      if (!parsed || parsed.success !== true || !Array.isArray(parsed.notas) || !Array.isArray(parsed.mensagens)) {
+      if (!parsed || !Array.isArray(parsed.notas) || !Array.isArray(parsed.mensagens)) {
         throw new Error('UNEXPECTED_ABRASF_RESPONSE: resposta sem estrutura reconhecida.');
       }
       if (hasBusinessError(parsed)) {
         throw new Error(`ABRASF_BUSINESS_ERROR: ${JSON.stringify(sanitize(parsed.mensagens))}`);
+      }
+      if (parsed.success !== true) {
+        throw new Error('UNEXPECTED_ABRASF_RESPONSE: resposta ABRASF sem sucesso e sem mensagem reconhecida.');
       }
 
       for (const note of parsed.notas) {

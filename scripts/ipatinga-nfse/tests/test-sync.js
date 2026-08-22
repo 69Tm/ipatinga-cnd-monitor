@@ -131,11 +131,33 @@ async function testDynamicFullWithNoResults() {
   assert.strictEqual(summary.terminationReason, 'EMPTY_RANGES_AFTER_HIGHEST_3');
 }
 
+async function testBusinessErrorClassification() {
+  let upsertCalls = 0;
+  await assert.rejects(
+    syncNfse(
+      { mode: 'full', toNumber: 50, certData: validCert },
+      {
+        loadExistingNotas: emptyExisting,
+        callSoapOperation: async () => ({ statusCode: 200, outputXml: '<ok/>' }),
+        parseConsultarNfseResposta: () => ({
+          success: false,
+          notas: [],
+          mensagens: [{ codigo: 'E999', mensagem: 'Erro de negocio' }]
+        }),
+        upsertNotas: async () => { upsertCalls++; }
+      }
+    ),
+    /ABRASF_BUSINESS_ERROR.*E999/
+  );
+  assert.strictEqual(upsertCalls, 0);
+}
+
 async function run() {
   await testSyncCollection();
   await testEmptyAndDuplicates();
   await testDynamicFullTerminationAcrossGap();
   await testDynamicFullWithNoResults();
+  await testBusinessErrorClassification();
   await assertFailureWithoutUpsert(2, 3);
   await assertFailureWithoutUpsert(3, 3);
   await assert.rejects(syncNfse({ certData: { loaded: true, isValid: false } }), /CERTIFICATE_NOT_READY/);
