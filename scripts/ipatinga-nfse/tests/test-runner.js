@@ -11,6 +11,7 @@ async function run() {
     await require('./test-xsd');
     await require('./test-xmldsig');
     await require('./test-ledger');
+    await require('./test-migrations');
     await require('./test-sync');
     await require('./test-sheets');
     await require('./test-soap');

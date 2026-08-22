@@ -6,7 +6,7 @@ const {
   buildConsultarNfsePorRpsEnvio,
   parseGerarNfseResposta,
   reconcileRps,
-  issueHomologation
+  issueNfse
 } = require('../issue');
 const { RPS_STATUS, RECONCILIATION_STATUS } = require('../ledger');
 
@@ -83,8 +83,8 @@ async function run() {
   assert.strictEqual(parsed.numero, '95001');
   assert.strictEqual(parsed.codigoVerificacao, 'ABC123XYZ');
 
-  // 3. Testa issueHomologation em DRY-RUN
-  const dryResult = await issueHomologation({
+  // 3. Testa issueNfse em DRY-RUN
+  const dryResult = await issueNfse({
     requestId: 'req-test-homolog',
     itemIndex: 1,
     certData,
@@ -126,7 +126,7 @@ async function run() {
   assert.strictEqual(mockRpsStorage[1][9], '95003');
 
   // 5. Testa idempotência com status ISSUED já no Ledger
-  const idempotentResult = await issueHomologation({
+  const idempotentResult = await issueNfse({
     requestId: 'req-reconcile-test',
     itemIndex: 1,
     certData,
@@ -148,7 +148,7 @@ async function run() {
     ['homologation', 'req-test-homolog', '1', '1001', 'A', '1', 'REJECTED_CORRECTABLE', '2026-08-22T10:00:00Z', '2026-08-22T10:00:01Z', '', '', '2026-08-22T10:00:05Z', '1', '2026-08-22T10:00:01Z', 'EL78', 'Tag endereco ausente', 'EL78']
   ];
 
-  const retryResult = await issueHomologation({
+  const retryResult = await issueNfse({
     requestId: 'req-test-homolog',
     itemIndex: 1,
     certData,

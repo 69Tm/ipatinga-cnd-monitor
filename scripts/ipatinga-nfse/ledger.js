@@ -43,6 +43,80 @@ const LEDGER_HEADERS = [
   'error'
 ];
 
+function transformLegacyLedgerRow(row) {
+  // Schema Legado (13 colunas: A:M):
+  // 0: env, 1: req_id, 2: item_index, 3: rps_num, 4: rps_ser, 5: rps_tip,
+  // 6: status, 7: alloc_at, 8: subm_at, 9: nfse_num, 10: nfse_key, 11: last_query_at, 12: error
+  if (!row || row.length === 0) return [];
+  
+  // Se a linha tem 13 colunas ou menos, a coluna 12 (M) é o erro legado
+  if (row.length <= 13) {
+    const legacyError = row[12] ? String(row[12]).trim() : '';
+    const isSubmitted = Boolean(row[8]);
+    const attemptCount = isSubmitted ? '1' : '0';
+    const lastAttemptAt = row[8] ? String(row[8]).trim() : '';
+
+    return [
+      row[0] || '',
+      row[1] || '',
+      row[2] || '1',
+      row[3] || '',
+      row[4] || 'A',
+      row[5] || '1',
+      row[6] || RPS_STATUS.ALLOCATED,
+      row[7] || '',
+      row[8] || '',
+      row[9] || '',
+      row[10] || '',
+      row[11] || '',
+      attemptCount,       // M: attempt_count
+      lastAttemptAt,      // N: last_attempt_at
+      '',                 // O: provider_error_codes
+      legacyError ? legacyError.slice(0, 500) : '', // P: provider_message
+      legacyError         // Q: error
+    ];
+  }
+
+  // Se a linha já tem mais de 13 colunas, verificar se a coluna M (attempt_count) contém texto não-numérico acidental
+  const mVal = String(row[12] || '').trim();
+  const isMValNumeric = mVal === '' || !isNaN(Number(mVal));
+  
+  if (!isMValNumeric) {
+    // Houve corrupção por shift anterior: M continha o antigo error
+    const legacyError = mVal;
+    const isSubmitted = Boolean(row[8]);
+    const attemptCount = isSubmitted ? '1' : '0';
+    const lastAttemptAt = row[8] ? String(row[8]).trim() : '';
+
+    return [
+      row[0] || '',
+      row[1] || '',
+      row[2] || '1',
+      row[3] || '',
+      row[4] || 'A',
+      row[5] || '1',
+      row[6] || RPS_STATUS.ALLOCATED,
+      row[7] || '',
+      row[8] || '',
+      row[9] || '',
+      row[10] || '',
+      row[11] || '',
+      attemptCount,
+      lastAttemptAt,
+      row[14] || '',
+      row[15] || (legacyError ? legacyError.slice(0, 500) : ''),
+      row[16] || legacyError
+    ];
+  }
+
+  // Preenche até 17 colunas mantendo os valores originais
+  const expanded = [...row];
+  while (expanded.length < LEDGER_HEADERS.length) {
+    expanded.push('');
+  }
+  return expanded;
+}
+
 async function ensureLedgerSheet(dependencies = {}) {
   const createSheet = dependencies.createSheetIfNotExists || (dependencies.readSheetValues ? null : createSheetIfNotExists);
   const read = dependencies.readSheetValues || readSheetValues;
@@ -54,12 +128,27 @@ async function ensureLedgerSheet(dependencies = {}) {
     if (createSheet) {
       await createSheet(spreadsheetId, tabName);
     }
-    const raw = await read(spreadsheetId, `${tabName}!A1:Q1`);
+    const raw = await read(spreadsheetId, `${tabName}!A:Q`);
     if (!raw || raw.length === 0 || !raw[0] || raw[0].length === 0) {
       if (update) await update(spreadsheetId, `${tabName}!A1:Q1`, [LEDGER_HEADERS]);
-    } else if (raw[0].length < LEDGER_HEADERS.length) {
-      // Migração de cabeçalho
-      if (update) await update(spreadsheetId, `${tabName}!A1:Q1`, [LEDGER_HEADERS]);
+      return;
+    }
+
+    // Migração de schema estruturada v1 -> v2 se necessário
+    const isHeaderOld = raw[0].length < LEDGER_HEADERS.length || raw[0][12]?.toLowerCase() === 'error';
+    const hasCorruptedRows = raw.slice(1).some(r => {
+      const m = String(r[12] || '').trim();
+      return m !== '' && isNaN(Number(m));
+    });
+
+    if (isHeaderOld || hasCorruptedRows) {
+      const migratedRows = [LEDGER_HEADERS];
+      for (let i = 1; i < raw.length; i++) {
+        migratedRows.push(transformLegacyLedgerRow(raw[i]));
+      }
+      if (update) {
+        await update(spreadsheetId, `${tabName}!A1:Q${migratedRows.length}`, migratedRows);
+      }
     }
   } catch (err) {
     if (String(err.message).includes('Unable to parse range') || String(err.message).includes('not found')) {
@@ -93,8 +182,15 @@ async function loadLedger(dependencies = {}) {
     headers.forEach((h, i) => {
       entry[h] = row[i] !== undefined ? String(row[i]).trim() : '';
     });
-    // Defaults para colunas novas caso a linha venha do esquema legado
-    entry.attempt_count = entry.attempt_count ? Number(entry.attempt_count) : (entry.submitted_at ? 1 : 0);
+    
+    // Sanitização de attempt_count caso contenha string legada
+    const rawAttempts = entry.attempt_count;
+    if (rawAttempts !== '' && isNaN(Number(rawAttempts))) {
+      entry.error = entry.error || rawAttempts;
+      entry.attempt_count = entry.submitted_at ? 1 : 0;
+    } else {
+      entry.attempt_count = rawAttempts !== '' ? Number(rawAttempts) : (entry.submitted_at ? 1 : 0);
+    }
     return entry;
   });
 }
@@ -296,6 +392,7 @@ module.exports = {
   RECONCILIATION_STATUS,
   MAX_ATTEMPTS,
   LEDGER_HEADERS,
+  transformLegacyLedgerRow,
   ensureLedgerSheet,
   loadLedger,
   findLedgerEntry,

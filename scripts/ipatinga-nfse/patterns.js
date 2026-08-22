@@ -74,14 +74,14 @@ const KNOWN_PATTERNS = [
     template: 'ESPELHO DO MÊS É FONTE DE VERDADE (Ex: {HORAS} HORAS DE PLANTÃO MÉDICO PRESENCIAL CISURG MP {TIPO_DIA} VALOR R$ {VALOR} REALIZADO POR DR. TULIO ATHELIO CRM 76034 REFERENTE {MES_EXTENSO} {ANO} CREDENCIMENTO MEDICO)',
     codigoTribNacional: '04.03.01',
     codigoTribMunicipal: '403',
-    localPrestacao: 'Itabira/MG',
-    codigoIbgePrestacao: '3131703',
+    localPrestacao: 'Guanhães/MG',
+    codigoIbgePrestacao: '3128006',
     codigoMunicipioIncidenciaIss: '3131307', // Regra: ISS devido no município prestador (Ipatinga/MG)
     issRetido: false,
     exigibilidadeIss: '1',
     nbs: '123011900',
-    camposFixos: 'Tomador, CNPJ, Código Nacional (04.03.01), Código Municipal (403), Local Prestação (Itabira/MG), Cód Incidência ISS (3131307), NBS (123011900)',
-    camposVariaveis: 'Horas, Tipo de dia (úteis/fim de semana), Valor, Competência (Mês/Ano), Descrição do Espelho',
+    camposFixos: 'Tomador, CNPJ, Código Nacional (04.03.01), Código Municipal (403), NBS (123011900)',
+    camposVariaveis: 'Horas, Tipo de dia (úteis/fim de semana), Valor, Competência (Mês/Ano), Descrição do Espelho, Local da Prestação (se explícito no espelho)',
     camposNaoHardcodar: 'Descrição (extraída diretamente do espelho do mês), Local da prestação, Alíquota ISS, Valor',
     confianca: 'MÉDIA',
     statusHomologacao: 'VALIDADO_COM_UM_EXEMPLO',
@@ -95,32 +95,44 @@ const KNOWN_PATTERNS = [
 
 const TOMADORES_DEFAULTS = {
   '20724357000120': {
-    nomeCurto: 'HIC',
+    nomeCurto: 'HIC Guanhães',
     razaoSocial: 'ASSOCIACAO DE CARIDADE NOSSA SENHORA DO CARMO',
     logradouro: 'CAPITAO BERNARDO',
     numero: '257',
     complemento: '',
     bairro: 'CENTRO',
     codigoMunicipio: '3128006',
-    municipio: 'GUANHAES',
+    municipio: 'Guanhães',
     uf: 'MG',
     cep: '39740000',
+    email: 'financeiro@hicguanhaes.com.br',
+    categorias: 'HIC — Plantões Médicos PS SUS, HIC — Produção PS SUS',
+    statusHomologacao: 'HOMOLOGADO',
     fonteEndereco: 'NFS-e histórica DEXMED',
-    validadoEm: '2026-08-22'
+    validadoEm: '2026-08-22',
+    primeiroUso: '01/2026',
+    ultimoUso: '08/2026',
+    qtdNfse: 11
   },
   '50098089000149': {
-    nomeCurto: 'CISURG',
-    razaoSocial: 'CONSORCIO INTERMUNICIPAL DE SAUDE DA REGIAO DO MEDIO PIRACICABA - CISURG',
+    nomeCurto: 'CISURG Médio Piracicaba',
+    razaoSocial: 'CONSORCIO PUBLICO INTERMUNICIPAL DE SAUDE PARA GERENCIAMENTO DOS SERVICOS DE URGENCIA E EMERGENCIA DA REGIAO DO MEDIO PIRACICABA',
     logradouro: 'RUA SAO PAULO',
     numero: '377',
     complemento: '',
     bairro: 'AMAZONAS',
     codigoMunicipio: '3131703',
-    municipio: 'ITABIRA',
+    municipio: 'Itabira',
     uf: 'MG',
     cep: '35900352',
+    email: 'samu192cisurg@gmail.com',
+    categorias: 'CISURG — Plantão médico presencial',
+    statusHomologacao: 'HOMOLOGADO',
     fonteEndereco: 'Portal Oficial CISURG',
-    validadoEm: '2026-08-22'
+    validadoEm: '2026-08-22',
+    primeiroUso: '06/2026',
+    ultimoUso: '08/2026',
+    qtdNfse: 4
   }
 };
 
@@ -197,26 +209,30 @@ function buildTomadoresRows(notasRows, existingRows) {
     const ordered = item.competencias.filter(Boolean).sort((a, b) => competenceOrder(a) - competenceOrder(b));
     const pattern = KNOWN_PATTERNS.find(candidate => candidate.cnpjTomadorClean === key);
 
+    // Se o prior já tem o formato novo completo (19 colunas) e válido, preserva valores existentes não vazios
+    const isNewSchemaPrior = prior.length >= 19;
+    const emailPreserved = isNewSchemaPrior ? (prior[11] || def.email || '') : (prior[4] || def.email || '');
+
     rows.push([
       pattern?.cnpjTomador || formatCnpj(key),
-      item.razao || pattern?.tomador || def.razaoSocial || prior[1] || '',
-      prior[2] || def.nomeCurto || '',
-      prior[3] || def.logradouro || '',
-      prior[4] || def.numero || '',
-      prior[5] || def.complemento || '',
-      prior[6] || def.bairro || '',
-      prior[7] || def.codigoMunicipio || '',
-      prior[8] || def.municipio || '',
-      prior[9] || def.uf || '',
-      prior[10] || def.cep || '',
-      prior[11] || '', // E-mail
-      [...item.categorias].sort().join(', '),
-      prior[13] || 'EVIDENCIA_HISTORICA_VALIDADA',
-      prior[14] || def.fonteEndereco || 'NFS-e histórica',
-      prior[15] || def.validadoEm || '2026-08-22',
-      ordered[0] || prior[16] || '',
-      ordered.at(-1) || prior[17] || '',
-      item.total
+      def.razaoSocial || item.razao || pattern?.tomador || prior[1] || '',
+      def.nomeCurto || prior[2] || '',
+      def.logradouro || (isNewSchemaPrior ? prior[3] : ''),
+      def.numero || (isNewSchemaPrior ? prior[4] : ''),
+      def.complemento || (isNewSchemaPrior ? prior[5] : ''),
+      def.bairro || (isNewSchemaPrior ? prior[6] : ''),
+      def.codigoMunicipio || (isNewSchemaPrior ? prior[7] : ''),
+      def.municipio || (isNewSchemaPrior ? prior[8] : ''),
+      def.uf || (isNewSchemaPrior ? prior[9] : ''),
+      def.cep || (isNewSchemaPrior ? prior[10] : ''),
+      emailPreserved,
+      def.categorias || [...item.categorias].sort().join(', '),
+      def.statusHomologacao || (isNewSchemaPrior ? prior[13] : 'HOMOLOGADO'),
+      def.fonteEndereco || (isNewSchemaPrior ? prior[14] : 'NFS-e histórica'),
+      def.validadoEm || (isNewSchemaPrior ? prior[15] : '2026-08-22'),
+      def.primeiroUso || ordered[0] || (isNewSchemaPrior ? prior[16] : ''),
+      def.ultimoUso || ordered.at(-1) || (isNewSchemaPrior ? prior[17] : ''),
+      def.qtdNfse !== undefined ? def.qtdNfse : (item.total || (isNewSchemaPrior ? Number(prior[18]) : 0))
     ]);
   }
   return rows;
@@ -236,7 +252,9 @@ function buildPadroesRows() {
       p.patternId, p.nome, p.tomador, p.cnpjTomador, p.categoria, p.template,
       p.codigoTribNacional, p.codigoTribMunicipal, p.localPrestacao, p.codigoIbgePrestacao, p.codigoMunicipioIncidenciaIss,
       p.issRetido ? '1' : '2', p.exigibilidadeIss, p.nbs,
-      p.camposFixos, p.camposVariaveis, p.camposNaoHardcodar, p.quantidadeExemplos,
+      p.camposFixos, p.camposVariaveis, p.camposNaoHardcodar,
+      // Força número inteiro explícito / formato texto para evitar interpretação de data no Sheets
+      String(p.quantidadeExemplos),
       p.numerosNfseExemplo.join(', '), p.driveFileIdsExemplo.join(', '),
       p.primeiraCompetencia, p.ultimaCompetencia, p.confianca, p.statusHomologacao
     ]);

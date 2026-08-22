@@ -258,7 +258,10 @@ async function reconcileRps({ environment = 'homologation', requestId = null, it
   };
 }
 
-async function issueHomologation({ requestId, itemIndex = 1, certData, dryRun = false }, dependencies = {}) {
+/**
+ * Emite NFS-e em ambiente especificado (production ou homologation)
+ */
+async function issueNfse({ requestId, itemIndex = 1, certData, dryRun = false }, dependencies = {}) {
   const environment = process.env.INPUT_ENVIRONMENT || 'homologation';
 
   // Kill Switch operacional
@@ -407,7 +410,7 @@ async function issueHomologation({ requestId, itemIndex = 1, certData, dryRun = 
 
   // 3. Prepara a demanda (se não for caso já emitido/bloqueado no ledger)
   let prepared;
-  if (requestId.startsWith('fixture-homologation') || requestId.startsWith('fixture-controlada')) {
+  if (requestId.startsWith('fixture-homologation') || requestId.startsWith('fixture-controlada') || requestId.startsWith('fixture-pipeline')) {
     prepared = buildHomologationFixture(requestId);
   } else {
     const [demandasRaw, tomadoresRaw, patternsRaw, notasRaw] = await Promise.all([
@@ -437,6 +440,10 @@ async function issueHomologation({ requestId, itemIndex = 1, certData, dryRun = 
 
   if (!candidate.codigoMunicipioPrestacao) {
     throw new Error('PREPARE_NOT_READY: codigoMunicipioPrestacao indefinido para o tomador/padrão.');
+  }
+
+  if (!candidate.codigoMunicipioIncidenciaIss) {
+    throw new Error('PREPARE_NOT_READY: codigoMunicipioIncidenciaIss indefinido para o tomador/padrão.');
   }
 
   // 4. Alocação Atômica do ALLOCATED (se ainda não existia)
@@ -472,7 +479,7 @@ async function issueHomologation({ requestId, itemIndex = 1, certData, dryRun = 
   // 5. Montagem do XML estrito com Tomador e Endereço Completo
   const itemLista = String(candidate.codigoTribNacional || '').split('.').slice(0, 2).join('.');
   const codMunPrestacao = candidate.codigoMunicipioPrestacao;
-  const codMunIncidencia = candidate.codigoMunicipioIncidenciaIss || '3131307';
+  const codMunIncidencia = candidate.codigoMunicipioIncidenciaIss;
   const nbsTag = candidate.nbs ? `<cNBS>${escapeXml(candidate.nbs.replace(/\D/g, ''))}</cNBS>` : '';
   const cnaeTag = candidate.codigoCnae ? `<CodigoCnae>${escapeXml(candidate.codigoCnae)}</CodigoCnae>` : '';
 
@@ -729,5 +736,7 @@ module.exports = {
   buildConsultarNfsePorRpsEnvio,
   parseGerarNfseResposta,
   reconcileRps,
-  issueHomologation
+  issueNfse,
+  // Alias retrocompatível
+  issueHomologation: issueNfse
 };
