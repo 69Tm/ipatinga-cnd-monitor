@@ -219,7 +219,8 @@ function parseConsultarNfseResposta(xmlString) {
   notas.sort((a, b) => Number(a.numero || 0) - Number(b.numero || 0));
 
   return {
-    success: mensagens.every(msg => !msg.codigo || String(msg.codigo).toUpperCase() === 'L000'),
+    // Ipatinga retorna E212 para faixa válida sem NFS-e; L000 aparece em fixtures/implementações ABRASF.
+    success: mensagens.every(msg => !msg.codigo || ['L000', 'E212'].includes(String(msg.codigo).toUpperCase())),
     notas,
     mensagens,
     totalNotas: notas.length

@@ -57,7 +57,7 @@ function buildSyncRanges({
 }
 
 function hasBusinessError(parsed) {
-  const legitimateEmptyCodes = new Set(['L000']);
+  const legitimateEmptyCodes = new Set(['L000', 'E212']);
   return (parsed.mensagens || []).some(message => {
     const code = String(message.codigo || '').toUpperCase();
     return code && !legitimateEmptyCodes.has(code);

@@ -58,6 +58,9 @@ assert.strictEqual(parsedEmpty.totalNotas, 0);
 assert.strictEqual(parsedEmpty.mensagens.length, 1);
 assert.strictEqual(parsedEmpty.mensagens[0].codigo, 'L000');
 assert.strictEqual(parsedEmpty.success, true);
+const ipatingaEmpty = parseConsultarNfseResposta('<ConsultarNfseFaixaResposta><ListaMensagemRetorno><MensagemRetorno><Codigo>E212</Codigo><Mensagem>NFS-e não encontrada.</Mensagem></MensagemRetorno></ListaMensagemRetorno></ConsultarNfseFaixaResposta>');
+assert.strictEqual(ipatingaEmpty.success, true);
+assert.strictEqual(ipatingaEmpty.totalNotas, 0);
 
 const statusXml = fs.readFileSync(path.join(__dirname, 'fixtures', 'consultar-faixa-status-sample.xml'), 'utf8');
 const statusParsed = parseConsultarNfseResposta(statusXml);
