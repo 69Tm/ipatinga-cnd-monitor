@@ -5,11 +5,10 @@ const { checkCertificateAccess, loadCertificate, cleanupCertificate } = require(
 const { syncNfse } = require('./sync');
 const { generateReport, buildConsoleSummary } = require('./report');
 const { readSheetValues } = require('./google');
-const { buildCabecalho, buildConsultarNfseFaixaEnvio } = require('./abrasf');
-const { callSoapOperation } = require('./soap');
-const { isValidCnpj, formatCurrency, formatDateBr } = require('./validators');
+const { formatDateBr } = require('./validators');
 const { runHistoricalAnalysis } = require('./patterns');
 const { inspectWsdl } = require('./wsdl');
+const { handlePrepare } = require('./prepare');
 
 /**
  * Preflight Check: Valida todos os componentes sem realizar emissao ou alteracao fiscal
@@ -146,53 +145,6 @@ async function preflight(dependencies = {}) {
   return results;
 }
 
-/**
- * Operacao Prepare (Fundacao Fase 2): Dry-run estrutural a partir de uma demanda
- */
-async function handlePrepare({ requestId, environment }) {
-  console.log(`📋 Executando Operacao PREPARE (Dry-Run Estrutural) para request_id: ${requestId}...`);
-  if (!requestId) {
-    throw new Error('request_id e obrigatorio para a operacao prepare.');
-  }
-
-  // 1. Carrega dados da aba Demandas
-  const rows = await readSheetValues(CONFIG.SHEETS.SPREADSHEET_ID, `${CONFIG.SHEETS.TABS.DEMANDAS}!A:U`);
-  if (!rows || rows.length < 2) {
-    throw new Error('Nenhuma demanda encontrada na aba Demandas.');
-  }
-
-  const headers = rows[0].map(h => String(h || '').trim());
-  const reqIdx = headers.indexOf('request_id');
-  if (reqIdx === -1) throw new Error('Coluna request_id nao encontrada na aba Demandas.');
-
-  const targetRow = rows.slice(1).find(r => String(r[reqIdx] || '').trim() === String(requestId).trim());
-  if (!targetRow) {
-    throw new Error(`Demanda com request_id '${requestId}' nao foi encontrada na planilha.`);
-  }
-
-  // Mapeia campos da demanda
-  const tomador = targetRow[headers.indexOf('tomador')] || '';
-  const cnpjTomador = targetRow[headers.indexOf('cnpj_tomador')] || '';
-  const valor = targetRow[headers.indexOf('valor')] || '';
-  const competencia = targetRow[headers.indexOf('competencia')] || '';
-  const descricao = targetRow[headers.indexOf('descricao')] || '';
-
-  console.log(`  - Demanda Carregada: Tomador: ${tomador}, CNPJ: ${cnpjTomador}, Valor: ${valor}, Comp: ${competencia}`);
-
-  return {
-    operation: 'prepare',
-    environment,
-    requestId,
-    validationStatus: 'VALIDADA_ESTRUTURALMENTE',
-    tomador,
-    cnpjTomador,
-    valor,
-    competencia,
-    descricao,
-    timestamp: new Date().toISOString()
-  };
-}
-
 function enforceOperationSafety(operation, environment) {
   if (operation === 'issue' && environment === 'production') {
     throw new Error('PRODUCTION_ISSUE_DISABLED: Emissao de NFS-e em producao esta estritamente bloqueada.');
@@ -259,7 +211,7 @@ async function main() {
         });
       }
     } else if (operation === 'prepare') {
-      summary = await handlePrepare({ requestId, environment });
+      summary = await handlePrepare({ requestId, environment, dryRun });
     } else if (operation === 'issue') {
       if (environment !== 'homologation') {
         throw new Error('PRODUCTION_ISSUE_DISABLED: Emissao permitida apenas em homologacao.');

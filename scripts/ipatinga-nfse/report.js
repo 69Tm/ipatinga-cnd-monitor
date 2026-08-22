@@ -95,9 +95,12 @@ function generateReport(summaryData) {
     mdLines.push('## Resultado da Preparacao Fiscal (Dry-Run)');
     mdLines.push(`- **Request ID:** \`${sanitizedData.requestId}\``);
     mdLines.push(`- **Status Validacao:** \`${sanitizedData.validationStatus}\``);
-    mdLines.push(`- **Tomador:** ${sanitizedData.tomador || 'N/A'}`);
-    mdLines.push(`- **Valor:** R$ ${sanitizedData.valor || 0}`);
-    mdLines.push(`- **Competencia:** ${sanitizedData.competencia || 'N/A'}`);
+    mdLines.push(`- **Candidatos:** ${(sanitizedData.candidates || []).length}`);
+    mdLines.push(`- **Validação XSD:** \`${sanitizedData.xsdValidation || 'N/A'}\``);
+    mdLines.push(`- **Escritas externas:** ${sanitizedData.executedWrites || 0}`);
+    if ((sanitizedData.blockingReasons || []).length) {
+      mdLines.push(`- **Bloqueios:** ${(sanitizedData.blockingReasons || []).join(', ')}`);
+    }
     mdLines.push('');
   }
 

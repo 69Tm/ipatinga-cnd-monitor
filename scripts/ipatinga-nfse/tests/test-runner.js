@@ -16,6 +16,7 @@ async function run() {
   await require('./test-safety');
   await require('./test-patterns');
   await require('./test-report');
+  await require('./test-prepare');
   console.log('\n🎉 TODOS OS TESTES PASSARAM COM SUCESSO! ✅\n');
  } catch (err) {
   console.error('\n❌ FALHA NOS TESTES:', err);
