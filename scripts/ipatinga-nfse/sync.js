@@ -73,6 +73,24 @@ function maxKnownNumber(existing) {
   return maxKnown;
 }
 
+function buildNoteAudit(notes) {
+  return notes.map(note => ({
+    numero: note.numero,
+    status: note.status,
+    competencia: note.competencia,
+    dataEmissao: note.dataEmissao,
+    tomador: note.tomador,
+    cnpjTomador: note.cnpjTomador,
+    valorServicos: note.valorServicos,
+    codigoTribNacional: note.codigoTribNacional,
+    codigoTribMunicipal: note.codigoTribMunicipal,
+    localPrestacao: note.localPrestacao,
+    aliquota: note.aliquota,
+    codigoVerificacao: note.codigoVerificacao,
+    situacaoDetalhe: note.situacaoDetalhe
+  }));
+}
+
 async function syncNfse(options = {}, dependencies = {}) {
   const {
     mode = 'incremental',
@@ -207,10 +225,11 @@ async function syncNfse(options = {}, dependencies = {}) {
     totalNormalized: apiNotas.length,
     primeiraNfEncontrada: apiNotas[0]?.numero || null,
     ultimaNfEncontrada: apiNotas.at(-1)?.numero || null,
+    noteAudit: buildNoteAudit(apiNotas),
     upsertResult,
     errors: [],
     warnings: []
   };
 }
 
-module.exports = { buildSyncRanges, syncNfse, hasBusinessError, maxKnownNumber };
+module.exports = { buildSyncRanges, syncNfse, hasBusinessError, maxKnownNumber, buildNoteAudit };

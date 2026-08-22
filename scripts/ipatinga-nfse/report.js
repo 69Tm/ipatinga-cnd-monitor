@@ -50,6 +50,15 @@ function generateReport(summaryData) {
     mdLines.push(`- **Notas Substituídas Detectadas:** ${upsert.totalSubstituted || 0}`);
     mdLines.push(`- **Notas Inalteradas:** ${upsert.totalUnchanged || 0}`);
     mdLines.push('');
+    if (Array.isArray(sanitizedData.noteAudit) && sanitizedData.noteAudit.length > 0) {
+      mdLines.push('### Auditoria Sanitizada da API');
+      mdLines.push('| NFS-e | Status | Competência | Tomador | Valor |');
+      mdLines.push('| :--- | :--- | :--- | :--- | ---: |');
+      sanitizedData.noteAudit.forEach(note => {
+        mdLines.push(`| ${note.numero} | ${note.status || 'NORMAL'} | ${note.competencia || ''} | ${note.tomador || ''} | R$ ${note.valorServicos ?? ''} |`);
+      });
+      mdLines.push('');
+    }
 
     if (sanitizedData.regressionCheck) {
       mdLines.push('### Verificacao de Regressao (Notas Conhecidas)');

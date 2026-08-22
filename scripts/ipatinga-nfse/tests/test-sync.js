@@ -47,6 +47,8 @@ async function testSyncCollection() {
   assert.strictEqual(received.length, 3);
   assert.strictEqual(summary.status, 'SUCCESS');
   assert.strictEqual(summary.completedRanges.length, 3);
+  assert.strictEqual(summary.noteAudit.length, 3);
+  assert.strictEqual(summary.noteAudit[0].numero, '1');
 }
 
 async function testEmptyAndDuplicates() {
