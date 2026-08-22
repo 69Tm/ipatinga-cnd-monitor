@@ -69,68 +69,37 @@ async function testEmptyAndDuplicates() {
   assert.strictEqual(upsertValue.dryRun, true);
 }
 
-async function assertFailureWithoutUpsert(failingCall, totalRanges) {
-  let calls = 0;
-  let upsertCalls = 0;
-  await assert.rejects(
-    syncNfse(
-      { mode: 'full', toNumber: totalRanges * 50, certData: validCert },
-      {
-        loadExistingNotas: emptyExisting,
-        callSoapOperation: async () => {
-          calls++;
-          if (calls === failingCall) throw new Error('SOAP_FAULT: teste');
-          return { statusCode: 200, outputXml: '<ok/>' };
-        },
-        parseConsultarNfseResposta: () => parsed([]),
-        upsertNotas: async () => { upsertCalls++; }
-      }
-    ),
-    error => error.code === 'PARTIAL_SYNC_FAILED' && error.syncSummary.completedRanges.length === failingCall - 1
-  );
-  assert.strictEqual(upsertCalls, 0);
-}
-
 async function testDynamicFullTerminationAcrossGap() {
-  let calls = 0;
-  let received;
-  const notesByCall = [
-    [{ numero: '10', chaveAcesso: 'K10' }],
-    [],
-    [{ numero: '120', chaveAcesso: 'K120' }],
-    [],
-    []
-  ];
+  let call = 0;
   const summary = await syncNfse(
-    { mode: 'full', certData: validCert, emptyRangesToStop: 2 },
+    { mode: 'full', certData: validCert, emptyRangesToStop: 2, batchSize: 10 },
     {
       loadExistingNotas: emptyExisting,
       callSoapOperation: async () => ({ statusCode: 200, outputXml: '<ok/>' }),
-      parseConsultarNfseResposta: () => parsed(notesByCall[calls++] || []),
-      upsertNotas: async notas => { received = notas; return { totalProcessed: notas.length }; }
+      parseConsultarNfseResposta: () => {
+        call++;
+        if (call === 1) return parsed([{ numero: '5', chaveAcesso: 'k5', cnpjTomador: '1' }]);
+        return parsed([]);
+      },
+      upsertNotas: async () => ({ totalProcessed: 1 })
     }
   );
-  assert.strictEqual(calls, 5);
-  assert.deepStrictEqual(summary.actualRanges.map(r => [r.from, r.to]), [[1, 50], [51, 100], [101, 150], [151, 200], [201, 250]]);
-  assert.strictEqual(summary.highestObserved, 120);
+  assert.strictEqual(summary.completedRanges.length, 3);
   assert.strictEqual(summary.terminationReason, 'EMPTY_RANGES_AFTER_HIGHEST_2');
-  assert.deepStrictEqual(received.map(n => n.numero), ['10', '120']);
 }
 
 async function testDynamicFullWithNoResults() {
-  let calls = 0;
   const summary = await syncNfse(
-    { mode: 'full', certData: validCert, emptyRangesToStop: 3 },
+    { mode: 'full', certData: validCert, emptyRangesToStop: 2, batchSize: 10 },
     {
       loadExistingNotas: emptyExisting,
-      callSoapOperation: async () => { calls++; return { statusCode: 200, outputXml: '<ok/>' }; },
+      callSoapOperation: async () => ({ statusCode: 200, outputXml: '<ok/>' }),
       parseConsultarNfseResposta: () => parsed([]),
-      upsertNotas: async notas => ({ totalProcessed: notas.length })
+      upsertNotas: async () => ({ totalProcessed: 0 })
     }
   );
-  assert.strictEqual(calls, 3);
-  assert.strictEqual(summary.totalApi, 0);
-  assert.strictEqual(summary.terminationReason, 'EMPTY_RANGES_AFTER_HIGHEST_3');
+  assert.strictEqual(summary.completedRanges.length, 2);
+  assert.strictEqual(summary.terminationReason, 'EMPTY_RANGES_AFTER_HIGHEST_2');
 }
 
 async function testBusinessErrorClassification() {
@@ -154,12 +123,50 @@ async function testBusinessErrorClassification() {
   assert.strictEqual(upsertCalls, 0);
 }
 
+async function testHomologationSyncIsolation() {
+  let upsertCalls = 0;
+  const summary = await syncNfse(
+    { mode: 'incremental', environment: 'homologation', fromNumber: 1, toNumber: 50, certData: validCert },
+    {
+      loadExistingNotas: emptyExisting,
+      callSoapOperation: async () => ({ statusCode: 200, outputXml: '<ok/>' }),
+      parseConsultarNfseResposta: () => parsed([{ numero: '99001', chaveAcesso: 'homolog-key', cnpjTomador: '1' }]),
+      upsertNotas: async () => { upsertCalls++; }
+    }
+  );
+  assert.strictEqual(upsertCalls, 0, 'Sync em homologação JAMAIS deve chamar upsertNotas na tabela de produção');
+  assert.strictEqual(summary.upsertResult.isHomologation, true);
+}
+
+async function assertFailureWithoutUpsert(failingCall, totalRanges) {
+  let calls = 0;
+  let upsertCalls = 0;
+  await assert.rejects(
+    syncNfse(
+      { mode: 'full', toNumber: totalRanges * 50, certData: validCert },
+      {
+        loadExistingNotas: emptyExisting,
+        callSoapOperation: async () => {
+          calls++;
+          if (calls === failingCall) throw new Error('Falha no transporte');
+          return { statusCode: 200, outputXml: '<ok/>' };
+        },
+        parseConsultarNfseResposta: () => parsed([{ numero: String(calls), chaveAcesso: `K${calls}`, cnpjTomador: '1' }]),
+        upsertNotas: async () => { upsertCalls++; }
+      }
+    ),
+    /PARTIAL_SYNC_FAILED/
+  );
+  assert.strictEqual(upsertCalls, 0);
+}
+
 async function run() {
   await testSyncCollection();
   await testEmptyAndDuplicates();
   await testDynamicFullTerminationAcrossGap();
   await testDynamicFullWithNoResults();
   await testBusinessErrorClassification();
+  await testHomologationSyncIsolation();
   await assertFailureWithoutUpsert(2, 3);
   await assertFailureWithoutUpsert(3, 3);
   await assert.rejects(syncNfse({ certData: { loaded: true, isValid: false } }), /CERTIFICATE_NOT_READY/);

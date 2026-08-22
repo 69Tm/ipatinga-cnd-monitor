@@ -118,8 +118,10 @@ async function syncNfse(options = {}, dependencies = {}) {
     throw new Error('CERTIFICATE_NOT_READY: sync autenticado exige certificado carregado e valido.');
   }
 
-  const existing = await loadNotas();
-  const maxKnown = maxKnownNumber(existing);
+  // ISOLAMENTO FISCAL: Homologação nunca usa nem altera a tabela operacional 'Notas'
+  const isHomologation = environment === 'homologation';
+  const existing = isHomologation ? { rows: [], byNumber: new Map() } : await loadNotas();
+  const maxKnown = isHomologation ? 0 : maxKnownNumber(existing);
   const boundedRanges = mode === 'incremental' || toNumber
     ? buildSyncRanges({ mode, maxKnown, fromNumber, toNumber, batchSize: batch, overlap, incrementalForward })
     : null;
@@ -128,7 +130,6 @@ async function syncNfse(options = {}, dependencies = {}) {
   const allApiNotas = new Map();
   let highestObserved = maxKnown;
   let consecutiveEmptyAfterHighest = 0;
-  let dynamicFrom = positiveInteger(fromNumber, 'from_number', 1);
   let rangeIndex = 0;
   let terminationReason = boundedRanges ? 'BOUNDED_RANGE_COMPLETED' : null;
 
@@ -138,8 +139,7 @@ async function syncNfse(options = {}, dependencies = {}) {
       if (rangeIndex >= boundedRanges.length) break;
       range = boundedRanges[rangeIndex++];
     } else {
-      range = { from: dynamicFrom, to: dynamicFrom + batch - 1, page: 1 };
-      dynamicFrom = range.to + 1;
+      range = { from: highestObserved + 1, to: highestObserved + batch, page: 1 };
     }
     actualRanges.push(range);
 
@@ -208,7 +208,26 @@ async function syncNfse(options = {}, dependencies = {}) {
   }
 
   const apiNotas = Array.from(allApiNotas.values()).sort((a, b) => Number(a.numero) - Number(b.numero));
-  const upsertResult = await upsert(apiNotas, null, dryRun);
+  
+  // Se for homologação, não executa upsert na aba operacional Notas
+  let upsertResult = null;
+  if (!isHomologation) {
+    upsertResult = await upsert(apiNotas, null, dryRun);
+  } else {
+    upsertResult = {
+      isHomologation: true,
+      totalProcessed: apiNotas.length,
+      totalNew: 0,
+      totalUpdated: 0,
+      totalUnchanged: apiNotas.length,
+      totalCanceled: 0,
+      totalSubstituted: 0,
+      changeAudit: [],
+      dryRun: true,
+      message: 'Homologação isolada: nenhuma alteração na aba Notas de produção.'
+    };
+  }
+
   return {
     operation: 'sync',
     status: dryRun ? 'DRY_RUN' : 'SUCCESS',
@@ -234,4 +253,11 @@ async function syncNfse(options = {}, dependencies = {}) {
   };
 }
 
-module.exports = { buildSyncRanges, syncNfse, hasBusinessError, maxKnownNumber, buildNoteAudit };
+module.exports = {
+  positiveInteger,
+  buildSyncRanges,
+  hasBusinessError,
+  maxKnownNumber,
+  buildNoteAudit,
+  syncNfse
+};

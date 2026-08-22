@@ -1,29 +1,29 @@
 'use strict';
 
 const { CONFIG } = require('./config');
-const { parseXml, getXmlValue, getXmlNode, ensureArray } = require('./xml');
+const { getXmlNode, getXmlValue, ensureArray, parseXml } = require('./xml');
 const {
-  normalizeCnpj,
   formatCnpj,
-  parseCurrency,
-  parseAliquot,
   formatDateBr,
-  formatDateIso,
-  parseIsoDate,
-  parseCompetencia
+  formatCurrencyBr,
+  parseAliquot,
+  parseCurrency,
+  normalizeCnpj
 } = require('./validators');
 
 /**
- * Monta o cabeçalho ABRASF 2.04
+ * Monta o cabeçalho padrão ABRASF 2.04
  */
-function buildCabecalho() {
-  return `<cabecalho versao="${CONFIG.ABRASF.VERSAO}" xmlns="${CONFIG.ABRASF.SCHEMA_NAMESPACE}"><versaoDados>${CONFIG.ABRASF.VERSAO}</versaoDados></cabecalho>`;
+function buildCabecalho(versao = CONFIG.ABRASF.VERSAO) {
+  return `<cabecalho xmlns="${CONFIG.ABRASF.SCHEMA_NAMESPACE}" versao="${versao}">` +
+    `<versaoDados>${versao}</versaoDados>` +
+  `</cabecalho>`;
 }
 
 /**
  * Monta o payload ConsultarNfseFaixaEnvio
  */
-function buildConsultarNfseFaixaEnvio({ from = 1, to = 50, page = 1, cnpj = null, im = null }) {
+function buildConsultarNfseFaixaEnvio({ from, to, page = 1, cnpj = null, im = null }) {
   const cnpjClean = cnpj ? normalizeCnpj(cnpj) : CONFIG.PRESTADOR.CNPJ_DIGITS;
   const imClean = im || CONFIG.PRESTADOR.INSCRICAO_MUNICIPAL;
 
@@ -69,7 +69,7 @@ function parseCompNfse(compNode) {
   const nfseNode = getXmlNode(compNode, ['Nfse', 'tc:Nfse']) || compNode;
   const infNfse = getXmlNode(nfseNode, ['InfNfse', 'tc:InfNfse']) || nfseNode;
   const cancelamentoNode = getXmlNode(compNode, ['NfseCancelamento', 'tc:NfseCancelamento']);
-  const substituicaoNode = getXmlNode(compNode, ['NfseSubstituicao', 'tc:NfseSubstituicao']);
+  const substituicaoNode = getXmlNode(compNode, ['NfseSubstituicao', 'tc:NfseSubstituicao']) ?? (compNode.NfseSubstituicao !== undefined ? compNode.NfseSubstituicao : null);
 
   // Identificação da Nota
   const numero = getXmlValue(infNfse, ['Numero', 'tc:Numero']);
@@ -98,75 +98,94 @@ function parseCompNfse(compNode) {
   const discriminacao = servicoNode ? getXmlValue(servicoNode, ['Discriminacao', 'tc:Discriminacao']) : '';
   const itemListaServico = servicoNode ? getXmlValue(servicoNode, ['ItemListaServico', 'tc:ItemListaServico']) : '';
   const codigoCnae = servicoNode ? getXmlValue(servicoNode, ['CodigoCnae', 'tc:CodigoCnae']) : '';
-  const codigoTribMunicipio = servicoNode ? getXmlValue(servicoNode, ['CodigoTributacaoMunicipio', 'tc:CodigoTributacaoMunicipio']) : '';
+  const codigoTribMunicipal = servicoNode ? getXmlValue(servicoNode, ['CodigoTributacaoMunicipio', 'tc:CodigoTributacaoMunicipio']) : '';
   const codigoMunicipioPrestacao = servicoNode ? getXmlValue(servicoNode, ['CodigoMunicipio', 'tc:CodigoMunicipio']) : '';
   const municipioIncidencia = servicoNode ? getXmlValue(servicoNode, ['MunicipioIncidencia', 'tc:MunicipioIncidencia']) : '';
-  const issRetido = servicoNode ? getXmlValue(servicoNode, ['IssRetido', 'tc:IssRetido']) : '2';
+  const issRetido = servicoNode ? getXmlValue(servicoNode, ['IssRetido', 'tc:IssRetido']) : '';
 
-  const valorServicos = valoresServicoNode ? getXmlValue(valoresServicoNode, ['ValorServicos', 'tc:ValorServicos']) : (valoresNfseNode ? getXmlValue(valoresNfseNode, ['ValorServicos', 'tc:ValorServicos']) : null);
-  const valorLiquido = valoresServicoNode ? getXmlValue(valoresServicoNode, ['ValorLiquidoNfse', 'tc:ValorLiquidoNfse']) : (valoresNfseNode ? getXmlValue(valoresNfseNode, ['ValorLiquidoNfse', 'tc:ValorLiquidoNfse']) : valorServicos);
-  const baseCalculo = valoresNfseNode ? getXmlValue(valoresNfseNode, ['BaseCalculo', 'tc:BaseCalculo']) : (valoresServicoNode ? getXmlValue(valoresServicoNode, ['BaseCalculo', 'tc:BaseCalculo']) : null);
-  const aliquota = valoresNfseNode ? getXmlValue(valoresNfseNode, ['Aliquota', 'tc:Aliquota']) : (valoresServicoNode ? getXmlValue(valoresServicoNode, ['Aliquota', 'tc:Aliquota']) : null);
-  const valorIss = valoresNfseNode ? getXmlValue(valoresNfseNode, ['ValorIss', 'tc:ValorIss']) : (valoresServicoNode ? getXmlValue(valoresServicoNode, ['ValorIss', 'tc:ValorIss']) : null);
+  const valorServicos = (valoresServicoNode && getXmlValue(valoresServicoNode, ['ValorServicos', 'tc:ValorServicos'])) ||
+                        (valoresNfseNode && getXmlValue(valoresNfseNode, ['ValorServicos', 'tc:ValorServicos'])) || '0';
+  const valorDeducoes = (valoresServicoNode && getXmlValue(valoresServicoNode, ['ValorDeducoes', 'tc:ValorDeducoes'])) ||
+                        (valoresNfseNode && getXmlValue(valoresNfseNode, ['ValorDeducoes', 'tc:ValorDeducoes'])) || '0';
+  const valorPis = (valoresServicoNode && getXmlValue(valoresServicoNode, ['ValorPis', 'tc:ValorPis'])) ||
+                   (valoresNfseNode && getXmlValue(valoresNfseNode, ['ValorPis', 'tc:ValorPis'])) || '0';
+  const valorCofins = (valoresServicoNode && getXmlValue(valoresServicoNode, ['ValorCofins', 'tc:ValorCofins'])) ||
+                      (valoresNfseNode && getXmlValue(valoresNfseNode, ['ValorCofins', 'tc:ValorCofins'])) || '0';
+  const valorInss = (valoresServicoNode && getXmlValue(valoresServicoNode, ['ValorInss', 'tc:ValorInss'])) ||
+                    (valoresNfseNode && getXmlValue(valoresNfseNode, ['ValorInss', 'tc:ValorInss'])) || '0';
+  const valorIr = (valoresServicoNode && getXmlValue(valoresServicoNode, ['ValorIr', 'tc:ValorIr'])) ||
+                  (valoresNfseNode && getXmlValue(valoresNfseNode, ['ValorIr', 'tc:ValorIr'])) || '0';
+  const valorCsll = (valoresServicoNode && getXmlValue(valoresServicoNode, ['ValorCsll', 'tc:ValorCsll'])) ||
+                    (valoresNfseNode && getXmlValue(valoresNfseNode, ['ValorCsll', 'tc:ValorCsll'])) || '0';
+  const outrasRetencoes = (valoresServicoNode && getXmlValue(valoresServicoNode, ['OutrasRetencoes', 'tc:OutrasRetencoes'])) ||
+                          (valoresNfseNode && getXmlValue(valoresNfseNode, ['OutrasRetencoes', 'tc:OutrasRetencoes'])) || '0';
+  const valTotTributos = (valoresServicoNode && getXmlValue(valoresServicoNode, ['ValTotTributos', 'tc:ValTotTributos'])) ||
+                         (valoresNfseNode && getXmlValue(valoresNfseNode, ['ValTotTributos', 'tc:ValTotTributos'])) || '0';
+  const valorIss = (valoresServicoNode && getXmlValue(valoresServicoNode, ['ValorIss', 'tc:ValorIss'])) ||
+                   (valoresNfseNode && getXmlValue(valoresNfseNode, ['ValorIss', 'tc:ValorIss'])) || '0';
+  const aliquota = (valoresServicoNode && getXmlValue(valoresServicoNode, ['Aliquota', 'tc:Aliquota'])) ||
+                   (valoresNfseNode && getXmlValue(valoresNfseNode, ['Aliquota', 'tc:Aliquota'])) || '0';
 
   // Tomador
   const tomadorNode = (infDps && getXmlNode(infDps, ['Tomador', 'tc:Tomador', 'TomadorServico', 'tc:TomadorServico'])) ||
                       getXmlNode(infNfse, ['TomadorServico', 'tc:TomadorServico', 'Tomador', 'tc:Tomador']);
-  const identTomador = tomadorNode ? getXmlNode(tomadorNode, ['IdentificacaoTomador', 'tc:IdentificacaoTomador']) : null;
-  const cpfCnpjTomador = identTomador ? getXmlNode(identTomador, ['CpfCnpj', 'tc:CpfCnpj']) : null;
-  const cnpjTomador = cpfCnpjTomador ? (getXmlValue(cpfCnpjTomador, ['Cnpj', 'tc:Cnpj']) || getXmlValue(cpfCnpjTomador, ['Cpf', 'tc:Cpf'])) : (tomadorNode ? (getXmlValue(tomadorNode, ['Cnpj', 'tc:Cnpj']) || getXmlValue(tomadorNode, ['Cpf', 'tc:Cpf'])) : null);
+  const tomadorIdent = tomadorNode ? getXmlNode(tomadorNode, ['IdentificacaoTomador', 'tc:IdentificacaoTomador']) : null;
+  const tomadorCpfCnpj = tomadorIdent ? getXmlNode(tomadorIdent, ['CpfCnpj', 'tc:CpfCnpj']) : null;
+
+  const cnpjTomadorRaw = (tomadorCpfCnpj && (getXmlValue(tomadorCpfCnpj, ['Cnpj', 'tc:Cnpj']) || getXmlValue(tomadorCpfCnpj, ['Cpf', 'tc:Cpf']))) || '';
   const razaoSocialTomador = tomadorNode ? getXmlValue(tomadorNode, ['RazaoSocial', 'tc:RazaoSocial']) : '';
 
-  // Situação (Normal, Cancelada, Substituída)
+  // Local da prestação descritivo
+  let localPrestacaoDesc = '';
+  if (codigoMunicipioPrestacao === '3128006') localPrestacaoDesc = 'Guanhães/MG';
+  else if (codigoMunicipioPrestacao === '3131703') localPrestacaoDesc = 'Itabira/MG';
+  else if (codigoMunicipioPrestacao === '3131307') localPrestacaoDesc = 'Ipatinga/MG';
+  else if (codigoMunicipioPrestacao) localPrestacaoDesc = `IBGE ${codigoMunicipioPrestacao}`;
+
+  // NBS
+  let nbs = '';
+  if (servicoNode) {
+    nbs = getXmlValue(servicoNode, ['cNBS', 'tc:cNBS', 'NBS', 'tc:NBS']) || '';
+  }
+
+  // Situação da NFS-e
   let status = 'NORMAL';
   let situacaoDetalhe = 'Normal';
   let dataCancelamento = null;
 
-  if (cancelamentoNode !== null) {
+  if (cancelamentoNode) {
     status = 'CANCELADA';
-    const confirmacao = getXmlNode(cancelamentoNode, ['Confirmacao', 'tc:Confirmacao']);
-    dataCancelamento = confirmacao ? getXmlValue(confirmacao, ['DataHora', 'tc:DataHora']) : null;
-    situacaoDetalhe = `Cancelada em ${dataCancelamento ? formatDateBr(dataCancelamento) : 'data desconhecida'}`;
-  } else if (substituicaoNode !== null) {
+    situacaoDetalhe = 'Cancelada';
+    const confCanc = getXmlNode(cancelamentoNode, ['Confirmacao', 'tc:Confirmacao']);
+    const infCanc = confCanc ? getXmlNode(confCanc, ['InfConfirmacaoCancelamento', 'tc:InfConfirmacaoCancelamento']) : null;
+    dataCancelamento = infCanc ? getXmlValue(infCanc, ['DataHora', 'tc:DataHora']) : null;
+  } else if (substituicaoNode !== null && substituicaoNode !== undefined) {
     status = 'SUBSTITUIDA';
     situacaoDetalhe = 'Substituída';
-  }
-
-  // Descobre Local Prestação (Ex: Guanhães/MG ou Ipatinga/MG)
-  const validMunicipalityCode = [codigoMunicipioPrestacao, municipioIncidencia]
-    .map(value => String(value || '').trim())
-    .find(value => /^\d{7}$/.test(value) && value !== '0000000');
-  let localPrestacao = '';
-  if (validMunicipalityCode === '3128006' || String(discriminacao).toUpperCase().includes('GUANHÃES') || String(discriminacao).toUpperCase().includes('GUANHAES')) {
-    localPrestacao = 'Guanhães/MG';
-  } else if (validMunicipalityCode === '3131307') {
-    localPrestacao = 'Ipatinga/MG';
-  } else if (validMunicipalityCode) {
-    localPrestacao = `IBGE ${validMunicipalityCode}`;
-  }
-
-  // Descobre NBS ou código tributação nacional se presente
-  let nbs = '';
-  if (outrasInformacoes && outrasInformacoes.includes('NBS')) {
-    const match = outrasInformacoes.match(/NBS[:\s]*([0-9.]+)/i);
-    if (match) nbs = match[1].replace(/\D/g, '');
   }
 
   return {
     numero: String(numero || '').trim(),
     codigoVerificacao: String(codigoVerificacao || '').trim(),
+    dataEmissao: formatDateBr(dataEmissaoRaw),
+    competencia: formatDateBr(competenciaRaw),
     chaveAcesso: String(chaveAcesso || '').trim(),
-    dataEmissao: dataEmissaoRaw,
-    competencia: parseCompetencia(competenciaRaw || dataEmissaoRaw),
-    tomador: razaoSocialTomador ? razaoSocialTomador.trim() : '',
-    cnpjTomador: cnpjTomador ? formatCnpj(cnpjTomador) : '',
-    cnpjTomadorClean: cnpjTomador ? normalizeCnpj(cnpjTomador) : '',
+    tomador: String(razaoSocialTomador || '').trim(),
+    cnpjTomador: formatCnpj(cnpjTomadorRaw),
     discriminacao: String(discriminacao || '').trim(),
     valorServicos: parseCurrency(valorServicos),
-    valorLiquido: parseCurrency(valorLiquido || valorServicos),
-    codigoTribNacional: itemListaServico || '04.03.01',
-    codigoTribMunicipal: codigoTribMunicipio || '403',
-    localPrestacao,
+    valorDeducoes: parseCurrency(valorDeducoes),
+    valorPis: parseCurrency(valorPis),
+    valorCofins: parseCurrency(valorCofins),
+    valorInss: parseCurrency(valorInss),
+    valorIr: parseCurrency(valorIr),
+    valorCsll: parseCurrency(valorCsll),
+    outrasRetencoes: parseCurrency(outrasRetencoes),
+    valTotTributos: parseCurrency(valTotTributos),
+    codigoTribNacional: String(itemListaServico || ''),
+    codigoTribMunicipal: String(codigoTribMunicipal || ''),
+    codigoCnae: String(codigoCnae || ''),
+    localPrestacao: localPrestacaoDesc,
     codigoMunicipioPrestacao: String(codigoMunicipioPrestacao || ''),
     municipioIncidencia: String(municipioIncidencia || ''),
     aliquota: parseAliquot(aliquota),
@@ -181,17 +200,19 @@ function parseCompNfse(compNode) {
 }
 
 /**
- * Realiza o parse da resposta XML de consulta da Prefeitura (ConsultarNfseFaixaResposta ou ServicoPrestado)
+ * Realiza o parse da resposta XML de consulta da Prefeitura (ConsultarNfseFaixaResposta, ServicoPrestado ou ConsultarNfseRpsResposta)
  */
 function parseConsultarNfseResposta(xmlString) {
   const parsed = parseXml(xmlString);
   const root = getXmlNode(parsed, [
     'ConsultarNfseFaixaResposta', 'tc:ConsultarNfseFaixaResposta',
     'ConsultarNfseServicoPrestadoResposta', 'tc:ConsultarNfseServicoPrestadoResposta',
+    'ConsultarNfseRpsResposta', 'tc:ConsultarNfseRpsResposta',
     'ConsultarNfseResposta', 'tc:ConsultarNfseResposta'
   ]) || parsed;
 
   const listaNfseNode = getXmlNode(root, ['ListaNfse', 'tc:ListaNfse']);
+  const directComp = getXmlNode(root, ['CompNfse', 'tc:CompNfse']);
   const listaMensagemNode = getXmlNode(root, ['ListaMensagemRetorno', 'tc:ListaMensagemRetorno', 'ListaMensagensRetorno', 'tc:ListaMensagensRetorno']);
 
   const notas = [];
@@ -199,6 +220,14 @@ function parseConsultarNfseResposta(xmlString) {
 
   if (listaNfseNode) {
     const compList = ensureArray(getXmlNode(listaNfseNode, ['CompNfse', 'tc:CompNfse']));
+    for (const comp of compList) {
+      const parsedNote = parseCompNfse(comp);
+      if (parsedNote && parsedNote.numero) {
+        notas.push(parsedNote);
+      }
+    }
+  } else if (directComp) {
+    const compList = ensureArray(directComp);
     for (const comp of compList) {
       const parsedNote = parseCompNfse(comp);
       if (parsedNote && parsedNote.numero) {

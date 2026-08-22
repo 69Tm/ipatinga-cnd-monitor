@@ -75,7 +75,8 @@ async function callSoapOperation({
     },
     cert: certData.pemCert,
     key: certData.pemKey,
-    rejectUnauthorized: false
+    // Validação estrita do certificado do servidor TLS (W3C / RFC 5280)
+    rejectUnauthorized: true
   };
 
   return new Promise((resolve, reject) => {

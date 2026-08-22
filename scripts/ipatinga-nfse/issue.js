@@ -9,11 +9,14 @@ const {
   findLedgerEntry,
   allocateRpsAtomically,
   markSubmitting,
+  markSubmittedAsyncProcessing,
   markIssued,
   markRejectedCorrectable,
   markUnknownAfterTimeout,
   markFailedSafe,
-  RPS_STATUS
+  RPS_STATUS,
+  RECONCILIATION_STATUS,
+  MAX_ATTEMPTS
 } = require('./ledger');
 const { prepareDemand, demandRows, tomadorRows, patternRows, buildHomologationFixture } = require('./prepare');
 const { validateXmlAgainstOfficialXsd } = require('./xsd-validator');
@@ -112,52 +115,146 @@ function parseGerarNfseResposta(xmlString) {
   };
 }
 
-async function recoverViaConsultarNfsePorRps({ ledgerEntry, certData }, dependencies = {}) {
+async function reconcileRps({ environment = 'homologation', requestId = null, itemIndex = 1, rpsNumero = null, rpsSerie = 'A', rpsTipo = '1', certData = null }, dependencies = {}) {
+  if (!certData || !certData.loaded || !certData.isValid) {
+    throw new Error('CERT_INVALID: Reconciliação requer certificado A1 válido.');
+  }
+
+  await ensureLedgerSheet(dependencies);
+  const ledgerEntries = await loadLedger(dependencies);
+
+  let ledgerEntry = null;
+  if (requestId) {
+    ledgerEntry = findLedgerEntry(ledgerEntries, { environment, requestId, itemIndex });
+  } else if (rpsNumero) {
+    ledgerEntry = ledgerEntries.find(e =>
+      e.environment?.toLowerCase() === String(environment).toLowerCase() &&
+      String(e.rps_numero) === String(rpsNumero)
+    ) || null;
+  }
+
+  const targetRpsNum = ledgerEntry ? ledgerEntry.rps_numero : rpsNumero;
+  const targetRpsSer = ledgerEntry ? ledgerEntry.rps_serie : rpsSerie;
+  const targetRpsTip = ledgerEntry ? ledgerEntry.rps_tipo : rpsTipo;
+
+  if (!targetRpsNum) {
+    throw new Error('RECONCILE_TARGET_NOT_FOUND: Nenhum RPS especificado ou localizado no Ledger.');
+  }
+
   const consultarRpsXml = buildConsultarNfsePorRpsEnvio({
-    rpsNumero: ledgerEntry.rps_numero,
-    rpsSerie: ledgerEntry.rps_serie,
-    rpsTipo: ledgerEntry.rps_tipo
+    rpsNumero: targetRpsNum,
+    rpsSerie: targetRpsSer,
+    rpsTipo: targetRpsTip
   });
 
   const soapCall = dependencies.callSoapOperation || callSoapOperation;
   let queryRes = null;
+
   try {
     queryRes = await soapCall({
-      environment: ledgerEntry.environment || 'homologation',
+      environment,
       operation: 'ConsultarNfsePorRps',
       cabecMsg: buildCabecalho(),
       dadosMsg: consultarRpsXml,
       certData
     });
   } catch (err) {
-    return { success: false, error: err.message };
+    return {
+      status: RECONCILIATION_STATUS.QUERY_FAILED,
+      environment,
+      requestId: ledgerEntry?.request_id || requestId,
+      itemIndex: ledgerEntry?.item_index || itemIndex,
+      rpsNumero: targetRpsNum,
+      error: err.message
+    };
   }
 
-  const parsedQuery = parseConsultarNfseResposta(queryRes.outputXml);
+  let parsedQuery = null;
+  try {
+    parsedQuery = parseConsultarNfseResposta(queryRes.outputXml);
+  } catch (err) {
+    return {
+      status: RECONCILIATION_STATUS.AMBIGUOUS,
+      environment,
+      requestId: ledgerEntry?.request_id || requestId,
+      itemIndex: ledgerEntry?.item_index || itemIndex,
+      rpsNumero: targetRpsNum,
+      error: `PARSING_ERROR: ${err.message}`
+    };
+  }
+
+  // 1. NFS-e Encontrada
   if (parsedQuery.notas && parsedQuery.notas.length > 0) {
     const nota = parsedQuery.notas[0];
-    const updated = await markIssued(ledgerEntry, { nfseNumero: nota.numero, nfseChave: nota.codigoVerificacao }, dependencies);
+    if (ledgerEntry) {
+      ledgerEntry = await markIssued(ledgerEntry, {
+        nfseNumero: nota.numero,
+        nfseChave: nota.codigoVerificacao,
+        dataEmissao: nota.dataEmissao
+      }, dependencies);
+    }
     return {
-      success: true,
-      updatedEntry: updated,
-      status: 'ISSUED',
-      environment: ledgerEntry.environment || 'homologation',
-      requestId: ledgerEntry.request_id,
-      itemIndex: ledgerEntry.item_index,
-      rpsNumero: ledgerEntry.rps_numero,
-      rpsSerie: ledgerEntry.rps_serie,
-      rpsTipo: ledgerEntry.rps_tipo,
+      status: RECONCILIATION_STATUS.ISSUED,
+      environment,
+      requestId: ledgerEntry?.request_id || requestId,
+      itemIndex: ledgerEntry?.item_index || itemIndex,
+      rpsNumero: targetRpsNum,
+      rpsSerie: targetRpsSer,
+      rpsTipo: targetRpsTip,
       nfseNumero: nota.numero,
       nfseChave: nota.codigoVerificacao,
       dataEmissao: nota.dataEmissao,
-      recoveredViaRpsQuery: true
+      tomador: nota.tomador,
+      valorServicos: nota.valorServicos
+    };
+  }
+
+  // 2. Mensagens do Provedor
+  const msgs = parsedQuery.mensagens || [];
+  const msgCodes = msgs.map(m => String(m.codigo || '').toUpperCase());
+  const msgTexts = msgs.map(m => String(m.mensagem || ''));
+
+  // Códigos de "RPS não encontrado / não cadastrado"
+  // E4 / E10 / E159 / E212 / E182 / mensagens textuais explícitas
+  const isNotFound = msgCodes.some(c => ['E4', 'E10', 'E159', 'E212', 'E182', 'E04'].includes(c)) ||
+                     msgTexts.some(t => /nao encontrado|nao localizado|inexistente|sem dados/i.test(t));
+
+  if (isNotFound) {
+    return {
+      status: RECONCILIATION_STATUS.RPS_NOT_FOUND_CONFIRMED,
+      environment,
+      requestId: ledgerEntry?.request_id || requestId,
+      itemIndex: ledgerEntry?.item_index || itemIndex,
+      rpsNumero: targetRpsNum,
+      providerErrorCodes: msgCodes.join(', '),
+      providerMessage: msgTexts.join('; ') || 'RPS nao encontrado no provedor fiscal'
+    };
+  }
+
+  // Mensagens de "Lote/RPS em processamento"
+  const isProcessing = msgTexts.some(t => /processamento|aguarde|adn|sefaz/i.test(t));
+  if (isProcessing) {
+    if (ledgerEntry && ledgerEntry.status !== RPS_STATUS.SUBMITTED_ASYNC_PROCESSING) {
+      ledgerEntry = await markSubmittedAsyncProcessing(ledgerEntry, { providerMessage: msgTexts.join('; ') }, dependencies);
+    }
+    return {
+      status: RECONCILIATION_STATUS.PROCESSING,
+      environment,
+      requestId: ledgerEntry?.request_id || requestId,
+      itemIndex: ledgerEntry?.item_index || itemIndex,
+      rpsNumero: targetRpsNum,
+      providerMessage: msgTexts.join('; ')
     };
   }
 
   return {
-    success: false,
-    rawQuery: queryRes.outputXml,
-    mensagens: parsedQuery.mensagens
+    status: RECONCILIATION_STATUS.AMBIGUOUS,
+    environment,
+    requestId: ledgerEntry?.request_id || requestId,
+    itemIndex: ledgerEntry?.item_index || itemIndex,
+    rpsNumero: targetRpsNum,
+    providerErrorCodes: msgCodes.join(', '),
+    providerMessage: msgTexts.join('; ')
   };
 }
 
@@ -176,46 +273,11 @@ async function issueHomologation({ requestId, itemIndex = 1, certData, dryRun = 
   const read = dependencies.readSheetValues || readSheetValues;
   const spreadsheetId = dependencies.spreadsheetId || CONFIG.SHEETS.SPREADSHEET_ID;
 
-  // Garante aba RPS quando dry_run=false
   if (!dryRun) {
     await ensureLedgerSheet(dependencies);
   }
 
-  let prepared;
-  if (requestId.startsWith('fixture-homologation') || requestId.startsWith('fixture-controlada')) {
-    prepared = buildHomologationFixture(requestId);
-  } else {
-    // 1. Carrega dados e prepara demanda real
-    const [demandasRaw, tomadoresRaw, patternsRaw, notasRaw] = await Promise.all([
-      read(spreadsheetId, `${CONFIG.SHEETS.TABS.DEMANDAS}!A:Z`),
-      read(spreadsheetId, `${CONFIG.SHEETS.TABS.TOMADORES}!A:M`),
-      read(spreadsheetId, `${CONFIG.SHEETS.TABS.PADROES}!A:T`),
-      read(spreadsheetId, `${CONFIG.SHEETS.TABS.NOTAS}!A:X`)
-    ]);
-
-    prepared = prepareDemand({
-      requestId,
-      demandas: demandRows(demandasRaw),
-      tomadores: tomadorRows(tomadoresRaw),
-      patterns: patternRows(patternsRaw),
-      notas: notasRaw
-    });
-  }
-
-  if (prepared.validationStatus !== 'READY_TO_ISSUE' || !prepared.candidates.length) {
-    throw new Error(`PREPARE_NOT_READY: ${prepared.blockingReasons.join(', ')}`);
-  }
-
-  const candidate = prepared.candidates[itemIndex - 1];
-  if (!candidate) {
-    throw new Error(`CANDIDATE_INDEX_OUT_OF_BOUNDS: index ${itemIndex}`);
-  }
-
-  if (!candidate.codigoMunicipioPrestacao) {
-    throw new Error('PREPARE_NOT_READY: codigoMunicipioPrestacao indefinido para o tomador/padrão.');
-  }
-
-  // 2. Consulta Ledger
+  // 1. Consulta Ledger antes de qualquer processamento
   let ledgerEntries = await loadLedger(dependencies);
   let ledgerEntry = findLedgerEntry(ledgerEntries, {
     environment,
@@ -223,7 +285,7 @@ async function issueHomologation({ requestId, itemIndex = 1, certData, dryRun = 
     itemIndex
   });
 
-  // 3. Regra de Estados do Ledger
+  // 2. Regra de Estados do Ledger
   if (ledgerEntry) {
     if (ledgerEntry.status === RPS_STATUS.ISSUED) {
       return {
@@ -251,20 +313,83 @@ async function issueHomologation({ requestId, itemIndex = 1, certData, dryRun = 
       };
     }
 
-    if (ledgerEntry.status === RPS_STATUS.REJECTED_CORRECTABLE) {
-      // Verifica primeiro se por algum acaso gerou NFS-e
-      const recovery = await recoverViaConsultarNfsePorRps({ ledgerEntry, certData }, dependencies);
-      if (recovery.success) {
-        return recovery;
+    if (ledgerEntry.status === RPS_STATUS.SUBMITTED_ASYNC_PROCESSING) {
+      const reconcile = await reconcileRps({ environment, requestId, itemIndex, certData }, dependencies);
+      if (reconcile.status === RECONCILIATION_STATUS.ISSUED) {
+        return {
+          status: 'ISSUED',
+          environment,
+          requestId,
+          itemIndex,
+          rpsNumero: reconcile.rpsNumero,
+          nfseNumero: reconcile.nfseNumero,
+          nfseChave: reconcile.nfseChave,
+          dataEmissao: reconcile.dataEmissao,
+          recoveredViaRpsQuery: true
+        };
       }
-      // Se não gerou NFS-e e o dado foi corrigido, autoriza nova tentativa
-      console.log(`ℹ️ Registro anterior em REJECTED_CORRECTABLE verificado via RPS (sem nota criada). Prosseguindo com nova tentativa de emissão.`);
+      return {
+        status: 'SUBMITTED_ASYNC_PROCESSING',
+        environment,
+        requestId,
+        itemIndex,
+        rpsNumero: ledgerEntry.rps_numero,
+        message: 'Nota continua em processamento assíncrono pelo Sefaz/ADN. Reemissão proibida.'
+      };
+    }
+
+    if (ledgerEntry.status === RPS_STATUS.REJECTED_CORRECTABLE) {
+      const reconcile = await reconcileRps({ environment, requestId, itemIndex, certData }, dependencies);
+      if (reconcile.status === RECONCILIATION_STATUS.ISSUED) {
+        return {
+          status: 'ISSUED',
+          environment,
+          requestId,
+          itemIndex,
+          rpsNumero: reconcile.rpsNumero,
+          nfseNumero: reconcile.nfseNumero,
+          nfseChave: reconcile.nfseChave,
+          recoveredViaRpsQuery: true
+        };
+      }
+
+      if (reconcile.status !== RECONCILIATION_STATUS.RPS_NOT_FOUND_CONFIRMED) {
+        return {
+          status: 'RECONCILIATION_REQUIRED',
+          environment,
+          requestId,
+          itemIndex,
+          rpsNumero: ledgerEntry.rps_numero,
+          message: `Reconciliação retornou ${reconcile.status}. Reemissão segura não autorizada até confirmação determinística de não emissão.`
+        };
+      }
+
+      if (Number(ledgerEntry.attempt_count || 0) >= MAX_ATTEMPTS) {
+        await markFailedSafe(ledgerEntry, { error: `MAX_ATTEMPTS_EXCEEDED (${ledgerEntry.attempt_count})` }, dependencies);
+        return {
+          status: 'REVISAO_MANUAL',
+          environment,
+          requestId,
+          itemIndex,
+          rpsNumero: ledgerEntry.rps_numero,
+          message: `Limite de ${MAX_ATTEMPTS} tentativas atingido para este item. Bloqueado para revisão manual.`
+        };
+      }
     }
 
     if (ledgerEntry.status === RPS_STATUS.UNKNOWN_AFTER_TIMEOUT || ledgerEntry.status === RPS_STATUS.SUBMITTING) {
-      const recovery = await recoverViaConsultarNfsePorRps({ ledgerEntry, certData }, dependencies);
-      if (recovery.success) {
-        return recovery;
+      const reconcile = await reconcileRps({ environment, requestId, itemIndex, certData }, dependencies);
+      if (reconcile.status === RECONCILIATION_STATUS.ISSUED) {
+        return {
+          status: 'ISSUED',
+          environment,
+          requestId,
+          itemIndex,
+          rpsNumero: reconcile.rpsNumero,
+          nfseNumero: reconcile.nfseNumero,
+          nfseChave: reconcile.nfseChave,
+          recoveredViaRpsQuery: true
+        };
       }
       if (ledgerEntry.status === RPS_STATUS.SUBMITTING) {
         ledgerEntry = await markUnknownAfterTimeout(ledgerEntry, { error: 'CRASH_WINDOW_RECOVERY_INCONCLUSIVE' }, dependencies);
@@ -280,7 +405,41 @@ async function issueHomologation({ requestId, itemIndex = 1, certData, dryRun = 
     }
   }
 
-  // 4. Alocação Atômica do ALLOCATED
+  // 3. Prepara a demanda (se não for caso já emitido/bloqueado no ledger)
+  let prepared;
+  if (requestId.startsWith('fixture-homologation') || requestId.startsWith('fixture-controlada')) {
+    prepared = buildHomologationFixture(requestId);
+  } else {
+    const [demandasRaw, tomadoresRaw, patternsRaw, notasRaw] = await Promise.all([
+      read(spreadsheetId, `${CONFIG.SHEETS.TABS.DEMANDAS}!A:Z`),
+      read(spreadsheetId, `${CONFIG.SHEETS.TABS.TOMADORES}!A:S`),
+      read(spreadsheetId, `${CONFIG.SHEETS.TABS.PADROES}!A:X`),
+      read(spreadsheetId, `${CONFIG.SHEETS.TABS.NOTAS}!A:X`)
+    ]);
+
+    prepared = prepareDemand({
+      requestId,
+      demandas: demandRows(demandasRaw),
+      tomadores: tomadorRows(tomadoresRaw),
+      patterns: patternRows(patternsRaw),
+      notas: notasRaw
+    });
+  }
+
+  if (prepared.validationStatus !== 'READY_TO_ISSUE' || !prepared.candidates.length) {
+    throw new Error(`PREPARE_NOT_READY: ${prepared.blockingReasons.join(', ')}`);
+  }
+
+  const candidate = prepared.candidates[itemIndex - 1];
+  if (!candidate) {
+    throw new Error(`CANDIDATE_INDEX_OUT_OF_BOUNDS: index ${itemIndex}`);
+  }
+
+  if (!candidate.codigoMunicipioPrestacao) {
+    throw new Error('PREPARE_NOT_READY: codigoMunicipioPrestacao indefinido para o tomador/padrão.');
+  }
+
+  // 4. Alocação Atômica do ALLOCATED (se ainda não existia)
   if (!ledgerEntry) {
     if (!dryRun) {
       ledgerEntry = await allocateRpsAtomically({
@@ -299,7 +458,8 @@ async function issueHomologation({ requestId, itemIndex = 1, certData, dryRun = 
         rps_serie: 'A',
         rps_tipo: '1',
         status: RPS_STATUS.ALLOCATED,
-        allocated_at: new Date().toISOString()
+        allocated_at: new Date().toISOString(),
+        attempt_count: 0
       };
     }
   }
@@ -474,14 +634,22 @@ async function issueHomologation({ requestId, itemIndex = 1, certData, dryRun = 
   // 9. Tratamento de Timeout
   if (timeoutOccurred || !responseXml) {
     ledgerEntry = await markUnknownAfterTimeout(ledgerEntry, { error: 'TIMEOUT_ON_GERARNFSE' }, dependencies);
-    const recovery = await recoverViaConsultarNfsePorRps({ ledgerEntry, certData }, dependencies);
-    if (recovery.success) {
-      return recovery;
+    const reconcile = await reconcileRps({ environment, requestId, itemIndex, certData }, dependencies);
+    if (reconcile.status === RECONCILIATION_STATUS.ISSUED) {
+      return {
+        status: 'ISSUED',
+        environment,
+        requestId,
+        itemIndex,
+        rpsNumero: reconcile.rpsNumero,
+        nfseNumero: reconcile.nfseNumero,
+        nfseChave: reconcile.nfseChave,
+        dataEmissao: reconcile.dataEmissao,
+        recoveredViaRpsQuery: true
+      };
     }
     throw new Error('TIMEOUT_UNCONFIRMED: Emissão ficou inconclusiva após timeout e consulta por RPS.');
   }
-
-  console.log('📡 Resposta bruta da Prefeitura a GerarNfse:\n', responseXml.slice(0, 1000));
 
   // 10. Parse da Resposta Oficial
   const parsedGerar = parseGerarNfseResposta(responseXml);
@@ -489,17 +657,27 @@ async function issueHomologation({ requestId, itemIndex = 1, certData, dryRun = 
   // Se veio retorno assíncrono (ADN) ou ainda sem dados síncronos da nota
   if (!parsedGerar.hasNfse) {
     if (parsedGerar.isAsyncAccepted) {
-      console.log('⏳ Emissão aceita assincronamente pelo ADN/Sefaz. Consultando por RPS para confirmação...');
-      // Polling com retries curtos (3 tentativas com espera de 3s)
-      for (let attempt = 1; attempt <= 3; attempt++) {
-        await new Promise(r => setTimeout(r, 3000));
-        const recovery = await recoverViaConsultarNfsePorRps({ ledgerEntry, certData }, dependencies);
-        if (recovery.success) {
-          console.log(`✅ Nota confirmada via RPS após processamento assíncrono (Tentativa ${attempt}): NFS-e nº ${recovery.nfseNumero}`);
-          return recovery;
+      ledgerEntry = await markSubmittedAsyncProcessing(ledgerEntry, { providerMessage: parsedGerar.mensagens[0]?.mensagem }, dependencies);
+      
+      // Polling curto inicial
+      for (let attempt = 1; attempt <= 2; attempt++) {
+        await new Promise(r => setTimeout(r, 2000));
+        const reconcile = await reconcileRps({ environment, requestId, itemIndex, certData }, dependencies);
+        if (reconcile.status === RECONCILIATION_STATUS.ISSUED) {
+          return {
+            status: 'ISSUED',
+            environment,
+            requestId,
+            itemIndex,
+            rpsNumero: reconcile.rpsNumero,
+            nfseNumero: reconcile.nfseNumero,
+            nfseChave: reconcile.nfseChave,
+            dataEmissao: reconcile.dataEmissao,
+            recoveredViaRpsQuery: true
+          };
         }
       }
-      // Se ainda não concluiu o processamento no ADN
+
       return {
         status: 'SUBMITTED_ASYNC_PROCESSING',
         environment,
@@ -508,18 +686,28 @@ async function issueHomologation({ requestId, itemIndex = 1, certData, dryRun = 
         rpsNumero: candidate.rpsNumero,
         rpsSerie: candidate.rpsSerie,
         rpsTipo: candidate.rpsTipo,
-        message: 'Solicitação aceita e em processamento assíncrono pelo Sefaz/ADN. Próxima execução consultará via RPS.'
+        message: 'Solicitação aceita e persistida como SUBMITTED_ASYNC_PROCESSING. Reconciliação posterior via RPS confirmará emissão definitiva.'
       };
     }
 
-    const errorMsg = parsedGerar.mensagens.map(m => `[${m.codigo}] ${m.mensagem}`).join('; ') || `RESPOSTA_SEM_NFSE: ${responseXml.slice(0, 300)}`;
+    const errorCodes = parsedGerar.mensagens.map(m => m.codigo).filter(Boolean).join(', ');
+    const errorMsg = parsedGerar.mensagens.map(m => `[${m.codigo}] ${m.mensagem}`).join('; ') || 'RESPOSTA_SEM_NFSE';
     
-    // Classificação de Erro: Erros determinísticos cadastrais/tributários (ex: EL78, EL244, etc) viram REJECTED_CORRECTABLE
-    ledgerEntry = await markRejectedCorrectable(ledgerEntry, { error: errorMsg }, dependencies);
+    // Classificação de Erro determinístico
+    ledgerEntry = await markRejectedCorrectable(ledgerEntry, {
+      error: errorMsg,
+      providerErrorCodes: errorCodes,
+      providerMessage: errorMsg
+    }, dependencies);
+    
     throw new Error(`GERAR_NFSE_REJECTED: ${errorMsg}`);
   }
 
-  ledgerEntry = await markIssued(ledgerEntry, { nfseNumero: parsedGerar.numero, nfseChave: parsedGerar.codigoVerificacao }, dependencies);
+  ledgerEntry = await markIssued(ledgerEntry, {
+    nfseNumero: parsedGerar.numero,
+    nfseChave: parsedGerar.codigoVerificacao,
+    dataEmissao: parsedGerar.dataEmissao
+  }, dependencies);
 
   return {
     status: 'ISSUED',
@@ -540,6 +728,6 @@ module.exports = {
   escapeXml,
   buildConsultarNfsePorRpsEnvio,
   parseGerarNfseResposta,
-  recoverViaConsultarNfsePorRps,
+  reconcileRps,
   issueHomologation
 };
