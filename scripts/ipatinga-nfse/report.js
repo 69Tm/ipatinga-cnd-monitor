@@ -47,6 +47,7 @@ function generateReport(summaryData) {
     mdLines.push(`- **Novas Notas Inseridas:** ${upsert.totalNew || 0}`);
     mdLines.push(`- **Notas Existentes Atualizadas:** ${upsert.totalUpdated || 0}`);
     mdLines.push(`- **Notas Canceladas Detectadas:** ${upsert.totalCanceled || 0}`);
+    mdLines.push(`- **Notas Substituídas Detectadas:** ${upsert.totalSubstituted || 0}`);
     mdLines.push(`- **Notas Inalteradas:** ${upsert.totalUnchanged || 0}`);
     mdLines.push('');
 

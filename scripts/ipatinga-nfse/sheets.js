@@ -158,6 +158,7 @@ async function upsertNotas(apiNotas, spreadsheetId = null, dryRun = false, depen
   let totalUpdated = 0;
   let totalUnchanged = 0;
   let totalCanceled = 0;
+  let totalSubstituted = 0;
 
   for (const item of apiNotas) {
     const cleanNum = String(parseInt(onlyDigits(item.numero), 10) || item.numero);
@@ -167,6 +168,9 @@ async function upsertNotas(apiNotas, spreadsheetId = null, dryRun = false, depen
 
     if (item.status === 'CANCELADA') {
       totalCanceled++;
+    }
+    if (item.status === 'SUBSTITUIDA') {
+      totalSubstituted++;
     }
 
     if (existingRec) {
@@ -259,6 +263,7 @@ async function upsertNotas(apiNotas, spreadsheetId = null, dryRun = false, depen
     totalUpdated,
     totalUnchanged,
     totalCanceled,
+    totalSubstituted,
     dryRun
   };
 }

@@ -61,7 +61,7 @@ const CONFIG = Object.freeze({
     BATCH_SIZE: Number(process.env.NFE_SYNC_BATCH_SIZE || 50),
     OVERLAP: Number(process.env.NFE_SYNC_OVERLAP || 10),
     INCREMENTAL_FORWARD: Number(process.env.NFE_SYNC_INCREMENTAL_FORWARD || 100),
-    MAX_NUMBER: Number(process.env.NFE_SYNC_MAX_NUMBER || 1000)
+    EMPTY_RANGES_TO_STOP: Number(process.env.NFE_SYNC_EMPTY_RANGES_TO_STOP || 10)
   },
 
   // Diretórios
