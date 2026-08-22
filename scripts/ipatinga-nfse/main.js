@@ -14,11 +14,16 @@ const { handlePrepare } = require('./prepare');
  * Preflight Check: Valida todos os componentes sem realizar emissao ou alteracao fiscal
  */
 async function preflight(dependencies = {}) {
+  const startedAt = Date.now();
+  const environment = dependencies.environment || 'production';
   console.log('====================================================');
   console.log('  🔍 PREFLIGHT CHECK — AUTOMAÇÃO NFS-e DEXMED (IPATINGA)');
   console.log('====================================================\n');
 
   const results = {
+    operation: 'preflight',
+    environment,
+    dryRun: true,
     timestamp: new Date().toISOString(),
     googleServiceAccount: false,
     sheetsAccess: false,
@@ -142,6 +147,7 @@ async function preflight(dependencies = {}) {
   console.log(`  STATUS FINAL DO PREFLIGHT: ${results.status}`);
   console.log('====================================================\n');
 
+  results.durationSec = Number(((Date.now() - startedAt) / 1000).toFixed(2));
   return results;
 }
 
@@ -194,7 +200,7 @@ async function main() {
 
     // 3. Executa operacao solicitada
     if (operation === 'preflight') {
-      summary = await preflight();
+      summary = await preflight({ environment });
     } else if (operation === 'historical_analysis') {
       summary = await runHistoricalAnalysis({ dryRun, environment });
     } else if (operation === 'sync') {

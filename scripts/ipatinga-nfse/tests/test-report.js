@@ -50,3 +50,14 @@ assert.deepStrictEqual(result, {
   errors: 0,
   warnings: 1
 });
+
+const preflightResult = buildConsoleSummary({
+  operation: 'preflight',
+  environment: 'production',
+  status: 'READY_ALL_OK',
+  dryRun: true
+});
+assert.strictEqual(preflightResult.operation, 'preflight');
+assert.strictEqual(preflightResult.environment, 'production');
+assert.strictEqual(preflightResult.status, 'READY_ALL_OK');
+assert.strictEqual(preflightResult.dryRun, true);
