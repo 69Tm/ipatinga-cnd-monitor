@@ -10,6 +10,7 @@ function onlyDigits(str) {
 
 function normalizeCnpj(cnpj) {
   const digits = onlyDigits(cnpj);
+  if (!digits) return '';
   return digits.padStart(14, '0');
 }
 
@@ -63,88 +64,96 @@ function parseCurrency(val) {
     str = str.replace(',', '.');
   }
   const num = parseFloat(str);
-  return isNaN(num) ? 0 : num;
+  return isNaN(num) ? 0 : Number(num.toFixed(2));
 }
 
-function formatCurrency(num) {
-  const val = parseCurrency(num);
-  return val.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+function formatCurrency(val) {
+  const num = parseCurrency(val);
+  return num.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 }
 
 function parseAliquot(val) {
   if (val === null || val === undefined || val === '') return 0;
   if (typeof val === 'number') {
-    // Se for 0.02 -> 2.0 (ou se for 2.0 -> 2.0)
-    return val < 1 && val > 0 ? val * 100 : val;
+    if (val > 0 && val < 0.20) return Number((val * 100).toFixed(4));
+    return isNaN(val) ? 0 : Number(val.toFixed(4));
   }
-  let str = String(val).replace(/%/g, '').trim();
-  str = str.replace(',', '.');
+  let str = String(val).trim().replace(/%/g, '').replace(/\s/g, '');
+  if (str.includes(',')) {
+    str = str.replace(',', '.');
+  }
   const num = parseFloat(str);
   if (isNaN(num)) return 0;
-  return num < 1 && num > 0 ? num * 100 : num;
+  if (num > 0 && num < 0.20 && !String(val).includes('%')) {
+    return Number((num * 100).toFixed(4));
+  }
+  return Number(num.toFixed(4));
 }
 
-function formatAliquot(num) {
-  const val = parseAliquot(num);
-  return val.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 4 }) + '%';
+function formatAliquot(val) {
+  const num = parseAliquot(val);
+  return num.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 4 }) + '%';
 }
 
 function parseIsoDate(val) {
   if (!val) return null;
-  if (val instanceof Date) return isNaN(val.getTime()) ? null : val;
+  if (val instanceof Date && !isNaN(val)) return val;
   const str = String(val).trim();
-  if (/^\d{4}-\d{2}-\d{2}/.test(str)) {
-    const d = new Date(str);
-    return isNaN(d.getTime()) ? null : d;
+  // Formato ISO: YYYY-MM-DD
+  const isoMatch = str.match(/^(\d{4})-(\d{2})-(\d{2})/);
+  if (isoMatch) {
+    return new Date(`${isoMatch[1]}-${isoMatch[2]}-${isoMatch[3]}T12:00:00Z`);
   }
-  if (/^\d{2}\/\d{2}\/\d{4}/.test(str)) {
-    const parts = str.split('/');
-    const d = new Date(Number(parts[2]), Number(parts[1]) - 1, Number(parts[0]));
-    return isNaN(d.getTime()) ? null : d;
+  // Formato BR: DD/MM/YYYY
+  const brMatch = str.match(/^(\d{2})\/(\d{2})\/(\d{4})/);
+  if (brMatch) {
+    return new Date(`${brMatch[3]}-${brMatch[2]}-${brMatch[1]}T12:00:00Z`);
   }
-  const d = new Date(str);
-  return isNaN(d.getTime()) ? null : d;
+  const timestamp = Date.parse(str);
+  return isNaN(timestamp) ? null : new Date(timestamp);
 }
 
 function formatDateBr(val) {
-  const d = parseIsoDate(val);
-  if (!d) return String(val || '');
-  const day = String(d.getDate()).padStart(2, '0');
-  const month = String(d.getMonth() + 1).padStart(2, '0');
-  const year = d.getFullYear();
+  const date = parseIsoDate(val);
+  if (!date) return '';
+  const day = String(date.getUTCDate()).padStart(2, '0');
+  const month = String(date.getUTCMonth() + 1).padStart(2, '0');
+  const year = date.getUTCFullYear();
   return `${day}/${month}/${year}`;
 }
 
 function formatDateIso(val) {
-  const d = parseIsoDate(val);
-  if (!d) return '';
-  const day = String(d.getDate()).padStart(2, '0');
-  const month = String(d.getMonth() + 1).padStart(2, '0');
-  const year = d.getFullYear();
+  const date = parseIsoDate(val);
+  if (!date) return '';
+  const day = String(date.getUTCDate()).padStart(2, '0');
+  const month = String(date.getUTCMonth() + 1).padStart(2, '0');
+  const year = date.getUTCFullYear();
   return `${year}-${month}-${day}`;
-}
-
-function formatDateTimeIso(val) {
-  const d = parseIsoDate(val);
-  if (!d) return '';
-  return d.toISOString();
 }
 
 function parseCompetencia(val) {
   if (!val) return '';
   const str = String(val).trim();
+  // Se for MM/YYYY
   if (/^\d{2}\/\d{4}$/.test(str)) return str;
-  if (/^\d{4}-\d{2}/.test(str)) {
-    const parts = str.split('-');
-    return `${parts[1]}/${parts[0]}`;
-  }
-  const d = parseIsoDate(str);
-  if (d) {
-    const month = String(d.getMonth() + 1).padStart(2, '0');
-    const year = d.getFullYear();
+  // Se for YYYY-MM
+  const ymMatch = str.match(/^(\d{4})-(\d{2})/);
+  if (ymMatch) return `${ymMatch[2]}/${ymMatch[1]}`;
+  // Se for ISO completo
+  const date = parseIsoDate(str);
+  if (date) {
+    const month = String(date.getUTCMonth() + 1).padStart(2, '0');
+    const year = date.getUTCFullYear();
     return `${month}/${year}`;
   }
   return str;
+}
+
+function sanitizeLog(text) {
+  if (!text) return '';
+  return String(text)
+    .replace(/(password|senha|secret|token|client_secret)=([^&]+)/gi, '$1=***REDACTED***')
+    .replace(/("password"|"senha"|"token"):\s*"[^"]+"/gi, '$1:"***REDACTED***"');
 }
 
 module.exports = {
@@ -159,6 +168,6 @@ module.exports = {
   parseIsoDate,
   formatDateBr,
   formatDateIso,
-  formatDateTimeIso,
-  parseCompetencia
+  parseCompetencia,
+  sanitizeLog
 };

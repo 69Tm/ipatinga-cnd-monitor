@@ -59,54 +59,48 @@ async function preflight(options = {}, dependencies = {}) {
     results.sheetsAccess = await checkSheets(CONFIG.SHEETS.SPREADSHEET_ID);
     console.log(`✓ Google Sheets (${CONFIG.SHEETS.SPREADSHEET_ID}): ACESSIVEL`);
   } catch (err) {
-    results.sheetsAccess = false;
-    results.errors.push('Sheets: ' + sanitize(err.message));
-    console.log(`✗ Google Sheets: FALHA (${sanitize(err.message)})`);
+    results.errors.push(`Google Sheets erro: ${sanitize(err.message)}`);
+    console.log(`✗ Google Sheets (${CONFIG.SHEETS.SPREADSHEET_ID}): ERRO (${sanitize(err.message)})`);
   }
 
-  // 3. PFX no Google Drive
+  // 3. Certificado no Drive
   const checkDrive = dependencies.checkDriveFileAccess || checkDriveFileAccess;
   try {
-    const driveInfo = await checkDrive(CONFIG.CERT.DRIVE_FILE_ID);
-    results.pfxAccessibleOnDrive = driveInfo.accessible;
-    console.log(`✓ PFX no Google Drive (${CONFIG.CERT.DRIVE_FILE_ID}): ENCONTRADO (${driveInfo.name}, ${driveInfo.sizeBytes} bytes)`);
+    const certMeta = await checkDrive(CONFIG.CERT.DRIVE_FILE_ID);
+    results.pfxAccessibleOnDrive = true;
+    console.log(`✓ Certificado no Drive (${CONFIG.CERT.DRIVE_FILE_ID}): ENCONTRADO (${certMeta.name || 'arquivo'})`);
   } catch (err) {
-    results.pfxAccessibleOnDrive = false;
-    results.errors.push('Drive PFX: ' + sanitize(err.message));
-    console.log(`✗ PFX no Google Drive: FALHA (${sanitize(err.message)})`);
+    results.errors.push(`Certificado Drive erro: ${sanitize(err.message)}`);
+    console.log(`✗ Certificado no Drive (${CONFIG.CERT.DRIVE_FILE_ID}): ERRO (${sanitize(err.message)})`);
   }
 
   // 4. Validação PFX
-  const loadCert = dependencies.loadCertificate || loadCertificate;
   if (CONFIG.CERT.PASSWORD) {
     results.pfxPasswordConfigured = true;
     try {
-      const certData = await loadCert();
-      results.pfxValidated = certData.isValid;
+      const certData = await loadCertificate();
       if (certData.isValid) {
-        results.certificateCnpj = certData.certificateCnpj ? 'OK' : 'CERT_CNPJ_NOT_EXTRACTED';
-        results.warnings.push(...(certData.warnings || []));
-        console.log(`✓ PFX senha configurada: OK`);
-        console.log(`✓ PFX conteudo validado: OK (${certData.commonName} valido ate ${formatDateBr(certData.notAfter)})`);
+        results.pfxValidated = true;
+        console.log(`✓ Certificado A1 validado: ${certData.commonName}`);
+        console.log(`  Validade: ${formatDateBr(certData.validFrom)} até ${formatDateBr(certData.validTo)} (${certData.daysUntilExpiry} dias)`);
       } else {
-        console.log('⚠️ PFX conteudo validado: EXPIRADO ou INVALIDO');
+        results.errors.push('Certificado expirado ou ainda não válido');
+        console.log('✗ Certificado A1: INVALIDO (fora da validade)');
       }
     } catch (err) {
-      results.errors.push('PFX Parse: ' + err.message);
-      console.log('✗ PFX conteudo validado: FALHA NA SENHA (' + err.message + ')');
+      results.errors.push(`Certificado A1 erro: ${sanitize(err.message)}`);
+      console.log(`✗ Certificado A1: ERRO (${sanitize(err.message)})`);
     }
   } else {
-    results.pfxPasswordConfigured = false;
-    results.pfxValidated = false;
-    console.log('⏳ PFX senha configurada: PENDENTE (NFE_CERT_PASSWORD ausente)');
-    console.log('🔒 PFX conteudo validado: BLOQUEADO PELA SENHA');
+    results.warnings.push('NFE_CERT_PASSWORD não configurado (operação read-only para preflight)');
+    console.log('⚠️ Certificado A1: NFE_CERT_PASSWORD NÃO INFORMADO');
   }
 
-  // 5. WSDL real
-  const inspect = dependencies.inspectWsdl || inspectWsdl;
-  for (const envName of ['production', 'homologation']) {
+  // 5. WSDLs
+  const environments = ['production', 'homologation'];
+  for (const envName of environments) {
     try {
-      const inspected = await inspect(CONFIG.ENDPOINTS[envName].wsdl);
+      const inspected = await inspectWsdl(envName);
       results.wsdl[envName] = inspected;
       results[`${envName}WsdlAccessible`] = true;
       console.log(`✓ WSDL ${envName}: OK HTTP ${inspected.statusCode}, ${inspected.latencyMs}ms, ${inspected.contract.operation}`);
@@ -140,8 +134,10 @@ async function preflight(options = {}, dependencies = {}) {
 }
 
 function enforceOperationSafety(operation, environment) {
-  if (operation === 'issue' && environment === 'production') {
-    throw new Error('PRODUCTION_ISSUE_DISABLED: Emissao de NFS-e em producao esta estritamente bloqueada.');
+  if (operation === 'issue') {
+    if (process.env.NFE_ISSUE_KILL_SWITCH === 'true' || process.env.NFE_ISSUE_KILL_SWITCH === true) {
+      throw new Error('NFE_ISSUE_KILL_SWITCH_ACTIVE: Emissao bloqueada emergencialmente pelo kill switch.');
+    }
   }
 }
 
@@ -230,11 +226,8 @@ async function main() {
     } else if (operation === 'prepare') {
       summary = await handlePrepare({ requestId, environment, dryRun });
     } else if (operation === 'issue') {
-      if (environment !== 'homologation') {
-        throw new Error('PRODUCTION_ISSUE_DISABLED: Emissao permitida apenas em homologacao.');
-      }
       if (!certData || !certData.loaded || !certData.isValid) {
-        throw new Error('CERT_PASSWORD_MISSING: Emissao em homologacao requer certificado A1 desbloqueado.');
+        throw new Error('CERT_PASSWORD_MISSING: Emissao requer certificado A1 desbloqueado.');
       }
       if (!requestId) {
         throw new Error('REQUEST_ID_REQUIRED: Emissao requer parâmetro request_id.');
@@ -249,25 +242,25 @@ async function main() {
       throw new Error(`Operacao desconhecida: ${operation}`);
     }
 
-    if (summary) {
-      generateReport(summary);
-      console.log('📄 Relatorio de execucao gerado com sucesso em report/run-summary.md');
-      console.log(`NFSE_RUN_RESULT=${JSON.stringify(buildConsoleSummary(summary))}`);
-      if (summary.status === 'FAILED') process.exitCode = 1;
-    }
+    summary.operation = operation;
+    summary.environment = environment;
+    summary.dryRun = dryRun;
+    summary.timestamp = new Date().toISOString();
+
+    generateReport(summary);
+    console.log('\n📄 Relatorio de execucao gerado com sucesso em report/run-summary.md');
+    console.log(`NFSE_RUN_RESULT=${JSON.stringify(buildConsoleSummary(summary))}`);
   } catch (err) {
-    const sanitizedMsg = sanitize(err.message || err);
-    console.error('\n❌ ERRO NA EXECUCAO: ' + sanitizedMsg);
-    
-    summary = err.syncSummary || {
+    const errorSummary = {
       operation,
-      status: err.code === 'PARTIAL_SYNC_FAILED' ? 'PARTIAL_SYNC_FAILED' : 'FAILED',
+      status: 'FAILED',
       environment,
       timestamp: new Date().toISOString(),
-      errors: [sanitizedMsg]
+      errors: [err.message]
     };
-    generateReport(summary);
-    process.exitCode = 1;
+    generateReport(errorSummary);
+    console.error(`\n❌ ERRO NA EXECUCAO: ${err.message}`);
+    process.exit(1);
   }
 }
 

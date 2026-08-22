@@ -1,18 +1,13 @@
-# Invariantes de segurança
+# Invariantes de Segurança e Operação Fiscal (NFS-e DEXMED)
 
-- Nunca emitir NFS-e em produção sem autorização explícita futura e específica.
-- Nunca chamar `GerarNfse`, cancelar ou substituir NFS-e automaticamente.
-- Manter bloqueios redundantes de emissão em produção no workflow e no CLI.
-- Consultas NFS-e em produção são permitidas somente por serem operações de leitura.
-- Não executar sync fiscal autenticado sem certificado A1 carregado, válido e compatível com a DEXMED.
-- Uma falha técnica, SOAP, ABRASF, de certificado, parsing ou Google deve falhar o workflow.
-- Um sync só escreve no Google Sheets depois de concluir e validar todas as consultas.
-- `dry_run=true` significa zero escrita externa: Google Sheets, Drive, GitHub e sistema fiscal.
-- Google Sheets é o contrato de estado da automação fiscal; preservar as 24 colunas e os campos humanos.
-- GitHub Actions é o executor fiscal. Gmail e seu fluxo continuam no Google Apps Script.
-- Não modificar nem quebrar os workflows existentes de CND sem solicitação explícita.
-- Não hardcodar alíquota ISS, valores ou campos fiscais variáveis.
-- Manter separados os padrões HIC Plantões PS SUS e HIC Produção PS SUS.
-- Para CISURG, o espelho da competência é a fonte do descritivo; histórico serve apenas para validação.
-- Nunca registrar tokens, senhas, service account JSON, PFX, chaves privadas ou Authorization.
-- Fixtures e logs devem conter somente dados sintéticos ou já públicos, sem secrets.
+- **Filosofia Operacional:** Supervised Automation — dados suficientes + padrão conhecido + validações técnicas OK → emitir.
+- **Tratamento de Resposta do Provedor:** Resposta determinística do provedor (erros cadastrais/tributários como EL78, EL244) → classificar como `REJECTED_CORRECTABLE`, corrigir e prosseguir; resultado ambíguo (timeout/queda de conexão) → impedir duplicidade e reconciliar via `ConsultarNfsePorRps`.
+- **Produção Supervisionada:** Emissão em produção tecnicamente habilitada sob supervisão do usuário, com kill switch operacional de emergência (`NFE_ISSUE_KILL_SWITCH=true`).
+- **Cancelamento e Substituição:** Cancelamento automático desabilitado nesta etapa — cancelamento manual sob supervisão do usuário no portal fiscal se necessário.
+- **Certificado Digital A1:** Operações autenticadas exigem certificado A1 válido e compatível com a DEXMED.
+- **Fail-Closed Técnico:** Validação estrita W3C XSD Schema 2.04 e assinatura XMLDSig C14N com verificação nativa `xmlsec1`.
+- **Idempotência e Ledger:** Alocação atômica de RPS antes do envio; consulta prévia por RPS para garantir entrega exactly-once.
+- **Google Sheets:** Preservar a integridade das abas estruturadas (Notas, Demandas, Tomadores, Padrões, RPS).
+- **Sem Dados Hardcoded Silenciosos:** Município de prestação e município de incidência do ISS são campos distintos; alíquotas e retenções são dinâmicas ou omitidas quando zero.
+- **Separação de Padrões:** HIC Plantões PS SUS e HIC Produção PS SUS mantêm-se notas separadas. CISURG utiliza descrição do espelho mensal da competência.
+- **Segurança de Segredos:** Nunca expor tokens, senhas, chaves privadas ou certificados nos logs ou relatórios.

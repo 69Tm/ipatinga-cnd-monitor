@@ -10,6 +10,7 @@ const {
   allocateRpsAtomically,
   markSubmitting,
   markIssued,
+  markRejectedCorrectable,
   markUnknownAfterTimeout,
   markFailedSafe,
   RPS_STATUS
@@ -94,7 +95,7 @@ async function recoverViaConsultarNfsePorRps({ ledgerEntry, certData }, dependen
   let queryRes = null;
   try {
     queryRes = await soapCall({
-      environment: 'homologation',
+      environment: ledgerEntry.environment || 'homologation',
       operation: 'ConsultarNfsePorRps',
       cabecMsg: buildCabecalho(),
       dadosMsg: consultarRpsXml,
@@ -112,7 +113,7 @@ async function recoverViaConsultarNfsePorRps({ ledgerEntry, certData }, dependen
       success: true,
       updatedEntry: updated,
       status: 'ISSUED',
-      environment: 'homologation',
+      environment: ledgerEntry.environment || 'homologation',
       requestId: ledgerEntry.request_id,
       itemIndex: ledgerEntry.item_index,
       rpsNumero: ledgerEntry.rps_numero,
@@ -129,8 +130,11 @@ async function recoverViaConsultarNfsePorRps({ ledgerEntry, certData }, dependen
 }
 
 async function issueHomologation({ requestId, itemIndex = 1, certData, dryRun = false }, dependencies = {}) {
-  if (process.env.INPUT_ENVIRONMENT === 'production') {
-    throw new Error('PRODUCTION_ISSUE_DISABLED: Emissão de NFS-e em produção está estritamente bloqueada.');
+  const environment = process.env.INPUT_ENVIRONMENT || 'homologation';
+
+  // Kill Switch operacional
+  if (process.env.NFE_ISSUE_KILL_SWITCH === 'true' || process.env.NFE_ISSUE_KILL_SWITCH === true) {
+    throw new Error('NFE_ISSUE_KILL_SWITCH_ACTIVE: Emissao bloqueada emergencialmente pelo kill switch.');
   }
 
   if (!certData || !certData.loaded || !certData.isValid) {
@@ -152,7 +156,7 @@ async function issueHomologation({ requestId, itemIndex = 1, certData, dryRun = 
     // 1. Carrega dados e prepara demanda real
     const [demandasRaw, tomadoresRaw, patternsRaw, notasRaw] = await Promise.all([
       read(spreadsheetId, `${CONFIG.SHEETS.TABS.DEMANDAS}!A:Z`),
-      read(spreadsheetId, `${CONFIG.SHEETS.TABS.TOMADORES}!A:J`),
+      read(spreadsheetId, `${CONFIG.SHEETS.TABS.TOMADORES}!A:M`),
       read(spreadsheetId, `${CONFIG.SHEETS.TABS.PADROES}!A:T`),
       read(spreadsheetId, `${CONFIG.SHEETS.TABS.NOTAS}!A:X`)
     ]);
@@ -182,7 +186,7 @@ async function issueHomologation({ requestId, itemIndex = 1, certData, dryRun = 
   // 2. Consulta Ledger
   let ledgerEntries = await loadLedger(dependencies);
   let ledgerEntry = findLedgerEntry(ledgerEntries, {
-    environment: 'homologation',
+    environment,
     requestId,
     itemIndex
   });
@@ -192,7 +196,7 @@ async function issueHomologation({ requestId, itemIndex = 1, certData, dryRun = 
     if (ledgerEntry.status === RPS_STATUS.ISSUED) {
       return {
         status: 'ALREADY_ISSUED',
-        environment: 'homologation',
+        environment,
         requestId,
         itemIndex,
         rpsNumero: ledgerEntry.rps_numero,
@@ -206,13 +210,23 @@ async function issueHomologation({ requestId, itemIndex = 1, certData, dryRun = 
     if (ledgerEntry.status === RPS_STATUS.FAILED_SAFE) {
       return {
         status: 'REVISAO_MANUAL',
-        environment: 'homologation',
+        environment,
         requestId,
         itemIndex,
         rpsNumero: ledgerEntry.rps_numero,
         error: ledgerEntry.error,
         message: 'Registro em FAILED_SAFE requer intervenção/revisão manual; reemissão automática proibida.'
       };
+    }
+
+    if (ledgerEntry.status === RPS_STATUS.REJECTED_CORRECTABLE) {
+      // Verifica primeiro se por algum acaso gerou NFS-e
+      const recovery = await recoverViaConsultarNfsePorRps({ ledgerEntry, certData }, dependencies);
+      if (recovery.success) {
+        return recovery;
+      }
+      // Se não gerou NFS-e e o dado foi corrigido, autoriza nova tentativa
+      console.log(`ℹ️ Registro anterior em REJECTED_CORRECTABLE verificado via RPS (sem nota criada). Prosseguindo com nova tentativa de emissão.`);
     }
 
     if (ledgerEntry.status === RPS_STATUS.UNKNOWN_AFTER_TIMEOUT || ledgerEntry.status === RPS_STATUS.SUBMITTING) {
@@ -225,7 +239,7 @@ async function issueHomologation({ requestId, itemIndex = 1, certData, dryRun = 
       }
       return {
         status: 'SAFE_RETRY_REQUIRED',
-        environment: 'homologation',
+        environment,
         requestId,
         itemIndex,
         rpsNumero: ledgerEntry.rps_numero,
@@ -238,7 +252,7 @@ async function issueHomologation({ requestId, itemIndex = 1, certData, dryRun = 
   if (!ledgerEntry) {
     if (!dryRun) {
       ledgerEntry = await allocateRpsAtomically({
-        environment: 'homologation',
+        environment,
         requestId,
         itemIndex,
         series: 'A',
@@ -246,7 +260,7 @@ async function issueHomologation({ requestId, itemIndex = 1, certData, dryRun = 
       }, dependencies);
     } else {
       ledgerEntry = {
-        environment: 'homologation',
+        environment,
         request_id: requestId,
         item_index: String(itemIndex),
         rps_numero: '1001',
@@ -263,11 +277,27 @@ async function issueHomologation({ requestId, itemIndex = 1, certData, dryRun = 
   candidate.rpsTipo = ledgerEntry.rps_tipo;
   candidate.xmlId = `RPS${ledgerEntry.rps_numero}${ledgerEntry.rps_serie.replace(/[^A-Za-z0-9]/g, '')}`;
 
-  // 5. Montagem do XML estrito: SEM defaults artificiais de ISS, alíquota, retenções e CNAE
+  // 5. Montagem do XML estrito com Tomador e Endereço Completo
   const itemLista = String(candidate.codigoTribNacional || '').split('.').slice(0, 2).join('.');
   const codMunPrestacao = candidate.codigoMunicipioPrestacao;
+  const codMunIncidencia = candidate.codigoMunicipioIncidenciaIss || '3131307';
   const nbsTag = candidate.nbs ? `<cNBS>${escapeXml(candidate.nbs.replace(/\D/g, ''))}</cNBS>` : '';
   const cnaeTag = candidate.codigoCnae ? `<CodigoCnae>${escapeXml(candidate.codigoCnae)}</CodigoCnae>` : '';
+
+  let enderecoXml = '';
+  if (candidate.enderecoTomador) {
+    const end = candidate.enderecoTomador;
+    const complTag = end.complemento ? `<Complemento>${escapeXml(end.complemento)}</Complemento>` : '';
+    enderecoXml = `<Endereco>` +
+      `<Endereco>${escapeXml(end.logradouro || end.endereco)}</Endereco>` +
+      `<Numero>${escapeXml(end.numero)}</Numero>` +
+      complTag +
+      `<Bairro>${escapeXml(end.bairro)}</Bairro>` +
+      `<CodigoMunicipio>${escapeXml(end.codigoMunicipio)}</CodigoMunicipio>` +
+      `<Uf>${escapeXml(end.uf)}</Uf>` +
+      `<Cep>${escapeXml(String(end.cep || '').replace(/\D/g, ''))}</Cep>` +
+    `</Endereco>`;
+  }
 
   let valoresXml = `<ValorServicos>${candidate.valor.toFixed(2)}</ValorServicos>`;
   if (candidate.valorDeducoes !== undefined && candidate.valorDeducoes !== null && candidate.valorDeducoes > 0) {
@@ -326,7 +356,7 @@ async function issueHomologation({ requestId, itemIndex = 1, certData, dryRun = 
           `<CodigoMunicipio>${escapeXml(codMunPrestacao)}</CodigoMunicipio>` +
           `<CodigoPais>1058</CodigoPais>` +
           `<ExigibilidadeISS>1</ExigibilidadeISS>` +
-          `<MunicipioIncidencia>${escapeXml(codMunPrestacao)}</MunicipioIncidencia>` +
+          `<MunicipioIncidencia>${escapeXml(codMunIncidencia)}</MunicipioIncidencia>` +
           nbsTag +
         `</Servico>` +
         `<Prestador>` +
@@ -338,6 +368,7 @@ async function issueHomologation({ requestId, itemIndex = 1, certData, dryRun = 
             `<CpfCnpj><Cnpj>${escapeXml(candidate.cnpjTomador)}</Cnpj></CpfCnpj>` +
           `</IdentificacaoTomador>` +
           `<RazaoSocial>${escapeXml(candidate.tomador)}</RazaoSocial>` +
+          enderecoXml +
         `</TomadorServico>` +
         `<OptanteSimplesNacional>${escapeXml(CONFIG.PRESTADOR.OPTANTE_SIMPLES_NACIONAL)}</OptanteSimplesNacional>` +
         `<IncentivoFiscal>2</IncentivoFiscal>` +
@@ -368,7 +399,7 @@ async function issueHomologation({ requestId, itemIndex = 1, certData, dryRun = 
   if (dryRun) {
     return {
       status: 'DRY_RUN_SUCCESS',
-      environment: 'homologation',
+      environment,
       requestId,
       itemIndex,
       rpsNumero: candidate.rpsNumero,
@@ -392,7 +423,7 @@ async function issueHomologation({ requestId, itemIndex = 1, certData, dryRun = 
 
   try {
     const soapRes = await soapCall({
-      environment: 'homologation',
+      environment,
       operation: 'GerarNfse',
       cabecMsg: buildCabecalho(),
       dadosMsg: signedXml,
@@ -415,14 +446,16 @@ async function issueHomologation({ requestId, itemIndex = 1, certData, dryRun = 
     if (recovery.success) {
       return recovery;
     }
-    throw new Error('TIMEOUT_UNCONFIRMED: Emissão em homologação ficou inconclusiva após timeout e consulta por RPS.');
+    throw new Error('TIMEOUT_UNCONFIRMED: Emissão ficou inconclusiva após timeout e consulta por RPS.');
   }
 
   // 10. Parse da Resposta Oficial
   const parsedGerar = parseGerarNfseResposta(responseXml);
   if (!parsedGerar.hasNfse) {
     const errorMsg = parsedGerar.mensagens.map(m => `[${m.codigo}] ${m.mensagem}`).join('; ') || 'SEM_DADOS_NFSE';
-    ledgerEntry = await markFailedSafe(ledgerEntry, { error: errorMsg }, dependencies);
+    
+    // Classificação de Erro: Erros determinísticos cadastrais/tributários (ex: EL78, EL244, etc) viram REJECTED_CORRECTABLE
+    ledgerEntry = await markRejectedCorrectable(ledgerEntry, { error: errorMsg }, dependencies);
     throw new Error(`GERAR_NFSE_REJECTED: ${errorMsg}`);
   }
 
@@ -430,7 +463,7 @@ async function issueHomologation({ requestId, itemIndex = 1, certData, dryRun = 
 
   return {
     status: 'ISSUED',
-    environment: 'homologation',
+    environment,
     requestId,
     itemIndex,
     rpsNumero: candidate.rpsNumero,

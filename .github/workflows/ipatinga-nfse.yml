@@ -23,7 +23,7 @@ on:
           - incremental
           - full
       environment:
-        description: 'Ambiente fiscal (produção permitida para consulta)'
+        description: 'Ambiente fiscal (produção permitida para consulta e emissão supervisionada)'
         required: true
         default: 'production'
         type: choice
@@ -57,7 +57,7 @@ on:
         type: boolean
 
 concurrency:
-  group: nfse-${{ inputs.operation == 'issue' && 'issue-homologation' || 'default' }}
+  group: nfse-${{ inputs.operation == 'issue' && 'issue-engine' || 'default' }}
   cancel-in-progress: false
 
 jobs:
@@ -78,12 +78,6 @@ jobs:
       - name: Instalar Utilitário Independente XMLSec1
         run: sudo apt-get update && sudo apt-get install -y xmlsec1
 
-      - name: Trava de Segurança — Emissão em Produção Proibida
-        if: ${{ inputs.operation == 'issue' && inputs.environment == 'production' }}
-        run: |
-          echo "::error::PRODUCTION_ISSUE_DISABLED: Emissão de NFS-e em produção está estritamente proibida."
-          exit 1
-
       - name: Instalar Dependências NFS-e
         working-directory: scripts/ipatinga-nfse
         run: npm ci
@@ -103,6 +97,7 @@ jobs:
           INPUT_REQUEST_ID: ${{ inputs.request_id }}
           INPUT_ITEM_INDEX: ${{ inputs.item_index }}
           INPUT_DRY_RUN: ${{ inputs.dry_run }}
+          NFE_ISSUE_KILL_SWITCH: ${{ vars.NFE_ISSUE_KILL_SWITCH || secrets.NFE_ISSUE_KILL_SWITCH || 'false' }}
           GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
           DRIVE_FOLDER_ID: ${{ secrets.DRIVE_FOLDER_ID }}
           NFE_CERT_DRIVE_FILE_ID: ${{ secrets.NFE_CERT_DRIVE_FILE_ID || vars.NFE_CERT_DRIVE_FILE_ID || '14TajJJtjSurR2tuYakbdW4dCHPHkqulb' }}

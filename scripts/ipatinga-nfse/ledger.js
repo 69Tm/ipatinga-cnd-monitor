@@ -7,6 +7,7 @@ const RPS_STATUS = Object.freeze({
   ALLOCATED: 'ALLOCATED',
   SUBMITTING: 'SUBMITTING',
   ISSUED: 'ISSUED',
+  REJECTED_CORRECTABLE: 'REJECTED_CORRECTABLE',
   UNKNOWN_AFTER_TIMEOUT: 'UNKNOWN_AFTER_TIMEOUT',
   FAILED_SAFE: 'FAILED_SAFE'
 });
@@ -211,6 +212,14 @@ async function markIssued(entry, { nfseNumero, nfseChave }, dependencies = {}) {
   }, dependencies);
 }
 
+async function markRejectedCorrectable(entry, { error }, dependencies = {}) {
+  return updateLedgerEntry(entry, {
+    status: RPS_STATUS.REJECTED_CORRECTABLE,
+    last_query_at: new Date().toISOString(),
+    error: String(error || 'REJECTED_CORRECTABLE')
+  }, dependencies);
+}
+
 async function markUnknownAfterTimeout(entry, { error }, dependencies = {}) {
   return updateLedgerEntry(entry, {
     status: RPS_STATUS.UNKNOWN_AFTER_TIMEOUT,
@@ -238,6 +247,7 @@ module.exports = {
   updateLedgerEntry,
   markSubmitting,
   markIssued,
+  markRejectedCorrectable,
   markUnknownAfterTimeout,
   markFailedSafe
 };

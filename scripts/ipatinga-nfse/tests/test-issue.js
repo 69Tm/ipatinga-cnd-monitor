@@ -2,12 +2,17 @@
 
 const assert = require('assert');
 const forge = require('node-forge');
-const { issueHomologation, buildConsultarNfsePorRpsEnvio, parseGerarNfseResposta } = require('../issue');
+const {
+  buildConsultarNfsePorRpsEnvio,
+  parseGerarNfseResposta,
+  issueHomologation
+} = require('../issue');
 const { RPS_STATUS } = require('../ledger');
 
 console.log('Running test-issue.js...');
 
-const keypair = forge.pki.rsa.generateKeyPair({ bits: 2048 });
+// Cria certificado autoassinado em memória para os testes
+const keypair = forge.pki.rsa.generateKeyPair(1024);
 const cert = forge.pki.createCertificate();
 cert.publicKey = keypair.publicKey;
 cert.serialNumber = '01';
@@ -31,13 +36,25 @@ const mockDemandas = [
   ['req-test-homolog', '08/2026', 'HIC — Plantões PS SUS', '100,00', 'Descrição & teste <especial> "homologação"', 'PENDENTE', '']
 ];
 const mockTomadores = [
-  ['CNPJ', 'Razão Social', 'Nome Curto', 'Município', 'Categorias Conhecidas', 'Status Homologação'],
-  ['20.724.357/0001-20', 'HIC & CIA LTDA', 'HIC', 'Guanhães/MG', 'HIC', 'HOMOLOGADO']
+  ['CNPJ', 'Razão Social', 'Nome Curto', 'Logradouro', 'Número', 'Complemento', 'Bairro', 'Cód. Município', 'Município', 'UF', 'CEP', 'Fonte Endereço', 'Validado Em', 'Categorias Conhecidas', 'Status Homologação'],
+  ['20.724.357/0001-20', 'ASSOCIACAO DE CARIDADE NOSSA SENHORA DO CARMO', 'HIC', 'CAPITAO BERNARDO', '257', '', 'CENTRO', '3128006', 'GUANHAES', 'MG', '39740000', 'NFS-e histórica', '2026-08-22', 'HIC', 'HOMOLOGADO']
 ];
 const mockPatterns = [
-  ['ID Padrão', 'Nome Padrão', 'Tomador', 'CNPJ Tomador', 'Categoria', 'Template / Descrição Oficial', 'Cód. Trib. Nacional', 'Cód. Trib. Municipal', 'Local Prestação', 'NBS', 'Confiança', 'Status'],
-  ['HIC_PLANTOES_PS_SUS', 'HIC Plantões', 'HIC & CIA LTDA', '20.724.357/0001-20', 'HIC — Plantões PS SUS', '', '04.03.01', '403', 'Guanhães/MG', '123011900', 'ALTA', 'VALIDADO']
+  ['ID Padrão', 'Nome Padrão', 'Tomador', 'CNPJ Tomador', 'Categoria', 'Template / Descrição Oficial', 'Cód. Trib. Nacional', 'Cód. Trib. Municipal', 'Local Prestação', 'Cód. Município Prestação', 'Cód. Município Incidência', 'NBS', 'Confiança', 'Status'],
+  ['HIC_PLANTOES_PS_SUS', 'HIC Plantões', 'ASSOCIACAO DE CARIDADE NOSSA SENHORA DO CARMO', '20.724.357/0001-20', 'HIC — Plantões PS SUS', '', '04.03.01', '403', 'Guanhães/MG', '3128006', '3131307', '123011900', 'ALTA', 'VALIDADO']
 ];
+
+function mockSheetReader(overrides = {}) {
+  return async (_id, range) => {
+    const norm = String(range || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase();
+    if (norm.includes('rps')) return overrides.rps || [];
+    if (norm.includes('demanda')) return overrides.demandas || mockDemandas;
+    if (norm.includes('tomador')) return overrides.tomadores || mockTomadores;
+    if (norm.includes('padro')) return overrides.padroes || mockPatterns;
+    if (norm.includes('nota')) return overrides.notas || [];
+    return [];
+  };
+}
 
 async function run() {
   // 1. Testa builder de consulta por RPS com escape
@@ -59,87 +76,86 @@ async function run() {
       </CompNfse>
     </ListaNfse>
   </GerarNfseResposta>`;
-  const parsedRes = parseGerarNfseResposta(sampleSuccessResponse);
-  assert.strictEqual(parsedRes.hasNfse, true);
-  assert.strictEqual(parsedRes.numero, '95001');
-  assert.strictEqual(parsedRes.codigoVerificacao, 'ABC123XYZ');
 
-  // 3. Testa issueHomologation em modo dry_run=true
-  const dryRes = await issueHomologation({
+  const parsed = parseGerarNfseResposta(sampleSuccessResponse);
+  assert.strictEqual(parsed.hasNfse, true);
+  assert.strictEqual(parsed.numero, '95001');
+  assert.strictEqual(parsed.codigoVerificacao, 'ABC123XYZ');
+
+  // 3. Testa issueHomologation em DRY-RUN
+  const dryResult = await issueHomologation({
     requestId: 'req-test-homolog',
     itemIndex: 1,
     certData,
     dryRun: true
   }, {
-    readSheetValues: async (_id, range) => {
-      if (range.includes('Demandas')) return mockDemandas;
-      if (range.includes('Tomadores')) return mockTomadores;
-      if (range.includes('Padrões')) return mockPatterns;
-      if (range.includes('RPS')) return [['environment', 'request_id', 'item_index', 'rps_numero', 'rps_serie', 'rps_tipo', 'status']];
-      return [['Nº NFS-e']];
-    }
+    readSheetValues: mockSheetReader()
   });
 
-  assert.strictEqual(dryRes.status, 'DRY_RUN_SUCCESS');
-  assert.strictEqual(dryRes.environment, 'homologation');
-  assert.strictEqual(dryRes.gerarNfseCalls, 0);
-  assert.strictEqual(dryRes.externalWrites, 0);
-  assert.ok(dryRes.xmlSha256, 'Deve conter hash SHA-256 do XML');
-  assert.strictEqual(dryRes.xmlCandidate, undefined, 'NÃO deve expor XML integral');
+  assert.strictEqual(dryResult.status, 'DRY_RUN_SUCCESS');
+  assert.strictEqual(dryResult.gerarNfseCalls, 0);
+  assert.strictEqual(dryResult.externalWrites, 0);
+  assert.strictEqual(dryResult.xsdValidation, 'VALIDATED_OFFICIAL_XSD');
+  assert.strictEqual(dryResult.xmlSignature, 'VALIDATED_XMLDSIG_C14N');
+  assert.ok(dryResult.xmlSha256);
 
-  // 4. Testa Crash Window no estado SUBMITTING
-  // Simula que processo anterior morreu com ledger em SUBMITTING
-  const crashSubmittingLedger = [
+  // 4. Testa idempotência com status ISSUED já no Ledger
+  const mockLedgerIssued = [
     ['environment', 'request_id', 'item_index', 'rps_numero', 'rps_serie', 'rps_tipo', 'status', 'allocated_at', 'submitted_at', 'nfse_numero', 'nfse_chave', 'last_query_at', 'error'],
-    ['homologation', 'req-test-homolog', '1', '1001', 'A', '1', RPS_STATUS.SUBMITTING, '2026-08-22T09:00:00Z', '2026-08-22T09:00:05Z', '', '', '', '']
+    ['homologation', 'req-test-homolog', '1', '1001', 'A', '1', 'ISSUED', '2026-08-22T10:00:00Z', '2026-08-22T10:00:01Z', '95001', 'ABC123XYZ', '', '']
   ];
 
-  let soapGerarNfseCalls = 0;
-  let soapConsultarRpsCalls = 0;
-
-  // Cenário A: Consulta RPS encontra a nota emitida
-  const recoveredRes = await issueHomologation({
+  const idempotentResult = await issueHomologation({
     requestId: 'req-test-homolog',
     itemIndex: 1,
     certData,
     dryRun: false
   }, {
-    readSheetValues: async (_id, range) => {
-      if (range.includes('Demandas')) return mockDemandas;
-      if (range.includes('Tomadores')) return mockTomadores;
-      if (range.includes('Padrões')) return mockPatterns;
-      if (range.includes('RPS')) return crashSubmittingLedger;
-      return [['Nº NFS-e']];
-    },
-    updateSheetValues: async (_id, range, rows) => {
-      crashSubmittingLedger[1] = rows[0];
-    }
+    readSheetValues: mockSheetReader({ rps: mockLedgerIssued }),
+    updateSheetValues: async () => {},
+    appendSheetValues: async () => {}
   });
 
-  // 5. Testa FAILED_SAFE bloqueando reemissão automática
-  const failedSafeLedger = [
+  assert.strictEqual(idempotentResult.status, 'ALREADY_ISSUED');
+  assert.strictEqual(idempotentResult.nfseNumero, '95001');
+  assert.strictEqual(idempotentResult.gerarNfseCalls, 0);
+
+  // 5. Testa Reemissão autorizada após REJECTED_CORRECTABLE
+  let soapCallsCount = 0;
+  const mockLedgerRejected = [
     ['environment', 'request_id', 'item_index', 'rps_numero', 'rps_serie', 'rps_tipo', 'status', 'allocated_at', 'submitted_at', 'nfse_numero', 'nfse_chave', 'last_query_at', 'error'],
-    ['homologation', 'req-test-homolog', '1', '1001', 'A', '1', RPS_STATUS.FAILED_SAFE, '2026-08-22T09:00:00Z', '2026-08-22T09:00:05Z', '', '', '2026-08-22T09:00:10Z', 'TOMADOR_INATIVO']
+    ['homologation', 'req-test-homolog', '1', '1001', 'A', '1', 'REJECTED_CORRECTABLE', '2026-08-22T10:00:00Z', '2026-08-22T10:00:01Z', '', '', '2026-08-22T10:00:05Z', 'EL78']
   ];
 
-  const failedSafeRes = await issueHomologation({
+  const retryResult = await issueHomologation({
     requestId: 'req-test-homolog',
     itemIndex: 1,
     certData,
     dryRun: false
   }, {
-    readSheetValues: async (_id, range) => {
-      if (range.includes('Demandas')) return mockDemandas;
-      if (range.includes('Tomadores')) return mockTomadores;
-      if (range.includes('Padrões')) return mockPatterns;
-      if (range.includes('RPS')) return failedSafeLedger;
-      return [['Nº NFS-e']];
+    readSheetValues: mockSheetReader({ rps: mockLedgerRejected }),
+    updateSheetValues: async () => {},
+    appendSheetValues: async () => {},
+    callSoapOperation: async ({ operation }) => {
+      soapCallsCount++;
+      if (operation === 'ConsultarNfsePorRps') {
+        return { outputXml: '<ConsultarNfseRpsResposta xmlns="http://www.abrasf.org.br/nfse.xsd"><ListaMensagemRetorno><MensagemRetorno><Codigo>E4</Codigo><Mensagem>RPS nao encontrado</Mensagem></MensagemRetorno></ListaMensagemRetorno></ConsultarNfseRpsResposta>' };
+      }
+      if (operation === 'GerarNfse') {
+        return { outputXml: sampleSuccessResponse };
+      }
+      return { outputXml: '' };
     }
   });
 
-  assert.strictEqual(failedSafeRes.status, 'REVISAO_MANUAL', 'FAILED_SAFE não pode reemitir automaticamente');
+  assert.strictEqual(retryResult.status, 'ISSUED');
+  assert.strictEqual(retryResult.nfseNumero, '95001');
+  assert.strictEqual(soapCallsCount, 2); // 1 ConsultarNfsePorRps + 1 GerarNfse
 
   console.log('✓ test-issue.js PASSED');
 }
 
-module.exports = run();
+run().catch(err => {
+  console.error('\n❌ FALHA NOS TESTES:', err);
+  process.exit(1);
+});

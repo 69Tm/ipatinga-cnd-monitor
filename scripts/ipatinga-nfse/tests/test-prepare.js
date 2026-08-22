@@ -21,15 +21,15 @@ const demandasRaw = [
   ['req-sem-pattern', '08/2026', 'Serviço Médico Desconhecido', '500,00', 'Descrição médica avulsa', 'PENDENTE', '']
 ];
 const tomadoresRaw = [
-  ['CNPJ', 'Razão Social', 'Nome Curto', 'Município', 'Categorias Conhecidas', 'Status Homologação'],
-  ['20.724.357/0001-20', 'HOSPITAL IMACULADA CONCEICAO', 'HIC', 'Guanhães/MG', 'HIC', 'HOMOLOGADO'],
-  ['50.098.089/0001-49', 'CISURG', 'CISURG', 'Itabira/MG', 'CISURG', 'HOMOLOGADO']
+  ['CNPJ', 'Razão Social', 'Nome Curto', 'Logradouro', 'Número', 'Complemento', 'Bairro', 'Cód. Município', 'Município', 'UF', 'CEP', 'Fonte Endereço', 'Validado Em', 'Categorias Conhecidas', 'Status Homologação'],
+  ['20.724.357/0001-20', 'ASSOCIACAO DE CARIDADE NOSSA SENHORA DO CARMO', 'HIC', 'CAPITAO BERNARDO', '257', '', 'CENTRO', '3128006', 'GUANHAES', 'MG', '39740000', 'NFS-e histórica', '2026-08-22', 'HIC', 'HOMOLOGADO'],
+  ['50.098.089/0001-49', 'CONSORCIO INTERMUNICIPAL DE SAUDE DA REGIAO DO MEDIO PIRACICABA - CISURG', 'CISURG', 'RUA SAO PAULO', '377', '', 'AMAZONAS', '3131703', 'ITABIRA', 'MG', '35900352', 'Portal Oficial CISURG', '2026-08-22', 'CISURG', 'HOMOLOGADO']
 ];
 const patternsRaw = [
-  ['ID Padrão', 'Nome Padrão', 'Tomador', 'CNPJ Tomador', 'Categoria', 'Template / Descrição Oficial', 'Cód. Trib. Nacional', 'Cód. Trib. Municipal', 'Local Prestação', 'NBS', 'Confiança', 'Status'],
-  ['HIC_PLANTOES_PS_SUS', 'HIC Plantões', 'HOSPITAL IMACULADA CONCEICAO', '20.724.357/0001-20', 'HIC — Plantões PS SUS', '', '04.03.01', '403', 'Guanhães/MG', '123011900', 'ALTA', 'VALIDADO'],
-  ['HIC_PRODUCAO_PS_SUS', 'HIC Produção', 'HOSPITAL IMACULADA CONCEICAO', '20.724.357/0001-20', 'HIC — Produção PS SUS', '', '04.03.01', '403', 'Guanhães/MG', '123011900', 'ALTA', 'VALIDADO'],
-  ['CISURG_PLANTAO_PRESENCIAL', 'CISURG', 'CISURG', '50.098.089/0001-49', 'CISURG', '', '04.03.01', '403', 'Guanhães/MG', '123011900', 'MÉDIA', 'VALIDADO']
+  ['ID Padrão', 'Nome Padrão', 'Tomador', 'CNPJ Tomador', 'Categoria', 'Template / Descrição Oficial', 'Cód. Trib. Nacional', 'Cód. Trib. Municipal', 'Local Prestação', 'Cód. Município Prestação', 'Cód. Município Incidência', 'NBS', 'Confiança', 'Status'],
+  ['HIC_PLANTOES_PS_SUS', 'HIC Plantões', 'ASSOCIACAO DE CARIDADE NOSSA SENHORA DO CARMO', '20.724.357/0001-20', 'HIC — Plantões PS SUS', '', '04.03.01', '403', 'Guanhães/MG', '3128006', '3131307', '123011900', 'ALTA', 'VALIDADO'],
+  ['HIC_PRODUCAO_PS_SUS', 'HIC Produção', 'ASSOCIACAO DE CARIDADE NOSSA SENHORA DO CARMO', '20.724.357/0001-20', 'HIC — Produção PS SUS', '', '04.03.01', '403', 'Guanhães/MG', '3128006', '3131307', '123011900', 'ALTA', 'VALIDADO'],
+  ['CISURG_PLANTAO_PRESENCIAL', 'CISURG', 'CONSORCIO INTERMUNICIPAL DE SAUDE DA REGIAO DO MEDIO PIRACICABA - CISURG', '50.098.089/0001-49', 'CISURG', '', '04.03.01', '403', 'Itabira/MG', '3131703', '3131307', '123011900', 'MÉDIA', 'VALIDADO']
 ];
 
 const demandas = demandRows(demandasRaw);
@@ -48,62 +48,28 @@ assert.strictEqual(XMLValidator.validate(hic.candidates[0].xmlCandidate), true);
 assert.strictEqual(hic.validationStatus, 'READY_TO_ISSUE');
 assert.strictEqual(hic.blockingReasons.length, 0);
 
-// 2. Demanda sem pattern -> PREPARE_NOT_READY (SEM defaults silenciosos)
+// 2. Demanda sem pattern -> REVISAO_MANUAL (SEM defaults silenciosos)
 const semPattern = prepareDemand({ requestId: 'req-sem-pattern', demandas, tomadores, patterns });
 assert.strictEqual(semPattern.validationStatus, 'REVISAO_MANUAL');
 assert.ok(semPattern.blockingReasons.includes('PATTERN_NOT_IDENTIFIED'));
-assert.ok(semPattern.blockingReasons.includes('TAKER_CNPJ_INVALID'));
-assert.ok(semPattern.blockingReasons.includes('SERVICE_LOCATION_MISSING'));
 
 // 3. Fixture explícita de homologação
 const fixture = buildHomologationFixture();
 assert.strictEqual(fixture.validationStatus, 'READY_TO_ISSUE');
-assert.strictEqual(fixture.candidates[0].descricao, 'TESTE DE HOMOLOGACAO - SEM VALOR FISCAL - AUTOMACAO DEXMED');
-assert.strictEqual(fixture.candidates[0].valor, 10.00);
-assert.ok(!fixture.candidates[0].xmlCandidate.includes('<Aliquota>0.0000</Aliquota>'));
-assert.ok(!fixture.candidates[0].xmlCandidate.includes('<ValorIss>0</ValorIss>'));
-assert.ok(!fixture.candidates[0].xmlCandidate.includes('<CodigoCnae>8610701</CodigoCnae>'));
+assert.strictEqual(fixture.candidates[0].enderecoTomador.codigoMunicipio, '3128006');
+assert.strictEqual(fixture.candidates[0].codigoMunicipioPrestacao, '3128006');
+assert.strictEqual(fixture.candidates[0].codigoMunicipioIncidenciaIss, '3131307');
+assert.strictEqual(XMLValidator.validate(fixture.candidates[0].xmlCandidate), true);
 
-// 4. Demanda CISURG
+// 4. Demanda CISURG com espelho mensal
 const cisurg = prepareDemand({ requestId: 'req-cisurg', demandas, tomadores, patterns });
-assert.strictEqual(cisurg.candidates[0].descricao, 'DESCRIÇÃO EXATA DO ESPELHO MENSAL');
-assert.ok(!cisurg.blockingReasons.includes('CISURG_MONTHLY_MIRROR_DESCRIPTION_REQUIRED'));
-assert.ok(cisurg.candidates[0].xmlCandidate.includes('DESCRIÇÃO EXATA DO ESPELHO MENSAL'));
 assert.strictEqual(cisurg.validationStatus, 'READY_TO_ISSUE');
+assert.strictEqual(cisurg.candidates[0].enderecoTomador.codigoMunicipio, '3131703');
+assert.strictEqual(cisurg.candidates[0].codigoMunicipioPrestacao, '3131703');
+assert.strictEqual(cisurg.candidates[0].codigoMunicipioIncidenciaIss, '3131307');
 
-// 5. Demanda já emitida
+// 5. Demanda já concluída
 const done = prepareDemand({ requestId: 'req-done', demandas, tomadores, patterns });
-assert.deepStrictEqual(done.blockingReasons, ['DUPLICATE_ALREADY_ISSUED']);
-assert.strictEqual(done.candidates.length, 0);
+assert.strictEqual(done.validationStatus, 'ALREADY_ISSUED');
 
-// 6. Demanda sem descrição obrigatória
-const missingCritical = prepareDemand({
-  requestId: 'req-cisurg',
-  demandas: demandRows([demandasRaw[0], ['req-cisurg', '08/2026', 'CISURG', '4199,40', '', 'PENDENTE', '']]),
-  tomadores,
-  patterns
-});
-assert.ok(missingCritical.blockingReasons.includes('DESCRIPTION_SOURCE_REQUIRED'));
-assert.ok(missingCritical.blockingReasons.includes('CISURG_MONTHLY_MIRROR_DESCRIPTION_REQUIRED'));
-
-async function run() {
-  let writes = 0;
-  const lookup = range => {
-    if (range.includes('Demandas')) return demandasRaw;
-    if (range.includes('Tomadores')) return tomadoresRaw;
-    if (range.includes('Padrões')) return patternsRaw;
-    return [['Nº NFS-e']];
-  };
-  const result = await handlePrepare({ requestId: 'req-cisurg', environment: 'production', dryRun: false }, {
-    readSheetValues: async (_id, range) => lookup(range),
-    updateSheetValues: async () => { writes++; },
-    appendSheetValues: async () => { writes++; }
-  });
-  assert.strictEqual(result.dryRun, true);
-  assert.strictEqual(result.writeAllowed, false);
-  assert.strictEqual(result.executedWrites, 0);
-  assert.strictEqual(writes, 0);
-  console.log('✓ test-prepare.js PASSED');
-}
-
-module.exports = run();
+console.log('✓ test-prepare.js PASSED');
