@@ -96,7 +96,8 @@ async function recoverViaConsultarNfsePorRps({ ledgerEntry, certData }, dependen
     queryRes = await soapCall({
       environment: 'homologation',
       operation: 'ConsultarNfsePorRps',
-      dadosXml: consultarRpsXml,
+      cabecMsg: buildCabecalho(),
+      dadosMsg: consultarRpsXml,
       certData
     });
   } catch (err) {
@@ -145,7 +146,7 @@ async function issueHomologation({ requestId, itemIndex = 1, certData, dryRun = 
   }
 
   let prepared;
-  if (requestId === 'fixture-homologation' || requestId === 'fixture-controlada') {
+  if (requestId.startsWith('fixture-homologation') || requestId.startsWith('fixture-controlada')) {
     prepared = buildHomologationFixture(requestId);
   } else {
     // 1. Carrega dados e prepara demanda real
@@ -393,7 +394,8 @@ async function issueHomologation({ requestId, itemIndex = 1, certData, dryRun = 
     const soapRes = await soapCall({
       environment: 'homologation',
       operation: 'GerarNfse',
-      dadosXml: signedXml,
+      cabecMsg: buildCabecalho(),
+      dadosMsg: signedXml,
       certData
     });
     responseXml = soapRes.outputXml;
