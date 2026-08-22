@@ -85,11 +85,13 @@ async function getDriveFileMetadata(fileId) {
 /**
  * Lê dados de uma aba da planilha
  */
-async function readSheetValues(spreadsheetId, range) {
+async function readSheetValues(spreadsheetId, range, valueRenderOption = 'FORMATTED_VALUE') {
   const sheets = getSheetsClient();
   const res = await sheets.spreadsheets.values.get({
     spreadsheetId,
-    range
+    range,
+    valueRenderOption,
+    dateTimeRenderOption: valueRenderOption === 'UNFORMATTED_VALUE' ? 'SERIAL_NUMBER' : 'FORMATTED_STRING'
   });
   return res.data.values || [];
 }

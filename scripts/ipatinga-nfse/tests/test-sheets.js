@@ -1,13 +1,15 @@
 'use strict';
 
 const assert = require('assert');
-const { upsertNotas, semanticallyEqual } = require('../sheets');
+const { upsertNotas, semanticallyEqual, dateKey, competenceKey } = require('../sheets');
 
 console.log('Running test-sheets.js...');
 assert.strictEqual(semanticallyEqual(8, '12.925,00', '12925'), true);
 assert.strictEqual(semanticallyEqual(13, 'R$ 2,29', 2.29), true);
 assert.strictEqual(semanticallyEqual(12, '2,4227%', 0.024227), true);
 assert.strictEqual(semanticallyEqual(8, '100,00', '101,00'), false);
+assert.strictEqual(dateKey(46233), dateKey('2026-07-30'));
+assert.strictEqual(competenceKey('07/2026'), '2026-07');
 
 function maps(record = null) {
   const result = { byNumber: new Map(), byChave: new Map(), byCnpjNumero: new Map() };

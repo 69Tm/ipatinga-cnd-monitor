@@ -13,8 +13,31 @@ const {
   formatDateBr,
   onlyDigits,
   parseCurrency,
-  parseAliquot
+  parseAliquot,
+  parseIsoDate,
+  parseCompetencia
 } = require('./validators');
+
+function dateKey(value) {
+  if (typeof value === 'number' && Number.isFinite(value)) {
+    const millis = Date.UTC(1899, 11, 30) + Math.floor(value) * 86400000;
+    return new Date(millis).toISOString().slice(0, 10);
+  }
+  const text = String(value ?? '').trim();
+  const isoMatch = text.match(/^(\d{4}-\d{2}-\d{2})/);
+  if (isoMatch) return isoMatch[1];
+  const brMatch = text.match(/^(\d{2})\/(\d{2})\/(\d{4})/);
+  if (brMatch) return `${brMatch[3]}-${brMatch[2]}-${brMatch[1]}`;
+  const parsed = parseIsoDate(value);
+  return parsed ? `${parsed.getFullYear()}-${String(parsed.getMonth() + 1).padStart(2, '0')}-${String(parsed.getDate()).padStart(2, '0')}` : String(value ?? '').trim();
+}
+
+function competenceKey(value) {
+  if (typeof value === 'number' && Number.isFinite(value)) return dateKey(value).slice(0, 7);
+  const parsed = parseCompetencia(value);
+  const match = String(parsed).match(/^(\d{2})\/(\d{4})$/);
+  return match ? `${match[2]}-${match[1]}` : String(value ?? '').trim();
+}
 
 function semanticallyEqual(columnIndex, left, right) {
   if ([8, 13].includes(columnIndex)) {
@@ -23,6 +46,8 @@ function semanticallyEqual(columnIndex, left, right) {
   if (columnIndex === 12) {
     return Math.abs(parseAliquot(left) - parseAliquot(right)) < 0.000001;
   }
+  if (columnIndex === 3) return dateKey(left) === dateKey(right);
+  if (columnIndex === 2) return competenceKey(left) === competenceKey(right);
   return String(left ?? '').trim() === String(right ?? '').trim();
 }
 
@@ -33,7 +58,7 @@ async function loadExistingNotas(spreadsheetId = null) {
   const ssId = spreadsheetId || CONFIG.SHEETS.SPREADSHEET_ID;
   const tab = CONFIG.SHEETS.TABS.NOTAS;
 
-  const rows = await readSheetValues(ssId, `${tab}!A:X`);
+  const rows = await readSheetValues(ssId, `${tab}!A:X`, 'UNFORMATTED_VALUE');
   if (!rows || rows.length === 0) {
     return {
       headers: [],
@@ -296,5 +321,7 @@ module.exports = {
   loadExistingNotas,
   ensureHeaders,
   upsertNotas,
-  semanticallyEqual
+  semanticallyEqual,
+  dateKey,
+  competenceKey
 };
