@@ -49,7 +49,7 @@ function buildConsultarNfsePorRpsEnvio({ rpsNumero, rpsSerie = 'A', rpsTipo = '1
 }
 
 function parseGerarNfseResposta(xmlString) {
-  if (!xmlString) return { hasNfse: false, numero: null, codigoVerificacao: null, dataEmissao: null, mensagens: [] };
+  if (!xmlString) return { hasNfse: false, numero: null, codigoVerificacao: null, dataEmissao: null, mensagens: [], isAsyncAccepted: false };
   
   const parsed = parseXml(xmlString);
   const root = getXmlNode(parsed, ['GerarNfseResposta', 'tc:GerarNfseResposta']) || parsed;
@@ -77,12 +77,16 @@ function parseGerarNfseResposta(xmlString) {
   }
 
   // 2. Mensagem direta ou ADN
+  let isAsyncAccepted = false;
   const msgDireta = findXmlNode(root, 'Mensagem') || findXmlNode(root, 'Confirmacao');
   if (msgDireta) {
     const cod = findXmlValue(msgDireta, 'Codigo') || findXmlValue(msgDireta, 'Status') || '';
     const msg = findXmlValue(msgDireta, 'Mensagem') || (typeof msgDireta === 'string' ? msgDireta : '');
     if (cod || msg) {
       mensagens.push({ codigo: cod, mensagem: msg, correcao: '' });
+      if (String(msg).toLowerCase().includes('solicita') && String(msg).toLowerCase().includes('recebida')) {
+        isAsyncAccepted = true;
+      }
     }
   }
 
@@ -103,7 +107,8 @@ function parseGerarNfseResposta(xmlString) {
     numero: numero ? String(numero).trim() : null,
     codigoVerificacao: codigoVerificacao ? String(codigoVerificacao).trim() : null,
     dataEmissao: dataEmissao ? String(dataEmissao).trim() : null,
-    mensagens
+    mensagens,
+    isAsyncAccepted
   };
 }
 
@@ -140,15 +145,19 @@ async function recoverViaConsultarNfsePorRps({ ledgerEntry, certData }, dependen
       requestId: ledgerEntry.request_id,
       itemIndex: ledgerEntry.item_index,
       rpsNumero: ledgerEntry.rps_numero,
+      rpsSerie: ledgerEntry.rps_serie,
+      rpsTipo: ledgerEntry.rps_tipo,
       nfseNumero: nota.numero,
       nfseChave: nota.codigoVerificacao,
+      dataEmissao: nota.dataEmissao,
       recoveredViaRpsQuery: true
     };
   }
 
   return {
     success: false,
-    rawQuery: queryRes.outputXml
+    rawQuery: queryRes.outputXml,
+    mensagens: parsedQuery.mensagens
   };
 }
 
@@ -476,7 +485,33 @@ async function issueHomologation({ requestId, itemIndex = 1, certData, dryRun = 
 
   // 10. Parse da Resposta Oficial
   const parsedGerar = parseGerarNfseResposta(responseXml);
+  
+  // Se veio retorno assíncrono (ADN) ou ainda sem dados síncronos da nota
   if (!parsedGerar.hasNfse) {
+    if (parsedGerar.isAsyncAccepted) {
+      console.log('⏳ Emissão aceita assincronamente pelo ADN/Sefaz. Consultando por RPS para confirmação...');
+      // Polling com retries curtos (3 tentativas com espera de 3s)
+      for (let attempt = 1; attempt <= 3; attempt++) {
+        await new Promise(r => setTimeout(r, 3000));
+        const recovery = await recoverViaConsultarNfsePorRps({ ledgerEntry, certData }, dependencies);
+        if (recovery.success) {
+          console.log(`✅ Nota confirmada via RPS após processamento assíncrono (Tentativa ${attempt}): NFS-e nº ${recovery.nfseNumero}`);
+          return recovery;
+        }
+      }
+      // Se ainda não concluiu o processamento no ADN
+      return {
+        status: 'SUBMITTED_ASYNC_PROCESSING',
+        environment,
+        requestId,
+        itemIndex,
+        rpsNumero: candidate.rpsNumero,
+        rpsSerie: candidate.rpsSerie,
+        rpsTipo: candidate.rpsTipo,
+        message: 'Solicitação aceita e em processamento assíncrono pelo Sefaz/ADN. Próxima execução consultará via RPS.'
+      };
+    }
+
     const errorMsg = parsedGerar.mensagens.map(m => `[${m.codigo}] ${m.mensagem}`).join('; ') || `RESPOSTA_SEM_NFSE: ${responseXml.slice(0, 300)}`;
     
     // Classificação de Erro: Erros determinísticos cadastrais/tributários (ex: EL78, EL244, etc) viram REJECTED_CORRECTABLE
