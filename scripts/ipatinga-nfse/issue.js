@@ -4,6 +4,7 @@ const crypto = require('crypto');
 const { CONFIG, sanitize } = require('./config');
 const { readSheetValues, appendSheetValues, updateSheetValues } = require('./google');
 const {
+  ensureLedgerSheet,
   loadLedger,
   findLedgerEntry,
   allocateRpsAtomically,
@@ -138,6 +139,11 @@ async function issueHomologation({ requestId, itemIndex = 1, certData, dryRun = 
   const read = dependencies.readSheetValues || readSheetValues;
   const spreadsheetId = dependencies.spreadsheetId || CONFIG.SHEETS.SPREADSHEET_ID;
 
+  // Garante aba RPS quando dry_run=false
+  if (!dryRun) {
+    await ensureLedgerSheet(dependencies);
+  }
+
   let prepared;
   if (requestId === 'fixture-homologation' || requestId === 'fixture-controlada') {
     prepared = buildHomologationFixture(requestId);
@@ -191,6 +197,7 @@ async function issueHomologation({ requestId, itemIndex = 1, certData, dryRun = 
         rpsNumero: ledgerEntry.rps_numero,
         nfseNumero: ledgerEntry.nfse_numero,
         nfseChave: ledgerEntry.nfse_chave,
+        gerarNfseCalls: 0,
         message: 'Nota já emitida anteriormente para este request_id e item_index (idempotente).'
       };
     }
@@ -261,7 +268,6 @@ async function issueHomologation({ requestId, itemIndex = 1, certData, dryRun = 
   const nbsTag = candidate.nbs ? `<cNBS>${escapeXml(candidate.nbs.replace(/\D/g, ''))}</cNBS>` : '';
   const cnaeTag = candidate.codigoCnae ? `<CodigoCnae>${escapeXml(candidate.codigoCnae)}</CodigoCnae>` : '';
 
-  // Valores: Apenas ValorServicos obrigatório. Deduções, retenções, ISS e Alíquota omitidos se não definidos
   let valoresXml = `<ValorServicos>${candidate.valor.toFixed(2)}</ValorServicos>`;
   if (candidate.valorDeducoes !== undefined && candidate.valorDeducoes !== null && candidate.valorDeducoes > 0) {
     valoresXml += `<ValorDeducoes>${Number(candidate.valorDeducoes).toFixed(2)}</ValorDeducoes>`;

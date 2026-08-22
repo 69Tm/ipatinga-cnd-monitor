@@ -28,7 +28,7 @@ const LEDGER_HEADERS = [
 ];
 
 async function ensureLedgerSheet(dependencies = {}) {
-  const createSheet = dependencies.createSheetIfNotExists || createSheetIfNotExists;
+  const createSheet = dependencies.createSheetIfNotExists || (dependencies.readSheetValues ? null : createSheetIfNotExists);
   const read = dependencies.readSheetValues || readSheetValues;
   const update = dependencies.updateSheetValues || updateSheetValues;
   const spreadsheetId = dependencies.spreadsheetId || CONFIG.SHEETS.SPREADSHEET_ID;
@@ -40,11 +40,11 @@ async function ensureLedgerSheet(dependencies = {}) {
     }
     const raw = await read(spreadsheetId, `${tabName}!A1:M1`);
     if (!raw || raw.length === 0 || !raw[0] || raw[0].length === 0) {
-      await update(spreadsheetId, `${tabName}!A1:M1`, [LEDGER_HEADERS]);
+      if (update) await update(spreadsheetId, `${tabName}!A1:M1`, [LEDGER_HEADERS]);
     }
   } catch (err) {
     if (String(err.message).includes('Unable to parse range') || String(err.message).includes('not found')) {
-      await update(spreadsheetId, `${tabName}!A1:M1`, [LEDGER_HEADERS]);
+      if (update) await update(spreadsheetId, `${tabName}!A1:M1`, [LEDGER_HEADERS]);
     } else {
       throw err;
     }
