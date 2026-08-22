@@ -133,13 +133,16 @@ function parseCompNfse(compNode) {
   }
 
   // Descobre Local Prestação (Ex: Guanhães/MG ou Ipatinga/MG)
-  let localPrestacao = 'Ipatinga/MG';
-  if (codigoMunicipioPrestacao === '3128006' || String(discriminacao).toUpperCase().includes('GUANHÃES') || String(discriminacao).toUpperCase().includes('GUANHAES')) {
+  const validMunicipalityCode = [codigoMunicipioPrestacao, municipioIncidencia]
+    .map(value => String(value || '').trim())
+    .find(value => /^\d{7}$/.test(value) && value !== '0000000');
+  let localPrestacao = '';
+  if (validMunicipalityCode === '3128006' || String(discriminacao).toUpperCase().includes('GUANHÃES') || String(discriminacao).toUpperCase().includes('GUANHAES')) {
     localPrestacao = 'Guanhães/MG';
-  } else if (codigoMunicipioPrestacao === '3131307') {
+  } else if (validMunicipalityCode === '3131307') {
     localPrestacao = 'Ipatinga/MG';
-  } else if (codigoMunicipioPrestacao) {
-    localPrestacao = `IBGE ${codigoMunicipioPrestacao}`;
+  } else if (validMunicipalityCode) {
+    localPrestacao = `IBGE ${validMunicipalityCode}`;
   }
 
   // Descobre NBS ou código tributação nacional se presente
@@ -147,8 +150,6 @@ function parseCompNfse(compNode) {
   if (outrasInformacoes && outrasInformacoes.includes('NBS')) {
     const match = outrasInformacoes.match(/NBS[:\s]*([0-9.]+)/i);
     if (match) nbs = match[1].replace(/\D/g, '');
-  } else if (itemListaServico) {
-    nbs = '123011900'; // Padrão saúde humana / hospitalar se aplicável
   }
 
   return {
@@ -166,10 +167,12 @@ function parseCompNfse(compNode) {
     codigoTribNacional: itemListaServico || '04.03.01',
     codigoTribMunicipal: codigoTribMunicipio || '403',
     localPrestacao,
+    codigoMunicipioPrestacao: String(codigoMunicipioPrestacao || ''),
+    municipioIncidencia: String(municipioIncidencia || ''),
     aliquota: parseAliquot(aliquota),
     issApurado: parseCurrency(valorIss),
     issRetido: issRetido === '1',
-    nbs: nbs || '123011900',
+    nbs,
     status,
     situacaoDetalhe,
     dataCancelamento,

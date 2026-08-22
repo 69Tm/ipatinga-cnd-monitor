@@ -85,6 +85,8 @@ function buildNoteAudit(notes) {
     codigoTribNacional: note.codigoTribNacional,
     codigoTribMunicipal: note.codigoTribMunicipal,
     localPrestacao: note.localPrestacao,
+    codigoMunicipioPrestacao: note.codigoMunicipioPrestacao,
+    municipioIncidencia: note.municipioIncidencia,
     aliquota: note.aliquota,
     codigoVerificacao: note.codigoVerificacao,
     situacaoDetalhe: note.situacaoDetalhe

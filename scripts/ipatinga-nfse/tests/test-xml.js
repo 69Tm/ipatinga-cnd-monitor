@@ -48,6 +48,8 @@ assert.strictEqual(parsed.notas[3].valorServicos, 2010);
 assert.strictEqual(parsed.notas[4].numero, '15');
 assert.strictEqual(parsed.notas[4].valorServicos, 4199.4);
 assert.strictEqual(parsed.notas[4].cnpjTomador, '50.098.089/0001-49');
+assert.strictEqual(parsed.notas[4].codigoMunicipioPrestacao, '3131307');
+assert.strictEqual(parsed.notas[4].nbs, '');
 
 // 3. Parse Empty Response
 const emptyPath = path.join(__dirname, 'fixtures', 'consultar-faixa-resposta-empty.xml');
