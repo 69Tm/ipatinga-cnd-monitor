@@ -167,13 +167,13 @@ function prepareDemand({ requestId, demandas, tomadores, patterns, notas = [], n
   
   if (!demand && (normalizedRequest === 'fixture-homologation' || normalizedRequest === 'fixture-controlada')) {
     demand = {
-      message_id: normalizedRequest,
-      periodo: '08/2026',
-      notas_solicitadas: 'HIC — Plantões PS SUS',
-      valores: '100,00',
-      descricao_obrigatoria: 'Plantao medico presencial homologacao controlada',
-      status: 'PENDENTE',
-      nfse_resultantes: ''
+      'message id': normalizedRequest,
+      'periodo': '08/2026',
+      'notas solicitadas': 'HIC — Plantões PS SUS',
+      'valores': '100,00',
+      'descricao obrigatoria': 'Plantao medico presencial homologacao controlada',
+      'status': 'PENDENTE',
+      'nfse resultantes': ''
     };
   }
 
