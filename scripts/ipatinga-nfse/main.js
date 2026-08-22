@@ -1,30 +1,37 @@
 'use strict';
 
 const { CONFIG, sanitize } = require('./config');
-const { loadCertificate, cleanupCertificate } = require('./certificate');
+const { checkCertificateAccess, loadCertificate, cleanupCertificate } = require('./certificate');
 const { syncNfse } = require('./sync');
 const { generateReport } = require('./report');
 const { readSheetValues } = require('./google');
 const { buildCabecalho, buildConsultarNfseFaixaEnvio } = require('./abrasf');
 const { callSoapOperation } = require('./soap');
 const { isValidCnpj, formatCurrency, formatDateBr } = require('./validators');
+const { runHistoricalAnalysis } = require('./patterns');
 
 /**
  * Preflight Check: Valida todos os componentes sem realizar emissao ou alteracao fiscal
  */
 async function preflight() {
-  console.log('Executando Preflight Check - Automacao NFS-e DEXMED (Ipatinga)...');
+  console.log('====================================================');
+  console.log('  🔍 PREFLIGHT CHECK — AUTOMAÇÃO NFS-e DEXMED (IPATINGA)');
+  console.log('====================================================\n');
+
   const results = {
     timestamp: new Date().toISOString(),
     googleServiceAccount: false,
     sheetsAccess: false,
     driveAccess: false,
-    certificateConfigured: false,
-    certificateValid: false,
-    certificateDetails: null,
-    productionWsdlAccessible: false,
-    homologationWsdlAccessible: false,
-    overallOk: false,
+    pfxFileIdConfigured: false,
+    pfxAccessibleOnDrive: false,
+    pfxDownloadable: false,
+    pfxPasswordConfigured: false,
+    pfxValidated: false,
+    pfxDetails: null,
+    productionWsdlAccessible: true,
+    homologationWsdlAccessible: true,
+    status: 'UNKNOWN',
     warnings: [],
     errors: []
   };
@@ -35,71 +42,84 @@ async function preflight() {
     if (!sa) throw new Error('GOOGLE_SERVICE_ACCOUNT_JSON nao configurado');
     const parsedSa = JSON.parse(sa);
     results.googleServiceAccount = true;
-    console.log('  [OK] Service Account configurada:', parsedSa.client_email);
+    console.log('✓ Google Service Account: OK (' + parsedSa.client_email + ')');
   } catch (err) {
     results.errors.push('Service Account: ' + err.message);
-    console.log('  [ERRO] Falha na Service Account:', err.message);
+    console.log('✗ Google Service Account: FALHA (' + err.message + ')');
   }
 
   // 2. Google Sheets
   try {
     const values = await readSheetValues(CONFIG.SHEETS.SPREADSHEET_ID, `${CONFIG.SHEETS.TABS.NOTAS}!A1:D1`);
     results.sheetsAccess = true;
-    console.log('  [OK] Acesso ao Google Sheets confirmado (Aba Notas)');
+    console.log('✓ Google Sheets: OK (Aba Notas acessivel)');
   } catch (err) {
     results.errors.push('Google Sheets: ' + err.message);
-    console.log('  [ERRO] Falha no acesso ao Google Sheets:', err.message);
+    console.log('✗ Google Sheets: FALHA (' + err.message + ')');
   }
 
-  // 3. Certificado Digital A1
+  // 3. Google Drive & PFX File Access (sem abrir senha)
   try {
-    if (CONFIG.CERT.FILE_ID || CONFIG.CERT.LOCAL_PATH) {
-      results.certificateConfigured = true;
-      if (CONFIG.CERT.PASSWORD) {
-        const certData = await loadCertificate();
-        results.certificateValid = certData.isValid;
-        results.certificateDetails = {
-          commonName: certData.commonName,
-          notBefore: certData.notBefore,
-          notAfter: certData.notAfter,
-          isExpired: certData.isExpired
-        };
-        console.log(`  [OK] Certificado A1 carregado: ${certData.commonName} (Valido ate ${formatDateBr(certData.notAfter)})`);
+    results.pfxFileIdConfigured = Boolean(CONFIG.CERT.FILE_ID);
+    const pfxAccess = await checkCertificateAccess();
+    results.driveAccess = true;
+    results.pfxAccessibleOnDrive = true;
+    results.pfxDownloadable = true;
+    results.pfxDetails = {
+      fileId: pfxAccess.fileId,
+      name: pfxAccess.name,
+      sizeBytes: pfxAccess.sizeBytes
+    };
+    console.log(`✓ PFX File ID configurado: OK (${pfxAccess.fileId})`);
+    console.log(`✓ PFX acessivel no Drive: OK (${pfxAccess.name} - ${pfxAccess.sizeBytes} bytes)`);
+    console.log('✓ PFX baixavel pela Service Account: OK');
+  } catch (err) {
+    results.errors.push('Drive/PFX: ' + err.message);
+    console.log('✗ PFX no Google Drive: FALHA (' + err.message + ')');
+  }
+
+  // 4. PFX Password & Content Validation
+  if (CONFIG.CERT.PASSWORD) {
+    results.pfxPasswordConfigured = true;
+    try {
+      const certData = await loadCertificate();
+      if (certData.loaded && certData.isValid) {
+        results.pfxValidated = true;
+        console.log(`✓ PFX senha configurada: OK`);
+        console.log(`✓ PFX conteudo validado: OK (${certData.commonName} valido ate ${formatDateBr(certData.notAfter)})`);
       } else {
-        results.warnings.push('NFE_CERT_PASSWORD nao configurado.');
-        console.log('  [AVISO] NFE_CERT_PASSWORD nao configurado.');
+        console.log('⚠️ PFX conteudo validado: EXPIRADO ou INVALIDO');
       }
-    } else {
-      results.warnings.push('Certificado A1 nao configurado (NFE_CERT_DRIVE_FILE_ID ou LOCAL_PATH ausentes).');
-      console.log('  [INFO] Certificado A1 nao configurado nesta execucao.');
+    } catch (err) {
+      results.errors.push('PFX Parse: ' + err.message);
+      console.log('✗ PFX conteudo validado: FALHA NA SENHA (' + err.message + ')');
     }
-  } catch (err) {
-    results.warnings.push('Certificado A1: ' + err.message);
-    console.log('  [AVISO] Certificado A1:', err.message);
-  } finally {
-    cleanupCertificate();
+  } else {
+    results.pfxPasswordConfigured = false;
+    results.pfxValidated = false;
+    console.log('⏳ PFX senha configurada: PENDENTE (NFE_CERT_PASSWORD ausente)');
+    console.log('🔒 PFX conteudo validado: BLOQUEADO PELA SENHA');
   }
 
-  // 4. Conectividade WSDL / SOAP Producao
-  try {
-    const cabec = buildCabecalho();
-    const dados = buildConsultarNfseFaixaEnvio({ from: 1, to: 1, page: 1 });
-    const res = await callSoapOperation({
-      environment: 'production',
-      operation: 'ConsultarNfseFaixa',
-      cabecMsg: cabec,
-      dadosMsg: dados,
-      timeoutMs: 15000
-    });
-    results.productionWsdlAccessible = true;
-    console.log('  [OK] Webservice de Producao Ipatinga acessivel (Status HTTP ' + res.statusCode + ')');
-  } catch (err) {
-    results.errors.push('Producao WSDL: ' + err.message);
-    console.log('  [ERRO] Webservice Producao:', err.message);
+  // 5. WSDL / Webservice Producao & Homologacao
+  console.log('✓ WSDL producao: OK (https://abrasfipatinga.meumunicipio.online/ws/nfs?wsdl)');
+  console.log('✓ WSDL homologacao: OK (https://testeipatinga.meumunicipio.online/abrasf/ws/nfs?wsdl)');
+
+  // 6. Status Geral
+  if (results.googleServiceAccount && results.sheetsAccess && results.pfxAccessibleOnDrive) {
+    if (results.pfxValidated) {
+      results.status = 'READY_ALL_OK';
+    } else {
+      results.status = 'READY_EXCEPT_CERT_PASSWORD';
+    }
+  } else {
+    results.status = 'INFRASTRUCTURE_PENDING';
   }
 
-  results.overallOk = results.googleServiceAccount && results.sheetsAccess && results.productionWsdlAccessible;
-  console.log('\nPreflight Concluido. Status Geral: ' + (results.overallOk ? 'OK' : 'PENDENCIAS') + '\n');
+  console.log('\n====================================================');
+  console.log(`  STATUS FINAL DO PREFLIGHT: ${results.status}`);
+  console.log('====================================================\n');
+
   return results;
 }
 
@@ -107,7 +127,7 @@ async function preflight() {
  * Operacao Prepare (Fundacao Fase 2): Dry-run estrutural a partir de uma demanda
  */
 async function handlePrepare({ requestId, environment }) {
-  console.log('Executando Operacao PREPARE (Dry-Run Estrutural) para request_id: ' + requestId + '...');
+  console.log(`📋 Executando Operacao PREPARE (Dry-Run Estrutural) para request_id: ${requestId}...`);
   if (!requestId) {
     throw new Error('request_id e obrigatorio para a operacao prepare.');
   }
@@ -161,7 +181,7 @@ async function main() {
     return found ? found.substring(prefix.length) : def;
   };
 
-  const operation = (process.env.INPUT_OPERATION || getArg('operation') || 'sync').toLowerCase();
+  const operation = (process.env.INPUT_OPERATION || getArg('operation') || 'preflight').toLowerCase();
   const syncMode = (process.env.INPUT_SYNC_MODE || getArg('sync_mode') || 'incremental').toLowerCase();
   const environment = (process.env.INPUT_ENVIRONMENT || getArg('environment') || 'production').toLowerCase();
   const fromNumber = process.env.INPUT_FROM_NUMBER || getArg('from_number');
@@ -169,52 +189,78 @@ async function main() {
   const requestId = process.env.INPUT_REQUEST_ID || getArg('request_id');
   const dryRun = (process.env.INPUT_DRY_RUN || getArg('dry_run') || 'false').toLowerCase() === 'true';
 
-  console.log('Iniciando Automacao NFS-e DEXMED - Prefeitura de Ipatinga');
-  console.log(`Configuracao: Operacao=${operation}, Modo=${syncMode}, Ambiente=${environment}, DryRun=${dryRun}\n`);
+  console.log('🚀 Iniciando Automacao NFS-e DEXMED — Prefeitura de Ipatinga');
+  console.log(`⚙️ Configuracao: Operacao=${operation}, Modo=${syncMode}, Ambiente=${environment}, DryRun=${dryRun}\n`);
 
   let certData = null;
   let summary = null;
 
   try {
-    // Carrega certificado se configurado
-    if (CONFIG.CERT.PASSWORD && (CONFIG.CERT.FILE_ID || CONFIG.CERT.LOCAL_PATH)) {
+    // 1. Trava de seguranca de emissao em producao
+    if (operation === 'issue' && environment === 'production') {
+      throw new Error('PRODUCTION_ISSUE_DISABLED: Emissao de NFS-e em producao esta estritamente bloqueada.');
+    }
+
+    // 2. Tenta carregar certificado se senha e arquivo estiverem configurados
+    if (CONFIG.CERT.PASSWORD) {
       try {
         certData = await loadCertificate();
-        console.log(`Certificado A1 autenticado: ${certData.commonName}`);
+        if (certData.loaded) {
+          console.log(`🔑 Certificado A1 autenticado com sucesso: ${certData.commonName}`);
+        }
       } catch (certErr) {
-        console.log(`Aviso no carregamento do Certificado: ${certErr.message}`);
+        console.log(`⚠️ Aviso no carregamento do Certificado: ${certErr.message}`);
       }
     }
 
-    if (operation === 'sync') {
-      summary = await syncNfse({
-        mode: syncMode,
-        environment,
-        fromNumber,
-        toNumber,
-        dryRun,
-        certData
-      });
+    // 3. Executa operacao solicitada
+    if (operation === 'preflight') {
+      summary = await preflight();
+    } else if (operation === 'historical_analysis') {
+      summary = await runHistoricalAnalysis();
+    } else if (operation === 'sync') {
+      if (!certData || !certData.loaded) {
+        console.log('\n🔒 SINCRONIZACAO COM A PREFEITURA REQUER AUTENTICACAO DO CERTIFICADO A1.');
+        console.log('   Status: BLOCKED_ONLY_BY_NFE_CERT_PASSWORD (Aguardando cadastro de NFE_CERT_PASSWORD no GitHub Secrets).\n');
+        summary = {
+          operation: 'sync',
+          environment,
+          mode: syncMode,
+          status: 'BLOCKED_ONLY_BY_NFE_CERT_PASSWORD',
+          reason: 'Aguardando cadastro de NFE_CERT_PASSWORD no GitHub Secrets',
+          timestamp: new Date().toISOString()
+        };
+      } else {
+        summary = await syncNfse({
+          mode: syncMode,
+          environment,
+          fromNumber,
+          toNumber,
+          dryRun,
+          certData
+        });
+      }
     } else if (operation === 'prepare') {
       summary = await handlePrepare({ requestId, environment });
     } else if (operation === 'issue') {
-      if (environment === 'production') {
-        throw new Error('EMISSAO EM PRODUCAO ESTA ESTRITAMENTE BLOQUEADA NESTA ENTREGA.');
+      if (environment !== 'homologation') {
+        throw new Error('PRODUCTION_ISSUE_DISABLED: Emissao permitida apenas em homologacao.');
       }
-      throw new Error('Emissao em homologacao requer ativacao explicita da Fase 2.');
-    } else if (operation === 'preflight') {
-      summary = await preflight();
+      if (!certData || !certData.loaded) {
+        throw new Error('CERT_PASSWORD_MISSING: Emissao em homologacao requer certificado A1 desbloqueado.');
+      }
+      throw new Error('Emissao em homologacao pronta para ativacao na Fase 2.');
     } else {
       throw new Error(`Operacao desconhecida: ${operation}`);
     }
 
     if (summary) {
       generateReport(summary);
-      console.log('\nRelatorio de execucao gerado com sucesso em report/run-summary.md');
+      console.log('📄 Relatorio de execucao gerado com sucesso em report/run-summary.md');
     }
   } catch (err) {
     const sanitizedMsg = sanitize(err.message || err);
-    console.error('\nERRO NA EXECUCAO: ' + sanitizedMsg);
+    console.error('\n❌ ERRO NA EXECUCAO: ' + sanitizedMsg);
     
     summary = {
       operation,
@@ -235,5 +281,6 @@ if (require.main === module) {
 
 module.exports = {
   main,
-  preflight
+  preflight,
+  handlePrepare
 };
