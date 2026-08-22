@@ -10,12 +10,76 @@ const { normalizeCnpj } = require('./validators');
 let tempCertPath = null;
 
 /**
+ * Valida o acesso ao arquivo do certificado A1 no Drive/local sem abrir a chave privada
+ */
+async function checkCertificateAccess() {
+  const fileId = CONFIG.CERT.FILE_ID;
+  const localPath = CONFIG.CERT.LOCAL_PATH;
+
+  if (localPath && fs.existsSync(localPath)) {
+    const stats = fs.statSync(localPath);
+    return {
+      accessible: true,
+      source: 'local',
+      path: localPath,
+      name: path.basename(localPath),
+      sizeBytes: stats.size
+    };
+  }
+
+  if (!fileId) {
+    throw new Error('Nenhum File ID ou caminho local de certificado configurado.');
+  }
+
+  try {
+    const meta = await getDriveFileMetadata(fileId);
+    if (!meta || !meta.id) {
+      throw new Error('CERT_FILE_ACCESS_DENIED: Arquivo nao encontrado ou sem permissao na Service Account.');
+    }
+
+    if (meta.name && meta.name.toLowerCase().endsWith('.pdf')) {
+      throw new Error(`O arquivo '${meta.name}' no Google Drive e um documento PDF de instalacao, nao o arquivo PFX.`);
+    }
+
+    // Testa download temporario
+    if (!fs.existsSync(CONFIG.PATHS.TEMP)) {
+      fs.mkdirSync(CONFIG.PATHS.TEMP, { recursive: true });
+    }
+    const testTempPath = path.join(CONFIG.PATHS.TEMP, `test_cert_access_${Date.now()}.pfx`);
+    await downloadDriveFile(fileId, testTempPath);
+
+    const stats = fs.statSync(testTempPath);
+    if (stats.size === 0) {
+      throw new Error('Arquivo de certificado baixado com tamanho 0 bytes.');
+    }
+
+    // Remove apos confirmar
+    try { fs.unlinkSync(testTempPath); } catch (_) {}
+
+    return {
+      accessible: true,
+      source: 'drive',
+      fileId: meta.id,
+      name: meta.name || 'certificado.pfx',
+      sizeBytes: stats.size,
+      mimeType: meta.mimeType || 'application/x-pkcs12'
+    };
+  } catch (err) {
+    throw new Error(`CERT_FILE_ACCESS_DENIED: Falha ao acessar certificado no Drive (ID ${fileId}): ${sanitize(err.message)}`);
+  }
+}
+
+/**
  * Carrega e valida o Certificado Digital A1 (PFX / PKCS#12)
  */
 async function loadCertificate() {
   const password = CONFIG.CERT.PASSWORD;
   if (!password) {
-    throw new Error('NFE_CERT_PASSWORD nao configurado. Certificado A1 requer senha.');
+    return {
+      loaded: false,
+      status: 'BLOCKED_ONLY_BY_NFE_CERT_PASSWORD',
+      reason: 'NFE_CERT_PASSWORD ausente no ambiente'
+    };
   }
 
   let pfxBuffer = null;
@@ -31,17 +95,6 @@ async function loadCertificate() {
     }
     tempCertPath = path.join(CONFIG.PATHS.TEMP, `cert_${Date.now()}.pfx`);
     
-    // Valida se nao e o PDF de instalacao antes de baixar
-    try {
-      const meta = await getDriveFileMetadata(CONFIG.CERT.FILE_ID);
-      if (meta.name && meta.name.toLowerCase().endsWith('.pdf')) {
-        throw new Error(`O arquivo '${meta.name}' no Google Drive e um PDF, nao o certificado PFX.`);
-      }
-    } catch (err) {
-      if (err.message.includes('PDF')) throw err;
-      // Se nao conseguir metadados, tenta baixar normalmente
-    }
-
     await downloadDriveFile(CONFIG.CERT.FILE_ID, tempCertPath);
     pfxBuffer = fs.readFileSync(tempCertPath);
   } else {
@@ -112,6 +165,7 @@ async function loadCertificate() {
   const pemCa = caCerts.map(c => forge.pki.certificateToPem(c)).join('\n');
 
   return {
+    loaded: true,
     commonName,
     notBefore,
     notAfter,
@@ -139,6 +193,7 @@ function cleanupCertificate() {
 }
 
 module.exports = {
+  checkCertificateAccess,
   loadCertificate,
   cleanupCertificate
 };
