@@ -201,7 +201,7 @@ function buildLocalPrestacaoRepairs(notasRows) {
  * Executa a análise histórica completa do Google Drive e consolida os padrões.
  * Escritas são idempotentes e ocorrem somente depois que todas as leituras terminam.
  */
-async function runHistoricalAnalysis({ dryRun = false } = {}, dependencies = {}) {
+async function runHistoricalAnalysis({ dryRun = false, environment = 'production' } = {}, dependencies = {}) {
   console.log('🔍 Executando Análise Histórica de NFS-e no Google Drive...');
   const startTime = Date.now();
   const driveFiles = await scanDriveNfseFiles(dependencies);
@@ -252,6 +252,7 @@ async function runHistoricalAnalysis({ dryRun = false } = {}, dependencies = {})
     timestamp: new Date().toISOString(),
     durationSec: Number(((Date.now() - startTime) / 1000).toFixed(2)),
     operation: 'historical_analysis',
+    environment,
     status: dryRun ? 'DRY_RUN' : 'SUCCESS',
     dryRun,
     writeAllowed: !dryRun,

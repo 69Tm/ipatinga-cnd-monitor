@@ -244,7 +244,7 @@ async function main() {
     if (operation === 'preflight') {
       summary = await preflight();
     } else if (operation === 'historical_analysis') {
-      summary = await runHistoricalAnalysis({ dryRun });
+      summary = await runHistoricalAnalysis({ dryRun, environment });
     } else if (operation === 'sync') {
       if (!certData || !certData.loaded) {
         throw new Error('CERT_PASSWORD_MISSING: sync bloqueado ate NFE_CERT_PASSWORD ser configurado.');
