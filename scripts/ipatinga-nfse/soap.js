@@ -35,7 +35,18 @@ async function callSoapOperation({
 }) {
   const envConfig = CONFIG.ENDPOINTS[environment];
   if (!envConfig) throw new Error(`INVALID_ENVIRONMENT: ${environment}`);
-  if (operation !== 'ConsultarNfseFaixa') throw new Error(`SOAP_OPERATION_NOT_ALLOWED: ${operation}`);
+
+  // Regras de segurança de operações permitidas
+  const allowedInProduction = ['ConsultarNfseFaixa', 'ConsultarNfseServicoPrestado', 'ConsultarNfsePorRps'];
+  const allowedInHomologation = ['ConsultarNfseFaixa', 'ConsultarNfseServicoPrestado', 'ConsultarNfsePorRps', 'GerarNfse'];
+
+  if (environment === 'production' && !allowedInProduction.includes(operation)) {
+    throw new Error(`SOAP_OPERATION_NOT_ALLOWED: ${operation} em producao.`);
+  }
+  if (environment === 'homologation' && !allowedInHomologation.includes(operation)) {
+    throw new Error(`SOAP_OPERATION_NOT_ALLOWED: ${operation} em homologacao.`);
+  }
+
   if (!certData || certData.loaded !== true || certData.isValid !== true || !certData.pemCert || !certData.pemKey) {
     throw new Error('CERTIFICATE_NOT_READY: SOAP autenticado exige certificado valido.');
   }
