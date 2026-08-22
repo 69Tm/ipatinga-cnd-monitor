@@ -50,6 +50,15 @@ function generateReport(summaryData) {
     mdLines.push(`- **Notas Substituídas Detectadas:** ${upsert.totalSubstituted || 0}`);
     mdLines.push(`- **Notas Inalteradas:** ${upsert.totalUnchanged || 0}`);
     mdLines.push('');
+    if (Array.isArray(upsert.changeAudit) && upsert.changeAudit.length > 0) {
+      mdLines.push('### Campos com Divergencia (sem valores)');
+      mdLines.push('| NFS-e | Campos |');
+      mdLines.push('| :--- | :--- |');
+      upsert.changeAudit.forEach(item => {
+        mdLines.push(`| ${item.numero || ''} | ${(item.fields || []).join(', ')} |`);
+      });
+      mdLines.push('');
+    }
     if (Array.isArray(sanitizedData.noteAudit) && sanitizedData.noteAudit.length > 0) {
       mdLines.push('### Auditoria Sanitizada da API');
       mdLines.push('| NFS-e | Status | Competência | Tomador | Valor |');
@@ -116,6 +125,14 @@ function generateReport(summaryData) {
 function buildConsoleSummary(summaryData) {
   const data = sanitize(summaryData || {});
   const upsert = data.upsertResult || {};
+  const changedFieldCounts = {};
+  if (Array.isArray(upsert.changeAudit)) {
+    for (const item of upsert.changeAudit) {
+      for (const field of item.fields || []) {
+        changedFieldCounts[field] = (changedFieldCounts[field] || 0) + 1;
+      }
+    }
+  }
 
   return {
     operation: data.operation || null,
@@ -131,6 +148,7 @@ function buildConsoleSummary(summaryData) {
     unchanged: upsert.totalUnchanged || 0,
     canceled: upsert.totalCanceled || 0,
     substituted: upsert.totalSubstituted || 0,
+    changedFieldCounts,
     errors: Array.isArray(data.errors) ? data.errors.length : 0,
     warnings: Array.isArray(data.warnings) ? data.warnings.length : 0
   };

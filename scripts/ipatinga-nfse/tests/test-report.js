@@ -17,7 +17,11 @@ const result = buildConsoleSummary({
     totalUpdated: 0,
     totalUnchanged: 15,
     totalCanceled: 1,
-    totalSubstituted: 0
+    totalSubstituted: 0,
+    changeAudit: [
+      { numero: '10', fields: ['chaveAcesso'] },
+      { numero: '11', fields: ['chaveAcesso', 'situacaoApi'] }
+    ]
   },
   errors: [],
   warnings: ['technical warning'],
@@ -39,7 +43,7 @@ assert.deepStrictEqual(result, {
   unchanged: 15,
   canceled: 1,
   substituted: 0,
+  changedFieldCounts: { chaveAcesso: 2, situacaoApi: 1 },
   errors: 0,
   warnings: 1
 });
-
