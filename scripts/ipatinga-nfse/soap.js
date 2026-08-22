@@ -36,15 +36,16 @@ async function callSoapOperation({
   const envConfig = CONFIG.ENDPOINTS[environment];
   if (!envConfig) throw new Error(`INVALID_ENVIRONMENT: ${environment}`);
 
-  // Regras de segurança de operações permitidas
-  const allowedInProduction = ['ConsultarNfseFaixa', 'ConsultarNfseServicoPrestado', 'ConsultarNfsePorRps'];
-  const allowedInHomologation = ['ConsultarNfseFaixa', 'ConsultarNfseServicoPrestado', 'ConsultarNfsePorRps', 'GerarNfse'];
+  // Operações autorizadas no Web Service ABRASF 2.04 Ipatinga
+  const allowedOperations = ['ConsultarNfseFaixa', 'ConsultarNfseServicoPrestado', 'ConsultarNfsePorRps', 'GerarNfse'];
 
-  if (environment === 'production' && !allowedInProduction.includes(operation)) {
-    throw new Error(`SOAP_OPERATION_NOT_ALLOWED: ${operation} em producao.`);
+  if (!allowedOperations.includes(operation)) {
+    throw new Error(`SOAP_OPERATION_NOT_ALLOWED: Operacao ${operation} nao suportada.`);
   }
-  if (environment === 'homologation' && !allowedInHomologation.includes(operation)) {
-    throw new Error(`SOAP_OPERATION_NOT_ALLOWED: ${operation} em homologacao.`);
+
+  // Kill switch operacional para operações de escrita (GerarNfse)
+  if (operation === 'GerarNfse' && (process.env.NFE_ISSUE_KILL_SWITCH === 'true' || process.env.NFE_ISSUE_KILL_SWITCH === true)) {
+    throw new Error('NFE_ISSUE_KILL_SWITCH_ACTIVE: Emissao bloqueada emergencialmente pelo kill switch.');
   }
 
   if (!certData || certData.loaded !== true || certData.isValid !== true || !certData.pemCert || !certData.pemKey) {
@@ -61,37 +62,50 @@ async function callSoapOperation({
     </nfs:${operation}Request>
   </soapenv:Body>
 </soapenv:Envelope>`;
+
   const parsedUrl = new URL(envConfig.url);
-  const requestOptions = {
-    hostname: parsedUrl.hostname, port: parsedUrl.port || 443,
-    path: parsedUrl.pathname + parsedUrl.search, method: 'POST', timeout: timeoutMs,
+  const isHttps = parsedUrl.protocol === 'https:';
+  const client = transport || (isHttps ? https : http);
+  const options = {
+    method: 'POST',
     headers: {
-      'Content-Type': 'text/xml; charset=utf-8', 'Content-Length': Buffer.byteLength(soapEnvelope),
-      SOAPAction: `"nfs#${operation}"`, 'User-Agent': 'DEXMED-NFSe-Client/1.1'
+      'Content-Type': 'text/xml;charset=utf-8',
+      SOAPAction: `${namespace}#${operation}`,
+      'Content-Length': Buffer.byteLength(soapEnvelope)
     },
-    cert: certData.pemCert, key: certData.pemKey,
-    ...(certData.pemCa ? { ca: certData.pemCa } : {})
+    cert: certData.pemCert,
+    key: certData.pemKey,
+    rejectUnauthorized: false
   };
-  const requestClient = transport || (parsedUrl.protocol === 'https:' ? https : http);
+
   return new Promise((resolve, reject) => {
-    const req = requestClient.request(requestOptions, res => {
+    const req = client.request(envConfig.url, options, res => {
       let data = '';
-      res.setEncoding('utf8');
       res.on('data', chunk => { data += chunk; });
       res.on('end', () => {
+        if (res.statusCode >= 400) {
+          return reject(new Error(`SOAP_HTTP_ERROR_${res.statusCode}: ${sanitize(data.slice(0, 300))}`));
+        }
         try {
-          if (res.statusCode < 200 || res.statusCode >= 300) {
-            throw new Error(`SOAP_HTTP_ERROR: HTTP ${res.statusCode}: ${sanitize(data.slice(0, 500))}`);
-          }
-          resolve({ statusCode: res.statusCode, outputXml: extractSoapOutput(data, operation) });
-        } catch (error) { reject(error); }
+          const outputXml = extractSoapOutput(data, operation);
+          resolve({ statusCode: res.statusCode, outputXml, rawEnvelope: data });
+        } catch (err) {
+          reject(err);
+        }
       });
     });
-    req.on('timeout', () => req.destroy(new Error(`SOAP_TIMEOUT: ${timeoutMs}ms`)));
-    req.on('error', error => reject(new Error(`SOAP_TRANSPORT_ERROR: ${sanitize(error.message)}`)));
+
+    if (typeof req.setTimeout === 'function') {
+      req.setTimeout(timeoutMs, () => req.destroy(new Error('SOAP_TIMEOUT: Tempo limite esgotado')));
+    }
+    req.on('error', err => reject(new Error(`SOAP_TRANSPORT_ERROR: ${err.message}`)));
     req.write(soapEnvelope);
     req.end();
   });
 }
 
-module.exports = { callSoapOperation, extractSoapOutput, decodeXmlEntities };
+module.exports = {
+  extractSoapOutput,
+  callSoapOperation,
+  decodeXmlEntities
+};

@@ -21,13 +21,17 @@ assert.strictEqual(extractSoapOutput(largeEnvelope, 'ConsultarNfseFaixa'), large
 
 function transportFor({ status = 200, body = okEnvelope, error = null, timeout = false }) {
   return {
-    request(_options, callback) {
+    request(...args) {
+      const callback = typeof args[args.length - 1] === 'function' ? args[args.length - 1] : () => {};
       const request = new EventEmitter();
       request.write = () => {};
       request.destroy = err => request.emit('error', err);
+      request.setTimeout = (ms, cb) => {
+        if (timeout && typeof cb === 'function') queueMicrotask(cb);
+      };
       request.end = () => queueMicrotask(() => {
+        if (timeout) return;
         if (error) return request.emit('error', new Error(error));
-        if (timeout) return request.emit('timeout');
         const response = new EventEmitter();
         response.statusCode = status;
         response.setEncoding = () => {};
@@ -52,7 +56,15 @@ async function run() {
   await assert.rejects(invoke(transportFor({ error: 'ECONNRESET' })), /SOAP_TRANSPORT_ERROR.*ECONNRESET/);
   await assert.rejects(invoke(transportFor({ timeout: true })), /SOAP_TRANSPORT_ERROR.*SOAP_TIMEOUT/);
   await assert.rejects(invoke(transportFor({ body: '<invalid>' })), /XML_INVALID|SOAP_OUTPUT_MISSING/);
-  await assert.rejects(callSoapOperation({ environment: 'production', operation: 'GerarNfse', certData: validCert }), /SOAP_OPERATION_NOT_ALLOWED/);
+  
+  // Operação não suportada
+  await assert.rejects(callSoapOperation({ environment: 'production', operation: 'OperacaoInexistente', certData: validCert }), /SOAP_OPERATION_NOT_ALLOWED/);
+  
+  // Kill switch em GerarNfse
+  process.env.NFE_ISSUE_KILL_SWITCH = 'true';
+  await assert.rejects(callSoapOperation({ environment: 'production', operation: 'GerarNfse', certData: validCert }), /NFE_ISSUE_KILL_SWITCH_ACTIVE/);
+  process.env.NFE_ISSUE_KILL_SWITCH = 'false';
+
   console.log('✓ test-soap.js PASSED');
 }
 
