@@ -1,7 +1,14 @@
 'use strict';
 
 const assert = require('assert');
-const { upsertNotas, semanticallyEqual, dateKey, competenceKey, taxCodeKey } = require('../sheets');
+const {
+  upsertNotas,
+  semanticallyEqual,
+  dateKey,
+  competenceKey,
+  taxCodeKey,
+  mergeFormattedTaxCodes
+} = require('../sheets');
 
 console.log('Running test-sheets.js...');
 assert.strictEqual(semanticallyEqual(8, '12.925,00', '12925'), true);
@@ -13,6 +20,12 @@ assert.strictEqual(competenceKey('07/2026'), '2026-07');
 assert.strictEqual(taxCodeKey('04.03'), taxCodeKey(4.03));
 assert.strictEqual(semanticallyEqual(9, '04.03', 4.03), true);
 assert.strictEqual(semanticallyEqual(9, '04.03.01', '04.03'), false);
+const mergedCodes = mergeFormattedTaxCodes(
+  [['Nº', '', '', '', '', '', '', '', '', 'Cód.', 'Municipal'], ['10', '', '', '', '', '', '', '', '', 46085, 403]],
+  [['Cód.', 'Municipal'], ['04.03', '403']]
+);
+assert.strictEqual(mergedCodes[1][9], '04.03');
+assert.strictEqual(mergedCodes[1][10], '403');
 
 function maps(record = null) {
   const result = { byNumber: new Map(), byChave: new Map(), byCnpjNumero: new Map() };

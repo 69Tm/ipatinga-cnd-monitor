@@ -66,7 +66,11 @@ async function loadExistingNotas(spreadsheetId = null) {
   const ssId = spreadsheetId || CONFIG.SHEETS.SPREADSHEET_ID;
   const tab = CONFIG.SHEETS.TABS.NOTAS;
 
-  const rows = await readSheetValues(ssId, `${tab}!A:X`, 'UNFORMATTED_VALUE');
+  const [rawRows, formattedCodes] = await Promise.all([
+    readSheetValues(ssId, `${tab}!A:X`, 'UNFORMATTED_VALUE'),
+    readSheetValues(ssId, `${tab}!J:K`, 'FORMATTED_VALUE')
+  ]);
+  const rows = mergeFormattedTaxCodes(rawRows, formattedCodes);
   if (!rows || rows.length === 0) {
     return {
       headers: [],
@@ -139,6 +143,16 @@ async function loadExistingNotas(spreadsheetId = null) {
     byChave,
     byCnpjNumero
   };
+}
+
+function mergeFormattedTaxCodes(rawRows, formattedCodes) {
+  return (rawRows || []).map((sourceRow, index) => {
+    const row = [...sourceRow];
+    const display = formattedCodes?.[index] || [];
+    if (display[0] !== undefined && display[0] !== '') row[9] = display[0];
+    if (display[1] !== undefined && display[1] !== '') row[10] = display[1];
+    return row;
+  });
 }
 
 /**
@@ -332,5 +346,6 @@ module.exports = {
   semanticallyEqual,
   dateKey,
   competenceKey,
-  taxCodeKey
+  taxCodeKey,
+  mergeFormattedTaxCodes
 };
