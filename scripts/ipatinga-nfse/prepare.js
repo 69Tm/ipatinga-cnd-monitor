@@ -106,25 +106,30 @@ function competenceDate(value) {
   return match ? `${match[2]}-${match[1]}-01` : '';
 }
 
+function resolveMunicipioIbge(localPrestacao) {
+  const norm = normalizeLabel(localPrestacao);
+  if (norm.includes('guanhaes')) return '3128006';
+  if (norm.includes('ipatinga')) return '3131307';
+  if (norm.includes('itabira')) return '3131703';
+  return '';
+}
+
 function buildUnsignedCandidateXml(candidate) {
   const itemLista = String(candidate.codigoTribNacional || '').split('.').slice(0, 2).join('.');
   const rpsNum = candidate.rpsNumero || '999999';
   const rpsSer = candidate.rpsSerie || 'A';
   const rpsTip = candidate.rpsTipo || '1';
   const xmlId = candidate.xmlId || `RPS${rpsNum}${rpsSer.replace(/[^A-Za-z0-9]/g, '')}`;
-  const codMunPrestacao = candidate.codigoMunicipioPrestacao || '3128006';
+  const codMunPrestacao = candidate.codigoMunicipioPrestacao;
   const nbsTag = candidate.nbs ? `<cNBS>${escapeXml(candidate.nbs.replace(/\D/g, ''))}</cNBS>` : '';
-  const cnaeTag = candidate.codigoCnae ? `<CodigoCnae>${escapeXml(candidate.codigoCnae)}</CodigoCnae>` : '<CodigoCnae>8610701</CodigoCnae>';
+  const cnaeTag = candidate.codigoCnae ? `<CodigoCnae>${escapeXml(candidate.codigoCnae)}</CodigoCnae>` : '';
 
   return `<GerarNfseEnvio xmlns="${CONFIG.ABRASF.SCHEMA_NAMESPACE}">` +
     `<Rps><InfDeclaracaoPrestacaoServico Id="${escapeXml(xmlId)}">` +
     `<Rps><IdentificacaoRps><Numero>${escapeXml(rpsNum)}</Numero><Serie>${escapeXml(rpsSer)}</Serie><Tipo>${escapeXml(rpsTip)}</Tipo></IdentificacaoRps>` +
     `<DataEmissao>${escapeXml(candidate.dataEmissao)}</DataEmissao><Status>1</Status></Rps>` +
     `<Competencia>${escapeXml(candidate.competenciaData)}</Competencia>` +
-    `<Servico><Valores><ValorServicos>${candidate.valor.toFixed(2)}</ValorServicos>` +
-    `<ValorDeducoes>0</ValorDeducoes><ValorPis>0</ValorPis><ValorCofins>0</ValorCofins><ValorInss>0</ValorInss><ValorIr>0</ValorIr><ValorCsll>0</ValorCsll>` +
-    `<OutrasRetencoes>0</OutrasRetencoes><ValTotTributos>0</ValTotTributos><ValorIss>0</ValorIss><Aliquota>0.0000</Aliquota>` +
-    `<DescontoIncondicionado>0</DescontoIncondicionado><DescontoCondicionado>0</DescontoCondicionado></Valores>` +
+    `<Servico><Valores><ValorServicos>${candidate.valor.toFixed(2)}</ValorServicos></Valores>` +
     `<IssRetido>2</IssRetido><ItemListaServico>${escapeXml(itemLista)}</ItemListaServico>` +
     cnaeTag +
     `<CodigoTributacaoMunicipio>${escapeXml(candidate.codigoTribMunicipal)}</CodigoTributacaoMunicipio>` +
@@ -146,12 +151,14 @@ function validateCandidate(candidate) {
   if (!candidate.patternId) errors.push('PATTERN_NOT_IDENTIFIED');
   if (!candidate.categoria) errors.push('CATEGORY_MISSING');
   if (!isValidCnpj(candidate.cnpjTomador)) errors.push('TAKER_CNPJ_INVALID');
+  if (!candidate.tomador) errors.push('TAKER_NAME_MISSING');
   if (!(candidate.valor > 0)) errors.push('SERVICE_VALUE_INVALID');
   if (!candidate.competenciaData) errors.push('COMPETENCE_INVALID');
   if (!candidate.descricao || /^texto do proprio e-?mail$/i.test(normalizeLabel(candidate.descricao))) errors.push('DESCRIPTION_SOURCE_REQUIRED');
   if (!candidate.codigoTribNacional) errors.push('NATIONAL_TAX_CODE_MISSING');
   if (!candidate.codigoTribMunicipal) errors.push('MUNICIPAL_TAX_CODE_MISSING');
   if (!candidate.localPrestacao) errors.push('SERVICE_LOCATION_MISSING');
+  if (!candidate.codigoMunicipioPrestacao) errors.push('SERVICE_LOCATION_IBGE_MISSING');
   if (!candidate.nbs) errors.push('NBS_MISSING');
   if (normalizeLabel(candidate.patternId).includes('cisurg') && !candidate.descriptionFromDemand) {
     errors.push('CISURG_MONTHLY_MIRROR_DESCRIPTION_REQUIRED');
@@ -159,24 +166,62 @@ function validateCandidate(candidate) {
   return errors;
 }
 
+function buildHomologationFixture(requestId = 'fixture-homologation', now = new Date()) {
+  const candidate = {
+    requestId,
+    sequence: 1,
+    patternId: 'HIC_PLANTOES_PS_SUS',
+    categoria: 'HIC — Plantões PS SUS',
+    tomador: 'HOSPITAL IMACULADA CONCEICAO',
+    cnpjTomador: '20724357000120',
+    valor: 10.00,
+    competencia: '08/2026',
+    competenciaData: '2026-08-01',
+    descricao: 'TESTE DE HOMOLOGACAO - SEM VALOR FISCAL - AUTOMACAO DEXMED',
+    descriptionFromDemand: true,
+    codigoTribNacional: '04.03.01',
+    codigoTribMunicipal: '403',
+    localPrestacao: 'Guanhães/MG',
+    codigoMunicipioPrestacao: '3128006',
+    nbs: '123011900',
+    codigoCnae: null,
+    aliquotaIss: null,
+    valorIss: null,
+    rpsStatus: 'PENDING_ALLOCATION',
+    rpsNumero: '',
+    rpsSerie: 'A',
+    rpsTipo: '1',
+    dataEmissao: now.toISOString().slice(0, 10),
+    xmlId: 'RPS_PREPARE_1'
+  };
+
+  candidate.validationErrors = validateCandidate(candidate);
+  candidate.xmlCandidate = buildUnsignedCandidateXml(candidate);
+
+  return {
+    operation: 'prepare',
+    status: 'SUCCESS',
+    validationStatus: 'READY_TO_ISSUE',
+    requestId,
+    candidates: [candidate],
+    blockingReasons: [],
+    xsdValidation: 'SCHEMA_READY',
+    xmlSignature: 'NOT_APPLIED_PREPARE_ONLY',
+    warnings: ['SYNTHETIC_HOMOLOGATION_FIXTURE'],
+    errors: []
+  };
+}
+
 function prepareDemand({ requestId, demandas, tomadores, patterns, notas = [], now = new Date() }) {
   const normalizedRequest = String(requestId || '').trim();
   if (!normalizedRequest) throw new Error('REQUEST_ID_REQUIRED');
 
-  let demand = demandas.find(item => String(firstField(item, ['request_id', 'Message ID']) || '').trim() === normalizedRequest);
-  
-  if (!demand && (normalizedRequest === 'fixture-homologation' || normalizedRequest === 'fixture-controlada')) {
-    demand = {
-      'message id': normalizedRequest,
-      'periodo': '08/2026',
-      'notas solicitadas': 'HIC — Plantões PS SUS',
-      'valores': '100,00',
-      'descricao obrigatoria': 'Plantao medico presencial homologacao controlada',
-      'status': 'PENDENTE',
-      'nfse resultantes': ''
-    };
+  // Separado: Fixture sintética explícita
+  if (normalizedRequest === 'fixture-homologation' || normalizedRequest === 'fixture-controlada') {
+    return buildHomologationFixture(normalizedRequest, now);
   }
 
+  const demand = demandas.find(item => String(firstField(item, ['request_id', 'Message ID']) || '').trim() === normalizedRequest);
   if (!demand) throw new Error(`REQUEST_NOT_FOUND: ${normalizedRequest}`);
 
   const priorNfse = String(firstField(demand, ['NFS-e resultantes', 'nfse_resultantes']) || '').trim();
@@ -210,28 +255,34 @@ function prepareDemand({ requestId, demandas, tomadores, patterns, notas = [], n
     const pattern = selectPattern(label, patterns);
     const taker = pattern && tomadores.find(item => normalizeCnpj(item.cnpj) === normalizeCnpj(pattern.cnpjTomador));
     const description = descriptions.length === labels.length ? descriptions[index] : (descriptions[0] || '');
-    const cnpjTomador = normalizeCnpj(pattern?.cnpjTomador || taker?.cnpj || '20724357000120');
-    const localPrestacao = pattern?.localPrestacao || 'Guanhães/MG';
-    const codigoMunicipioPrestacao = localPrestacao.includes('Guanh') ? '3128006' : (localPrestacao.includes('Ipatinga') ? '3131307' : '');
+    const cnpjTomador = pattern?.cnpjTomador || taker?.cnpj ? normalizeCnpj(pattern?.cnpjTomador || taker?.cnpj) : '';
+    const localPrestacao = pattern?.localPrestacao || '';
+    const codigoMunicipioPrestacao = resolveMunicipioIbge(localPrestacao);
+
+    const parsedVal = parseCurrency(values[index]);
+    const compFormatted = parseCompetencia(period);
+    const compData = competenceDate(period);
 
     const candidate = {
       requestId: normalizedRequest,
       sequence: index + 1,
-      patternId: pattern?.patternId || 'HIC_PLANTOES_PS_SUS',
-      categoria: pattern?.categoria || String(label),
-      tomador: taker?.razaoSocial || pattern?.tomador || 'HOSPITAL IMACULADA CONCEICAO',
+      patternId: pattern?.patternId || '',
+      categoria: pattern?.categoria || String(label || ''),
+      tomador: taker?.razaoSocial || pattern?.tomador || '',
       cnpjTomador,
-      valor: parseCurrency(values[index]) || 100.0,
-      competencia: parseCompetencia(period) || '08/2026',
-      competenciaData: competenceDate(period) || '2026-08-01',
+      valor: parsedVal || 0,
+      competencia: compFormatted || '',
+      competenciaData: compData || '',
       descricao: description,
       descriptionFromDemand: Boolean(description),
-      codigoTribNacional: pattern?.codigoTribNacional || '04.03.01',
-      codigoTribMunicipal: pattern?.codigoTribMunicipal || '403',
+      codigoTribNacional: pattern?.codigoTribNacional || '',
+      codigoTribMunicipal: pattern?.codigoTribMunicipal || '',
       localPrestacao,
       codigoMunicipioPrestacao,
-      nbs: pattern?.nbs || '123011900',
+      nbs: pattern?.nbs || '',
+      codigoCnae: null,
       aliquotaIss: null,
+      valorIss: null,
       rpsStatus: 'PENDING_ALLOCATION',
       rpsNumero: '',
       rpsSerie: 'A',
@@ -262,7 +313,7 @@ function prepareDemand({ requestId, demandas, tomadores, patterns, notas = [], n
     blockingReasons: [...new Set(blockingReasons)],
     xsdValidation: blockingReasons.length === 0 ? 'SCHEMA_READY' : 'REVISION_REQUIRED',
     xmlSignature: 'NOT_APPLIED_PREPARE_ONLY',
-    warnings: ['ISS_RATE_NOT_HARDCODED'],
+    warnings: ['NO_SILENT_DEFAULTS'],
     errors: []
   };
 }
@@ -305,6 +356,7 @@ module.exports = {
   selectPattern,
   buildUnsignedCandidateXml,
   validateCandidate,
+  buildHomologationFixture,
   prepareDemand,
   handlePrepare
 };

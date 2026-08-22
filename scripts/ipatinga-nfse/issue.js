@@ -13,7 +13,7 @@ const {
   markFailedSafe,
   RPS_STATUS
 } = require('./ledger');
-const { prepareDemand, demandRows, tomadorRows, patternRows } = require('./prepare');
+const { prepareDemand, demandRows, tomadorRows, patternRows, buildHomologationFixture } = require('./prepare');
 const { validateXmlAgainstOfficialXsd } = require('./xsd-validator');
 const { signXmlNode, verifyXmlSignature } = require('./xmldsig');
 const { callSoapOperation } = require('./soap');
@@ -138,21 +138,26 @@ async function issueHomologation({ requestId, itemIndex = 1, certData, dryRun = 
   const read = dependencies.readSheetValues || readSheetValues;
   const spreadsheetId = dependencies.spreadsheetId || CONFIG.SHEETS.SPREADSHEET_ID;
 
-  // 1. Carrega dados e prepara demanda
-  const [demandasRaw, tomadoresRaw, patternsRaw, notasRaw] = await Promise.all([
-    read(spreadsheetId, `${CONFIG.SHEETS.TABS.DEMANDAS}!A:Z`),
-    read(spreadsheetId, `${CONFIG.SHEETS.TABS.TOMADORES}!A:J`),
-    read(spreadsheetId, `${CONFIG.SHEETS.TABS.PADROES}!A:T`),
-    read(spreadsheetId, `${CONFIG.SHEETS.TABS.NOTAS}!A:X`)
-  ]);
+  let prepared;
+  if (requestId === 'fixture-homologation' || requestId === 'fixture-controlada') {
+    prepared = buildHomologationFixture(requestId);
+  } else {
+    // 1. Carrega dados e prepara demanda real
+    const [demandasRaw, tomadoresRaw, patternsRaw, notasRaw] = await Promise.all([
+      read(spreadsheetId, `${CONFIG.SHEETS.TABS.DEMANDAS}!A:Z`),
+      read(spreadsheetId, `${CONFIG.SHEETS.TABS.TOMADORES}!A:J`),
+      read(spreadsheetId, `${CONFIG.SHEETS.TABS.PADROES}!A:T`),
+      read(spreadsheetId, `${CONFIG.SHEETS.TABS.NOTAS}!A:X`)
+    ]);
 
-  const prepared = prepareDemand({
-    requestId,
-    demandas: demandRows(demandasRaw),
-    tomadores: tomadorRows(tomadoresRaw),
-    patterns: patternRows(patternsRaw),
-    notas: notasRaw
-  });
+    prepared = prepareDemand({
+      requestId,
+      demandas: demandRows(demandasRaw),
+      tomadores: tomadorRows(tomadoresRaw),
+      patterns: patternRows(patternsRaw),
+      notas: notasRaw
+    });
+  }
 
   if (prepared.validationStatus !== 'READY_TO_ISSUE' || !prepared.candidates.length) {
     throw new Error(`PREPARE_NOT_READY: ${prepared.blockingReasons.join(', ')}`);
@@ -250,11 +255,44 @@ async function issueHomologation({ requestId, itemIndex = 1, certData, dryRun = 
   candidate.rpsTipo = ledgerEntry.rps_tipo;
   candidate.xmlId = `RPS${ledgerEntry.rps_numero}${ledgerEntry.rps_serie.replace(/[^A-Za-z0-9]/g, '')}`;
 
-  // 5. Montagem do XML com escape seguro
+  // 5. Montagem do XML estrito: SEM defaults artificiais de ISS, alíquota, retenções e CNAE
   const itemLista = String(candidate.codigoTribNacional || '').split('.').slice(0, 2).join('.');
   const codMunPrestacao = candidate.codigoMunicipioPrestacao;
   const nbsTag = candidate.nbs ? `<cNBS>${escapeXml(candidate.nbs.replace(/\D/g, ''))}</cNBS>` : '';
-  const cnaeTag = candidate.codigoCnae ? `<CodigoCnae>${escapeXml(candidate.codigoCnae)}</CodigoCnae>` : '<CodigoCnae>8610701</CodigoCnae>';
+  const cnaeTag = candidate.codigoCnae ? `<CodigoCnae>${escapeXml(candidate.codigoCnae)}</CodigoCnae>` : '';
+
+  // Valores: Apenas ValorServicos obrigatório. Deduções, retenções, ISS e Alíquota omitidos se não definidos
+  let valoresXml = `<ValorServicos>${candidate.valor.toFixed(2)}</ValorServicos>`;
+  if (candidate.valorDeducoes !== undefined && candidate.valorDeducoes !== null && candidate.valorDeducoes > 0) {
+    valoresXml += `<ValorDeducoes>${Number(candidate.valorDeducoes).toFixed(2)}</ValorDeducoes>`;
+  }
+  if (candidate.valorPis !== undefined && candidate.valorPis !== null && candidate.valorPis > 0) {
+    valoresXml += `<ValorPis>${Number(candidate.valorPis).toFixed(2)}</ValorPis>`;
+  }
+  if (candidate.valorCofins !== undefined && candidate.valorCofins !== null && candidate.valorCofins > 0) {
+    valoresXml += `<ValorCofins>${Number(candidate.valorCofins).toFixed(2)}</ValorCofins>`;
+  }
+  if (candidate.valorInss !== undefined && candidate.valorInss !== null && candidate.valorInss > 0) {
+    valoresXml += `<ValorInss>${Number(candidate.valorInss).toFixed(2)}</ValorInss>`;
+  }
+  if (candidate.valorIr !== undefined && candidate.valorIr !== null && candidate.valorIr > 0) {
+    valoresXml += `<ValorIr>${Number(candidate.valorIr).toFixed(2)}</ValorIr>`;
+  }
+  if (candidate.valorCsll !== undefined && candidate.valorCsll !== null && candidate.valorCsll > 0) {
+    valoresXml += `<ValorCsll>${Number(candidate.valorCsll).toFixed(2)}</ValorCsll>`;
+  }
+  if (candidate.outrasRetencoes !== undefined && candidate.outrasRetencoes !== null && candidate.outrasRetencoes > 0) {
+    valoresXml += `<OutrasRetencoes>${Number(candidate.outrasRetencoes).toFixed(2)}</OutrasRetencoes>`;
+  }
+  if (candidate.valTotTributos !== undefined && candidate.valTotTributos !== null && candidate.valTotTributos > 0) {
+    valoresXml += `<ValTotTributos>${Number(candidate.valTotTributos).toFixed(2)}</ValTotTributos>`;
+  }
+  if (candidate.valorIss !== undefined && candidate.valorIss !== null && candidate.valorIss > 0) {
+    valoresXml += `<ValorIss>${Number(candidate.valorIss).toFixed(2)}</ValorIss>`;
+  }
+  if (candidate.aliquotaIss !== undefined && candidate.aliquotaIss !== null && candidate.aliquotaIss > 0) {
+    valoresXml += `<Aliquota>${Number(candidate.aliquotaIss).toFixed(4)}</Aliquota>`;
+  }
 
   const unsignedXml = `<GerarNfseEnvio xmlns="http://www.abrasf.org.br/nfse.xsd">` +
     `<Rps>` +
@@ -271,19 +309,7 @@ async function issueHomologation({ requestId, itemIndex = 1, certData, dryRun = 
         `<Competencia>${escapeXml(candidate.competenciaData)}</Competencia>` +
         `<Servico>` +
           `<Valores>` +
-            `<ValorServicos>${candidate.valor.toFixed(2)}</ValorServicos>` +
-            `<ValorDeducoes>0</ValorDeducoes>` +
-            `<ValorPis>0</ValorPis>` +
-            `<ValorCofins>0</ValorCofins>` +
-            `<ValorInss>0</ValorInss>` +
-            `<ValorIr>0</ValorIr>` +
-            `<ValorCsll>0</ValorCsll>` +
-            `<OutrasRetencoes>0</OutrasRetencoes>` +
-            `<ValTotTributos>0</ValTotTributos>` +
-            `<ValorIss>0</ValorIss>` +
-            `<Aliquota>0.0000</Aliquota>` +
-            `<DescontoIncondicionado>0</DescontoIncondicionado>` +
-            `<DescontoCondicionado>0</DescontoCondicionado>` +
+            valoresXml +
           `</Valores>` +
           `<IssRetido>2</IssRetido>` +
           `<ItemListaServico>${escapeXml(itemLista)}</ItemListaServico>` +
