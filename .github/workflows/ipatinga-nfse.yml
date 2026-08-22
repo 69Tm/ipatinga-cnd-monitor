@@ -6,12 +6,13 @@ on:
       operation:
         description: 'Operação fiscal a executar'
         required: true
-        default: 'sync'
+        default: 'preflight'
         type: choice
         options:
+          - preflight
+          - historical_analysis
           - sync
           - prepare
-          - preflight
           - issue
       sync_mode:
         description: 'Modo de sincronização de notas'
@@ -65,6 +66,12 @@ jobs:
         with:
           node-version: 22
 
+      - name: Trava de Segurança — Emissão em Produção Proibida
+        if: ${{ inputs.operation == 'issue' && inputs.environment == 'production' }}
+        run: |
+          echo "::error::PRODUCTION_ISSUE_DISABLED: Emissão de NFS-e em produção está estritamente proibida."
+          exit 1
+
       - name: Instalar Dependências NFS-e
         working-directory: scripts/ipatinga-nfse
         run: npm install
@@ -85,7 +92,7 @@ jobs:
           INPUT_DRY_RUN: ${{ inputs.dry_run }}
           GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
           DRIVE_FOLDER_ID: ${{ secrets.DRIVE_FOLDER_ID }}
-          NFE_CERT_DRIVE_FILE_ID: ${{ secrets.NFE_CERT_DRIVE_FILE_ID || vars.NFE_CERT_DRIVE_FILE_ID }}
+          NFE_CERT_DRIVE_FILE_ID: ${{ secrets.NFE_CERT_DRIVE_FILE_ID || vars.NFE_CERT_DRIVE_FILE_ID || '14TajJJtjSurR2tuYakbdW4dCHPHkqulb' }}
           NFE_CERT_PASSWORD: ${{ secrets.NFE_CERT_PASSWORD }}
           NFE_SPREADSHEET_ID: ${{ secrets.NFE_SPREADSHEET_ID || vars.NFE_SPREADSHEET_ID || '1-qnJjv0YuZkrAHnfiyJuyKiU3lR3VzFl76nNQ1DCHWo' }}
         run: node main.js
