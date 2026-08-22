@@ -20,7 +20,7 @@ const { validateXmlAgainstOfficialXsd } = require('./xsd-validator');
 const { signXmlNode, verifyXmlSignature } = require('./xmldsig');
 const { callSoapOperation } = require('./soap');
 const { buildCabecalho, parseConsultarNfseResposta } = require('./abrasf');
-const { getXmlNode, getXmlValue, parseXml } = require('./xml');
+const { getXmlNode, getXmlValue, findXmlNode, findXmlValue, ensureArray, parseXml } = require('./xml');
 
 function escapeXml(value) {
   return String(value ?? '')
@@ -49,28 +49,51 @@ function buildConsultarNfsePorRpsEnvio({ rpsNumero, rpsSerie = 'A', rpsTipo = '1
 }
 
 function parseGerarNfseResposta(xmlString) {
+  if (!xmlString) return { hasNfse: false, numero: null, codigoVerificacao: null, dataEmissao: null, mensagens: [] };
+  
   const parsed = parseXml(xmlString);
   const root = getXmlNode(parsed, ['GerarNfseResposta', 'tc:GerarNfseResposta']) || parsed;
 
-  const listaNfse = getXmlNode(root, ['ListaNfse', 'tc:ListaNfse']);
-  const compNfse = getXmlNode(root, ['CompNfse', 'tc:CompNfse']) || (listaNfse && getXmlNode(listaNfse, ['CompNfse', 'tc:CompNfse']));
-  const nfse = compNfse ? (getXmlNode(compNfse, ['Nfse', 'tc:Nfse']) || compNfse) : null;
-  const infNfse = nfse ? (getXmlNode(nfse, ['InfNfse', 'tc:InfNfse']) || nfse) : null;
+  const compNfse = findXmlNode(root, 'CompNfse');
+  const infNfse = compNfse ? findXmlNode(compNfse, 'InfNfse') : findXmlNode(root, 'InfNfse');
 
-  const listaMensagem = getXmlNode(root, ['ListaMensagemRetorno', 'tc:ListaMensagemRetorno', 'ListaMensagensRetorno', 'tc:ListaMensagensRetorno']);
-
-  const numero = infNfse ? getXmlValue(infNfse, ['Numero', 'tc:Numero']) : null;
-  const codigoVerificacao = infNfse ? getXmlValue(infNfse, ['CodigoVerificacao', 'tc:CodigoVerificacao']) : null;
-  const dataEmissao = infNfse ? getXmlValue(infNfse, ['DataEmissao', 'tc:DataEmissao']) : null;
+  const numero = infNfse ? findXmlValue(infNfse, 'Numero') : findXmlValue(root, 'NumeroNfse');
+  const codigoVerificacao = infNfse ? findXmlValue(infNfse, 'CodigoVerificacao') : findXmlValue(root, 'CodigoVerificacao');
+  const dataEmissao = infNfse ? findXmlValue(infNfse, 'DataEmissao') : findXmlValue(root, 'DataEmissao');
 
   const mensagens = [];
+
+  // 1. ListaMensagemRetorno
+  const listaMensagem = findXmlNode(root, 'ListaMensagemRetorno') || findXmlNode(root, 'ListaMensagensRetorno');
   if (listaMensagem) {
-    const msgs = Array.isArray(listaMensagem.MensagemRetorno) ? listaMensagem.MensagemRetorno : [listaMensagem.MensagemRetorno];
+    const msgs = ensureArray(listaMensagem.MensagemRetorno || listaMensagem['tc:MensagemRetorno']);
     for (const m of msgs.filter(Boolean)) {
       mensagens.push({
-        codigo: getXmlValue(m, ['Codigo', 'tc:Codigo']),
-        mensagem: getXmlValue(m, ['Mensagem', 'tc:Mensagem']),
-        correcao: getXmlValue(m, ['Correcao', 'tc:Correcao'])
+        codigo: findXmlValue(m, 'Codigo') || findXmlValue(m, 'code'),
+        mensagem: findXmlValue(m, 'Mensagem') || findXmlValue(m, 'message'),
+        correcao: findXmlValue(m, 'Correcao') || findXmlValue(m, 'correction')
+      });
+    }
+  }
+
+  // 2. Mensagem direta ou ADN
+  const msgDireta = findXmlNode(root, 'Mensagem') || findXmlNode(root, 'Confirmacao');
+  if (msgDireta) {
+    const cod = findXmlValue(msgDireta, 'Codigo') || findXmlValue(msgDireta, 'Status') || '';
+    const msg = findXmlValue(msgDireta, 'Mensagem') || (typeof msgDireta === 'string' ? msgDireta : '');
+    if (cod || msg) {
+      mensagens.push({ codigo: cod, mensagem: msg, correcao: '' });
+    }
+  }
+
+  // 3. Busca recursiva genérica de MensagemRetorno se não achou nada
+  if (mensagens.length === 0) {
+    const mr = findXmlNode(root, 'MensagemRetorno');
+    if (mr) {
+      mensagens.push({
+        codigo: findXmlValue(mr, 'Codigo'),
+        mensagem: findXmlValue(mr, 'Mensagem'),
+        correcao: findXmlValue(mr, 'Correcao')
       });
     }
   }
@@ -449,10 +472,12 @@ async function issueHomologation({ requestId, itemIndex = 1, certData, dryRun = 
     throw new Error('TIMEOUT_UNCONFIRMED: Emissão ficou inconclusiva após timeout e consulta por RPS.');
   }
 
+  console.log('📡 Resposta bruta da Prefeitura a GerarNfse:\n', responseXml.slice(0, 1000));
+
   // 10. Parse da Resposta Oficial
   const parsedGerar = parseGerarNfseResposta(responseXml);
   if (!parsedGerar.hasNfse) {
-    const errorMsg = parsedGerar.mensagens.map(m => `[${m.codigo}] ${m.mensagem}`).join('; ') || 'SEM_DADOS_NFSE';
+    const errorMsg = parsedGerar.mensagens.map(m => `[${m.codigo}] ${m.mensagem}`).join('; ') || `RESPOSTA_SEM_NFSE: ${responseXml.slice(0, 300)}`;
     
     // Classificação de Erro: Erros determinísticos cadastrais/tributários (ex: EL78, EL244, etc) viram REJECTED_CORRECTABLE
     ledgerEntry = await markRejectedCorrectable(ledgerEntry, { error: errorMsg }, dependencies);
