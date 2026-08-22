@@ -1,7 +1,14 @@
 'use strict';
 
 const assert = require('assert');
-const { KNOWN_PATTERNS, runHistoricalAnalysis } = require('../patterns');
+const {
+  KNOWN_PATTERNS,
+  runHistoricalAnalysis,
+  buildTomadoresRows,
+  buildPadroesRows,
+  buildLocalPrestacaoRepairs,
+  rowsEqual
+} = require('../patterns');
 
 console.log('Running test-patterns.js...');
 
@@ -26,9 +33,29 @@ assert.strictEqual(hicProd.confianca, 'ALTA');
 const cisurg = KNOWN_PATTERNS.find(p => p.patternId === 'CISURG_PLANTAO_PRESENCIAL');
 assert.ok(cisurg);
 assert.strictEqual(cisurg.cnpjTomadorClean, '50098089000149');
-assert.strictEqual(cisurg.localPrestacao, 'Ipatinga/MG');
+assert.strictEqual(cisurg.localPrestacao, 'Guanhães/MG');
 assert.strictEqual(cisurg.confianca, 'MÉDIA');
 assert.ok(cisurg.template.includes('ESPELHO DO MÊS É FONTE DE VERDADE'));
+assert.strictEqual(cisurg.nbs, '123011900');
+assert.deepStrictEqual(cisurg.driveFileIdsExemplo, ['16GPS4KvIWENhRHOs4bYTymb62WetOolk']);
+
+const notas = [
+  ['Nº', 'Período', 'Competência', 'Emissão', 'Tomador', 'CNPJ', 'Categoria', '', '', '', '', 'Local'],
+  ['10', '06/2026', '07/2026', '', 'HIC', '20.724.357/0001-20', 'HIC — Plantões Médicos PS SUS', '', '', '', '', 'IBGE 0'],
+  ['15', '07/2026', '08/2026', '', 'CISURG', '50.098.089/0001-49', 'CISURG — Plantão médico presencial', '', '', '', '', 'IBGE 0']
+];
+const tomadores = buildTomadoresRows(notas, [
+  ['CNPJ', 'Razão Social', 'Nome Curto', 'Município', 'E-mail', 'Categorias Conhecidas', 'Status Homologação', 'Primeiro Uso', 'Último Uso', 'Qtd NFS-e'],
+  ['20.724.357/0001-20', 'HIC', 'HIC Guanhães', 'Guanhães/MG', 'humano@hic.org.br', '', 'HOMOLOGADO', '', '', '']
+]);
+assert.strictEqual(tomadores.length, 3);
+assert.strictEqual(tomadores[1][4], 'humano@hic.org.br');
+assert.strictEqual(tomadores[1][9], 1);
+assert.strictEqual(tomadores[2][3], 'Itabira/MG');
+assert.strictEqual(buildPadroesRows()[0].length, 20);
+assert.strictEqual(buildPadroesRows()[1].length, 20);
+assert.deepStrictEqual(buildLocalPrestacaoRepairs(notas).map(item => item.numero), ['10', '15']);
+assert.strictEqual(rowsEqual([[' a ', 1]], [['a', '1']]), true);
 
 async function run() {
   let externalWrites = 0;
@@ -36,15 +63,18 @@ async function run() {
     getDriveClient: () => ({ files: { list: async () => ({ data: { files: [
       { id: 'A', name: 'HIC NFS.pdf' },
       { id: 'A', name: 'HIC NFS.pdf' },
-      { id: 'B', name: 'CISURG Nota.pdf' }
+      { id: 'B', name: 'CISURG NFS.pdf' }
     ] } }) } }),
-    readSheetValues: async () => [['header'], ['nota']],
-    updateSheetValues: async () => { externalWrites++; }
+    readSheetValues: async (_id, range) => range.includes('Notas') ? notas : [['header']],
+    updateSheetValues: async () => { externalWrites++; },
+    batchUpdateSheetValues: async () => { externalWrites++; }
   });
   assert.strictEqual(externalWrites, 0);
   assert.strictEqual(result.status, 'DRY_RUN');
   assert.strictEqual(result.writeAllowed, false);
   assert.strictEqual(result.totalArquivosDrivePesquisados, 2);
+  assert.ok(result.plannedWrites > 0);
+  assert.strictEqual(result.executedWrites, 0);
   console.log('✓ test-patterns.js PASSED');
 }
 

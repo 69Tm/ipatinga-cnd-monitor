@@ -44,6 +44,9 @@ assert.deepStrictEqual(result, {
   canceled: 1,
   substituted: 0,
   changedFieldCounts: { chaveAcesso: 2, situacaoApi: 1 },
+  plannedWrites: 0,
+  executedWrites: 0,
+  localRepairs: 0,
   errors: 0,
   warnings: 1
 });

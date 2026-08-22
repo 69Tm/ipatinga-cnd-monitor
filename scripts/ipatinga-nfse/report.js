@@ -82,6 +82,15 @@ function generateReport(summaryData) {
       }
       mdLines.push('');
     }
+  } else if (sanitizedData.operation === 'historical_analysis') {
+    mdLines.push('## Resultado da Análise Histórica');
+    mdLines.push(`- **Notas consolidadas:** ${sanitizedData.totalNotasPlanilha || 0}`);
+    mdLines.push(`- **PDFs candidatos acessíveis ao executor:** ${sanitizedData.totalArquivosDrivePesquisados || 0}`);
+    mdLines.push(`- **Padrões com evidência:** ${(sanitizedData.padroesIdentificados || []).length}`);
+    mdLines.push(`- **Escritas planejadas:** ${sanitizedData.plannedWrites || 0}`);
+    mdLines.push(`- **Escritas executadas:** ${sanitizedData.executedWrites || 0}`);
+    mdLines.push(`- **Locais de prestação a reparar:** ${(sanitizedData.localPrestacaoRepairs || []).length}`);
+    mdLines.push('');
   } else if (sanitizedData.operation === 'prepare') {
     mdLines.push('## Resultado da Preparacao Fiscal (Dry-Run)');
     mdLines.push(`- **Request ID:** \`${sanitizedData.requestId}\``);
@@ -149,6 +158,9 @@ function buildConsoleSummary(summaryData) {
     canceled: upsert.totalCanceled || 0,
     substituted: upsert.totalSubstituted || 0,
     changedFieldCounts,
+    plannedWrites: data.plannedWrites || 0,
+    executedWrites: data.executedWrites || 0,
+    localRepairs: Array.isArray(data.localPrestacaoRepairs) ? data.localPrestacaoRepairs.length : 0,
     errors: Array.isArray(data.errors) ? data.errors.length : 0,
     warnings: Array.isArray(data.warnings) ? data.warnings.length : 0
   };

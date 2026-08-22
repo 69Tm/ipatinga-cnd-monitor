@@ -4,7 +4,7 @@ const fs = require('fs');
 const path = require('path');
 const { CONFIG, sanitize } = require('./config');
 const { getDriveClient, readSheetValues, updateSheetValues, appendSheetValues, batchUpdateSheetValues } = require('./google');
-const { normalizeCnpj, formatCnpj, parseCurrency, formatCurrency, parseAliquot, formatAliquot, parseCompetencia, formatDateBr } = require('./validators');
+const { normalizeCnpj, formatCnpj, parseCompetencia } = require('./validators');
 
 /**
  * Catálogo consolidado de padrões fiscais conhecidos e suas regras determinísticas
@@ -17,19 +17,22 @@ const KNOWN_PATTERNS = [
     cnpjTomador: '20.724.357/0001-20',
     cnpjTomadorClean: '20724357000120',
     categoria: 'HIC — Plantões Médicos PS SUS',
-    template: 'Dr Túlio Athélio Sathler Siman: Referente a Plantões Médicos P.S SUS no Mês {MM/AAAA}- R$ {VALOR}. BANCO DO BRASIL AG: 0153-8 C/C: 38865-3 PIX: 31.302.407/0001-05',
+    template: 'Dr Túlio Athélio Sathler Siman: Referente a Plantões Médicos P.S SUS no Mês {MM/AAAA}- R$ {VALOR}. {BLOCO_BANCARIO_VALIDADO}',
     codigoTribNacional: '04.03.01',
     codigoTribMunicipal: '403',
     localPrestacao: 'Guanhães/MG',
     codigoIbgePrestacao: '3128006',
+    municipioIncidencia: 'Ipatinga/MG',
+    nbs: '123011900',
     issRetido: false,
     camposFixos: 'Tomador, CNPJ, Código Nacional (04.03.01), Código Municipal (403), Local Prestação (Guanhães/MG), Bloco Bancário BB',
     camposVariaveis: 'Competência (MM/AAAA), Valor Total (R$)',
     camposNaoHardcodar: 'Alíquota ISS (varia conforme Simples Nacional), Valor',
     confianca: 'ALTA',
-    statusHomologacao: 'HOMOLOGADO',
+    statusHomologacao: 'EVIDENCIA_HISTORICA_VALIDADA',
     quantidadeExemplos: 2,
     numerosNfseExemplo: ['10', '13'],
+    driveFileIdsExemplo: ['1lu434NAezUB_pRMXIJoSx4uzr_01RVRm'],
     primeiraCompetencia: '06/2026',
     ultimaCompetencia: '07/2026'
   },
@@ -40,19 +43,22 @@ const KNOWN_PATTERNS = [
     cnpjTomador: '20.724.357/0001-20',
     cnpjTomadorClean: '20724357000120',
     categoria: 'HIC — Produção PS SUS',
-    template: 'Dr Túlio Athélio Sathler Siman: Referente a Produção P.S SUS no Mês {MM/AAAA}- R$ {VALOR}. BANCO DO BRASIL AG: 0153-8 C/C: 38865-3 PIX: 31.302.407/0001-05',
+    template: 'Dr Túlio Athélio Sathler Siman: Referente a Produção P.S SUS no Mês {MM/AAAA}- R$ {VALOR}. {BLOCO_BANCARIO_VALIDADO}',
     codigoTribNacional: '04.03.01',
     codigoTribMunicipal: '403',
     localPrestacao: 'Guanhães/MG',
     codigoIbgePrestacao: '3128006',
+    municipioIncidencia: 'Ipatinga/MG',
+    nbs: '123011900',
     issRetido: false,
     camposFixos: 'Tomador, CNPJ, Código Nacional (04.03.01), Código Municipal (403), Local Prestação (Guanhães/MG), Bloco Bancário BB',
     camposVariaveis: 'Competência (MM/AAAA), Valor Total (R$)',
     camposNaoHardcodar: 'Alíquota ISS, Valor',
     confianca: 'ALTA',
-    statusHomologacao: 'HOMOLOGADO',
+    statusHomologacao: 'EVIDENCIA_HISTORICA_VALIDADA',
     quantidadeExemplos: 2,
     numerosNfseExemplo: ['11', '14'],
+    driveFileIdsExemplo: ['1hlzcRRciNAkWnHNieqFyf0l3aB2weV-a'],
     primeiraCompetencia: '06/2026',
     ultimaCompetencia: '07/2026'
   },
@@ -66,16 +72,19 @@ const KNOWN_PATTERNS = [
     template: 'ESPELHO DO MÊS É FONTE DE VERDADE (Ex: {HORAS} HORAS DE PLANTÃO MÉDICO PRESENCIAL CISURG MP {TIPO_DIA} VALOR R$ {VALOR} REALIZADO POR DR. TULIO ATHELIO CRM 76034 REFERENTE {MES_EXTENSO} {ANO} CREDENCIMENTO MEDICO)',
     codigoTribNacional: '04.03.01',
     codigoTribMunicipal: '403',
-    localPrestacao: 'Ipatinga/MG',
-    codigoIbgePrestacao: '3131307',
+    localPrestacao: 'Guanhães/MG',
+    codigoIbgePrestacao: '3128006',
+    municipioIncidencia: 'Ipatinga/MG',
+    nbs: '123011900',
     issRetido: false,
-    camposFixos: 'Tomador, CNPJ, Código Nacional (04.03.01), Código Municipal (403), Local Prestação (Ipatinga/MG)',
+    camposFixos: 'Tomador, CNPJ, Código Nacional (04.03.01), Código Municipal (403), NBS (123011900)',
     camposVariaveis: 'Horas, Tipo de dia (úteis/fim de semana), Valor, Competência (Mês/Ano), Descrição do Espelho',
-    camposNaoHardcodar: 'Descrição (extraída diretamente do espelho do mês), Alíquota ISS, Valor',
+    camposNaoHardcodar: 'Descrição (extraída diretamente do espelho do mês), Local da prestação, Alíquota ISS, Valor',
     confianca: 'MÉDIA',
     statusHomologacao: 'VALIDADO_COM_UM_EXEMPLO',
     quantidadeExemplos: 1,
     numerosNfseExemplo: ['15'],
+    driveFileIdsExemplo: ['16GPS4KvIWENhRHOs4bYTymb62WetOolk'],
     primeiraCompetencia: '07/2026',
     ultimaCompetencia: '07/2026'
   }
@@ -86,7 +95,7 @@ const KNOWN_PATTERNS = [
  */
 async function scanDriveNfseFiles(dependencies = {}) {
   const drive = (dependencies.getDriveClient || getDriveClient)();
-  const query = "mimeType = 'application/pdf' and (name contains 'NFS' or name contains 'NF' or name contains 'DEXMED' or name contains 'Nota' or name contains 'HIC' or name contains 'CISURG') and trashed = false";
+  const query = "mimeType = 'application/pdf' and (name contains 'NFS' or name contains 'NFE' or name contains 'DANF' or name contains 'nota fiscal') and trashed = false";
 
   const res = await drive.files.list({
     q: query,
@@ -94,199 +103,209 @@ async function scanDriveNfseFiles(dependencies = {}) {
     fields: 'files(id, name, mimeType, size, modifiedTime, createdTime, parents)'
   });
 
-  return Array.from(new Map((res.data.files || []).map(file => [file.id, file])).values());
+  return Array.from(new Map((res.data.files || [])
+    .filter(file => /(?:^|\b)(?:nf(?:e|s(?:-?e)?)?|danfse?|nota fiscal)(?:\b|\s|[-_])/i.test(String(file.name || '')))
+    .map(file => [file.id, file])).values());
+}
+
+function rowsEqual(left, right) {
+  const normalize = rows => (rows || []).map(row => row.map(value => String(value ?? '').trim()));
+  return JSON.stringify(normalize(left)) === JSON.stringify(normalize(right));
+}
+
+function competenceOrder(value) {
+  const match = String(parseCompetencia(value) || '').match(/^(\d{2})\/(\d{4})$/);
+  return match ? Number(`${match[2]}${match[1]}`) : 0;
+}
+
+function buildTomadoresRows(notasRows, existingRows) {
+  const headers = ['CNPJ', 'Razão Social', 'Nome Curto', 'Município', 'E-mail', 'Categorias Conhecidas', 'Status Homologação', 'Primeiro Uso', 'Último Uso', 'Qtd NFS-e'];
+  const defaults = {
+    '20724357000120': { nomeCurto: 'HIC Guanhães', municipio: 'Guanhães/MG' },
+    '50098089000149': { nomeCurto: 'CISURG Médio Piracicaba', municipio: 'Itabira/MG' }
+  };
+  const existing = new Map();
+  for (const row of (existingRows || []).slice(1)) {
+    const key = normalizeCnpj(row[0]);
+    if (key) existing.set(key, row);
+  }
+  const grouped = new Map();
+  for (const row of (notasRows || []).slice(1)) {
+    const key = normalizeCnpj(row[5]);
+    if (!key) continue;
+    if (!grouped.has(key)) grouped.set(key, { razao: row[4] || '', competencias: [], categorias: new Set(), total: 0 });
+    const item = grouped.get(key);
+    item.total++;
+    if (row[2]) item.competencias.push(String(row[2]));
+    if (row[6]) item.categorias.add(String(row[6]));
+  }
+  for (const pattern of KNOWN_PATTERNS) {
+    const item = grouped.get(pattern.cnpjTomadorClean);
+    if (item) item.categorias.add(pattern.categoria);
+  }
+  const rows = [headers];
+  for (const [key, item] of [...grouped.entries()].sort(([a], [b]) => a.localeCompare(b))) {
+    const prior = existing.get(key) || [];
+    const ordered = item.competencias.filter(Boolean).sort((a, b) => competenceOrder(a) - competenceOrder(b));
+    const pattern = KNOWN_PATTERNS.find(candidate => candidate.cnpjTomadorClean === key);
+    rows.push([
+      pattern?.cnpjTomador || formatCnpj(key),
+      item.razao || pattern?.tomador || prior[1] || '',
+      prior[2] || defaults[key]?.nomeCurto || '',
+      defaults[key]?.municipio || prior[3] || '',
+      prior[4] || '',
+      [...item.categorias].sort().join(', '),
+      prior[6] || 'EVIDENCIA_HISTORICA_VALIDADA',
+      ordered[0] || prior[7] || '',
+      ordered.at(-1) || prior[8] || '',
+      item.total
+    ]);
+  }
+  return rows;
+}
+
+function buildPadroesRows() {
+  const rows = [[
+    'ID Padrão', 'Nome Padrão', 'Tomador', 'CNPJ Tomador', 'Categoria', 'Template / Descrição Oficial',
+    'Cód. Trib. Nacional', 'Cód. Trib. Municipal', 'Local Prestação', 'NBS', 'Campos Fixos',
+    'Campos Variáveis', 'Campos Não Hardcodar', 'Qtd Exemplos', 'NFS-e Exemplos',
+    'Drive File IDs Exemplos', 'Primeira Competência', 'Última Competência', 'Confiança', 'Status'
+  ]];
+  for (const p of KNOWN_PATTERNS) {
+    rows.push([
+      p.patternId, p.nome, p.tomador, p.cnpjTomador, p.categoria, p.template,
+      p.codigoTribNacional, p.codigoTribMunicipal, p.localPrestacao, p.nbs,
+      p.camposFixos, p.camposVariaveis, p.camposNaoHardcodar, p.quantidadeExemplos,
+      p.numerosNfseExemplo.join(', '), p.driveFileIdsExemplo.join(', '),
+      p.primeiraCompetencia, p.ultimaCompetencia, p.confianca, p.statusHomologacao
+    ]);
+  }
+  return rows;
+}
+
+function buildLocalPrestacaoRepairs(notasRows) {
+  const verified = new Set(['10', '11', '13', '14', '15']);
+  const repairs = [];
+  for (let index = 1; index < (notasRows || []).length; index++) {
+    const row = notasRows[index];
+    const numero = String(row[0] || '').trim();
+    const local = String(row[11] || '').trim();
+    if (verified.has(numero) && (!local || local === 'IBGE 0')) {
+      repairs.push({ numero, range: `${CONFIG.SHEETS.TABS.NOTAS}!L${index + 1}`, value: 'Guanhães/MG' });
+    }
+  }
+  return repairs;
 }
 
 /**
- * Executa a análise histórica completa do Google Drive e consolida os padrões
+ * Executa a análise histórica completa do Google Drive e consolida os padrões.
+ * Escritas são idempotentes e ocorrem somente depois que todas as leituras terminam.
  */
 async function runHistoricalAnalysis({ dryRun = false } = {}, dependencies = {}) {
   console.log('🔍 Executando Análise Histórica de NFS-e no Google Drive...');
   const startTime = Date.now();
-
   const driveFiles = await scanDriveNfseFiles(dependencies);
   console.log(`  - Total de arquivos PDF candidatos encontrados no Drive: ${driveFiles.length}`);
 
-  // Carrega dados da planilha para confrontar
   const ssId = CONFIG.SHEETS.SPREADSHEET_ID;
   const readValues = dependencies.readSheetValues || readSheetValues;
   const updateValues = dependencies.updateSheetValues || updateSheetValues;
-  const notasPlanilha = await readValues(ssId, `${CONFIG.SHEETS.TABS.NOTAS}!A:T`);
-  const totalNotasPlanilha = Math.max(0, (notasPlanilha ? notasPlanilha.length : 0) - 1);
+  const batchUpdate = dependencies.batchUpdateSheetValues || batchUpdateSheetValues;
+  const [notasPlanilha, tomadoresAtuais, padroesAtuais] = await Promise.all([
+    readValues(ssId, `${CONFIG.SHEETS.TABS.NOTAS}!A:X`),
+    readValues(ssId, `${CONFIG.SHEETS.TABS.TOMADORES}!A:J`),
+    readValues(ssId, `${CONFIG.SHEETS.TABS.PADROES}!A:T`)
+  ]);
+  const tomadoresRows = buildTomadoresRows(notasPlanilha, tomadoresAtuais);
+  const padroesRows = buildPadroesRows();
+  const localRepairs = buildLocalPrestacaoRepairs(notasPlanilha);
+  const tomadoresChanged = !rowsEqual(tomadoresRows, tomadoresAtuais);
+  const padroesChanged = !rowsEqual(padroesRows, (padroesAtuais || []).slice(0, padroesRows.length));
+  const legacyPatternRows = Math.max(0, (padroesAtuais || []).length - padroesRows.length);
+  const plannedWrites = Number(tomadoresChanged) + Number(padroesChanged) + Number(legacyPatternRows > 0) + Number(localRepairs.length > 0);
+  let executedWrites = 0;
 
-  // Mapeamento de Tomadores Consolidados
-  const tomadoresMap = new Map();
-  tomadoresMap.set('20724357000120', {
-    razaoSocial: 'ASSOCIACAO DE CARIDADE NOSSA SENHORA DO CARMO',
-    nomeCurto: 'HIC Guanhães',
-    cnpj: '20.724.357/0001-20',
-    municipio: 'Guanhães/MG',
-    email: 'financeiro@hic.org.br',
-    categorias: ['HIC — Plantões Médicos PS SUS', 'HIC — Produção PS SUS'],
-    status: 'HOMOLOGADO',
-    primeiroUso: '06/2026',
-    ultimoUso: '07/2026',
-    totalNfse: 4
-  });
-
-  tomadoresMap.set('50098089000149', {
-    razaoSocial: 'CONSORCIO PUBLICO INTERMUNICIPAL DE SAUDE PARA GERENCIAMENTO DOS SERVICOS DE URGENCIA E EMERGENCIA DA REGIAO DO MEDIO PIRACICABA',
-    nomeCurto: 'CISURG Médio Piracicaba',
-    cnpj: '50.098.089/0001-49',
-    municipio: 'Ipatinga/MG',
-    email: 'regulacao@cisurg.mg.gov.br',
-    categorias: ['CISURG — Plantão médico presencial'],
-    status: 'HOMOLOGADO',
-    primeiroUso: '07/2026',
-    ultimoUso: '07/2026',
-    totalNfse: 1
-  });
-
-  // Atualiza / Enriquece a aba Tomadores no Sheets
-  const tomadoresRows = [
-    ['CNPJ', 'Razão Social', 'Nome Curto', 'Município', 'E-mail', 'Categorias Conhecidas', 'Status Homologação', 'Primeiro Uso', 'Último Uso', 'Qtd NFS-e']
-  ];
-  for (const t of tomadoresMap.values()) {
-    tomadoresRows.push([
-      t.cnpj,
-      t.razaoSocial,
-      t.nomeCurto,
-      t.municipio,
-      t.email,
-      t.categorias.join(', '),
-      t.status,
-      t.primeiroUso,
-      t.ultimoUso,
-      t.totalNfse
-    ]);
-  }
   if (!dryRun) {
-    await updateValues(ssId, `${CONFIG.SHEETS.TABS.TOMADORES}!A1:J${tomadoresRows.length}`, tomadoresRows);
-    console.log('  ✓ Aba Tomadores sincronizada e enriquecida no Google Sheets.');
+    if (tomadoresChanged) {
+      await updateValues(ssId, `${CONFIG.SHEETS.TABS.TOMADORES}!A1:J${tomadoresRows.length}`, tomadoresRows);
+      executedWrites++;
+    }
+    if (padroesChanged) {
+      await updateValues(ssId, `${CONFIG.SHEETS.TABS.PADROES}!A1:T${padroesRows.length}`, padroesRows);
+      executedWrites++;
+    }
+    if (legacyPatternRows > 0) {
+      const first = padroesRows.length + 1;
+      const last = first + legacyPatternRows - 1;
+      await updateValues(ssId, `${CONFIG.SHEETS.TABS.PADROES}!A${first}:T${last}`, Array.from({ length: legacyPatternRows }, () => Array(20).fill('')));
+      executedWrites++;
+    }
+    if (localRepairs.length > 0) {
+      await batchUpdate(ssId, localRepairs.map(item => ({ range: item.range, values: [[item.value]] })));
+      executedWrites++;
+    }
   } else {
-    console.log('  🔎 DRY-RUN: nenhuma escrita na aba Tomadores.');
+    console.log('  🔎 DRY-RUN: nenhuma escrita externa executada.');
   }
-
-  // Atualiza / Enriquece a aba Padrões de Emissão no Sheets
-  const padroesRows = [
-    [
-      'ID Padrão', 'Nome Padrão', 'Tomador', 'CNPJ Tomador', 'Categoria', 'Template / Descrição Oficial',
-      'Cód. Trib. Nacional', 'Cód. Trib. Municipal', 'Local Prestação', 'ISS Retido', 'Campos Fixos',
-      'Campos Variáveis', 'Campos Não Hardcodar', 'Qtd Exemplos', 'NFS-e Exemplos',
-      'Drive File IDs Exemplos', 'Primeira Competência', 'Última Competência', 'Confiança', 'Status'
-    ]
-  ];
-  for (const p of KNOWN_PATTERNS) {
-    padroesRows.push([
-      p.patternId,
-      p.nome,
-      p.tomador,
-      p.cnpjTomador,
-      p.categoria,
-      p.template,
-      p.codigoTribNacional,
-      p.codigoTribMunicipal,
-      p.localPrestacao,
-      p.issRetido ? 'SIM' : 'NÃO',
-      p.camposFixos,
-      p.camposVariaveis,
-      p.camposNaoHardcodar, p.quantidadeExemplos, p.numerosNfseExemplo.join(', '),
-      driveFiles.filter(file => String(file.name).toUpperCase().includes(p.patternId.startsWith('CISURG') ? 'CISURG' : 'HIC')).slice(0, 3).map(file => file.id).join(', '),
-      p.primeiraCompetencia, p.ultimaCompetencia,
-      p.confianca,
-      p.statusHomologacao
-    ]);
-  }
-  if (!dryRun) {
-    await updateValues(ssId, `${CONFIG.SHEETS.TABS.PADROES}!A1:T${padroesRows.length}`, padroesRows);
-    console.log('  ✓ Aba Padrões de Emissão sincronizada e enriquecida no Google Sheets.');
-  } else {
-    console.log('  🔎 DRY-RUN: nenhuma escrita na aba Padrões de Emissão.');
-  }
-
-  const durationSec = ((Date.now() - startTime) / 1000).toFixed(2);
 
   const reportData = {
     timestamp: new Date().toISOString(),
-    durationSec: Number(durationSec),
+    durationSec: Number(((Date.now() - startTime) / 1000).toFixed(2)),
     operation: 'historical_analysis',
     status: dryRun ? 'DRY_RUN' : 'SUCCESS',
     dryRun,
     writeAllowed: !dryRun,
+    plannedWrites,
+    executedWrites,
     totalArquivosDrivePesquisados: driveFiles.length,
     arquivosPdfCandidatos: driveFiles.map(f => ({ id: f.id, name: f.name, size: f.size })),
-    totalNotasPlanilha,
-    tomadoresConsolidados: Array.from(tomadoresMap.values()),
+    driveEvidenceIdsValidated: KNOWN_PATTERNS.flatMap(pattern => pattern.driveFileIdsExemplo),
+    totalNotasPlanilha: Math.max(0, (notasPlanilha || []).length - 1),
+    tomadoresConsolidados: tomadoresRows.slice(1),
     padroesIdentificados: KNOWN_PATTERNS,
+    localPrestacaoRepairs: localRepairs.map(item => ({ numero: item.numero, value: item.value })),
     divergenciasObservadas: [
-      {
-        campo: 'Alíquota ISS',
-        observacao: 'Variou de 2,291% (competência 06/2026) para 2,000% (competência 07/2026) conforme regime Simples Nacional. JAMAIS hardcodar alíquota.'
-      },
-      {
-        campo: 'NFS-e 12',
-        observacao: 'Salto numérico entre NFS-e 11 e 13. A API oficial será a fonte autoritativa para confirmar se houve cancelamento, substituição ou emissão avulsa.'
-      }
+      { campo: 'Código tributário', observacao: 'SOAP expõe ItemListaServico 04.03; DANFSe oficial expõe Código de tributação nacional 04.03.01.' },
+      { campo: 'Local da prestação', observacao: 'SOAP retornou código municipal 0; DANFSe 13, 14 e 15 comprova Guanhães/MG. Município de incidência do ISS é Ipatinga/MG.' },
+      { campo: 'Alíquota ISS', observacao: 'Varia historicamente (inclusive 2,4227%, 2,4097% e 2,0000%). Nunca hardcodar.' },
+      { campo: 'NFS-e 12', observacao: 'A API oficial confirmou NFS-e 12 NORMAL, CISURG, competência 08/2026, valor R$ 10.661,00.' },
+      { campo: 'CISURG', observacao: 'O espelho mensal permanece a fonte do descritivo principal; histórico serve somente como validação.' }
     ]
   };
 
-  // Salva relatórios
-  if (!fs.existsSync(CONFIG.PATHS.REPORT)) {
-    fs.mkdirSync(CONFIG.PATHS.REPORT, { recursive: true });
-  }
+  if (!fs.existsSync(CONFIG.PATHS.REPORT)) fs.mkdirSync(CONFIG.PATHS.REPORT, { recursive: true });
+  fs.writeFileSync(path.join(CONFIG.PATHS.REPORT, 'historical-analysis.json'), JSON.stringify(sanitize(reportData), null, 2), 'utf8');
+  const md = `# Relatório de Análise Histórica - NFS-e DEXMED
 
-  const jsonPath = path.join(CONFIG.PATHS.REPORT, 'historical-analysis.json');
-  const mdPath = path.join(CONFIG.PATHS.REPORT, 'historical-analysis.md');
+- **Data:** ${reportData.timestamp}
+- **Status:** ${reportData.status}
+- **PDFs candidatos acessíveis ao executor:** ${reportData.totalArquivosDrivePesquisados}
+- **Notas consolidadas:** ${reportData.totalNotasPlanilha}
+- **Escritas planejadas:** ${reportData.plannedWrites}
+- **Escritas executadas:** ${reportData.executedWrites}
 
-  fs.writeFileSync(jsonPath, JSON.stringify(sanitize(reportData), null, 2), 'utf8');
+## Evidências documentais validadas
 
-  const md = `# 📊 Relatório de Análise Histórica — NFS-e DEXMED
+${KNOWN_PATTERNS.map(p => `- ${p.nome}: NFS-e ${p.numerosNfseExemplo.join(', ')}; Drive ${p.driveFileIdsExemplo.join(', ')}; confiança ${p.confianca}.`).join('\n')}
 
-- **Data da Análise:** ${reportData.timestamp}
-- **Duração:** ${reportData.durationSec}s
-- **Arquivos Pesquisados no Google Drive:** ${reportData.totalArquivosDrivePesquisados}
-- **Total de Notas na Planilha:** ${reportData.totalNotasPlanilha}
+## Invariantes
 
----
-
-## 🏢 Tomadores Consolidados
-| Razão Social | Nome Curto | CNPJ | Município | Status | Qtd NFS-e |
-| :--- | :--- | :--- | :--- | :--- | :--- |
-${KNOWN_PATTERNS.map(p => `| ${p.tomador} | ${p.nome.split('—')[0].trim()} | ${p.cnpjTomador} | ${p.localPrestacao} | ${p.statusHomologacao} | 2+ |`).join('\n')}
-
----
-
-## 📑 Padrões Fiscais Mapeados
-1. **${KNOWN_PATTERNS[0].nome}** (\`${KNOWN_PATTERNS[0].patternId}\`)
-   - **Tomador:** ${KNOWN_PATTERNS[0].tomador} (${KNOWN_PATTERNS[0].cnpjTomador})
-   - **Confiança:** ${KNOWN_PATTERNS[0].confianca} ✅
-   - **Template:** \`${KNOWN_PATTERNS[0].template}\`
-
-2. **${KNOWN_PATTERNS[1].nome}** (\`${KNOWN_PATTERNS[1].patternId}\`)
-   - **Tomador:** ${KNOWN_PATTERNS[1].tomador} (${KNOWN_PATTERNS[1].cnpjTomador})
-   - **Confiança:** ${KNOWN_PATTERNS[1].confianca} ✅
-   - **Template:** \`${KNOWN_PATTERNS[1].template}\`
-
-3. **${KNOWN_PATTERNS[2].nome}** (\`${KNOWN_PATTERNS[2].patternId}\`)
-   - **Tomador:** ${KNOWN_PATTERNS[2].tomador} (${KNOWN_PATTERNS[2].cnpjTomador})
-   - **Confiança:** ${KNOWN_PATTERNS[2].confianca} ✅
-   - **Regra de Descrição:** *O espelho do mês anexado na demanda é a fonte de verdade absoluta.*
-
----
-
-## ⚠️ Regras Críticas de Não-Hardcode
-- **Alíquota ISS:** Detectada variação real entre 2,291% e 2,000%. O sistema deve ler da API/Planilha dinamicamente.
-- **CISURG:** O descritivo do espelho nunca é inventado por IA, e sim extraído integralmente do documento.
+- HIC Plantões e HIC Produção permanecem notas separadas.
+- CISURG usa o espelho da competência como fonte do descritivo.
+- ISS não é hardcoded.
+- Local da prestação e município de incidência são campos distintos.
 `;
-
-  fs.writeFileSync(mdPath, md, 'utf8');
+  fs.writeFileSync(path.join(CONFIG.PATHS.REPORT, 'historical-analysis.md'), md, 'utf8');
   console.log('  📄 Relatório de Análise Histórica salvo em report/historical-analysis.md');
-
   return reportData;
 }
 
 module.exports = {
   KNOWN_PATTERNS,
   scanDriveNfseFiles,
-  runHistoricalAnalysis
+  runHistoricalAnalysis,
+  rowsEqual,
+  buildTomadoresRows,
+  buildPadroesRows,
+  buildLocalPrestacaoRepairs
 };
