@@ -58,10 +58,10 @@ function mockSheetReader(overrides = {}) {
 }
 
 async function run() {
-  // 1. Testa builder de consulta por RPS com escape
+  // 1. Testa builder de consulta por RPS com escape e tag correta ConsultarNfseRpsEnvio
   const queryXml = buildConsultarNfsePorRpsEnvio({ rpsNumero: '1001', rpsSerie: 'A', rpsTipo: '1' });
   assert.ok(queryXml.includes('<Numero>1001</Numero>'));
-  assert.ok(queryXml.includes('<ConsultarNfsePorRpsEnvio'));
+  assert.ok(queryXml.includes('<ConsultarNfseRpsEnvio'));
 
   // 2. Testa parse oficial de GerarNfseResposta
   const sampleSuccessResponse = `<GerarNfseResposta xmlns="http://www.abrasf.org.br/nfse.xsd">
@@ -176,7 +176,4 @@ async function run() {
   console.log('✓ test-issue.js PASSED');
 }
 
-run().catch(err => {
-  console.error('\n❌ FALHA NOS TESTES:', err);
-  process.exit(1);
-});
+module.exports = run();

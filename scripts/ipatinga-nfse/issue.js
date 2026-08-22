@@ -38,7 +38,7 @@ function buildConsultarNfsePorRpsEnvio({ rpsNumero, rpsSerie = 'A', rpsTipo = '1
   const cnpjClean = cnpj || CONFIG.PRESTADOR.CNPJ_DIGITS;
   const imClean = im || CONFIG.PRESTADOR.INSCRICAO_MUNICIPAL;
 
-  return `<ConsultarNfsePorRpsEnvio xmlns="${CONFIG.ABRASF.SCHEMA_NAMESPACE}">` +
+  return `<ConsultarNfseRpsEnvio xmlns="${CONFIG.ABRASF.SCHEMA_NAMESPACE}">` +
     `<IdentificacaoRps>` +
       `<Numero>${escapeXml(rpsNumero)}</Numero>` +
       `<Serie>${escapeXml(rpsSerie)}</Serie>` +
@@ -48,7 +48,7 @@ function buildConsultarNfsePorRpsEnvio({ rpsNumero, rpsSerie = 'A', rpsTipo = '1
       `<CpfCnpj><Cnpj>${escapeXml(cnpjClean)}</Cnpj></CpfCnpj>` +
       `<InscricaoMunicipal>${escapeXml(imClean)}</InscricaoMunicipal>` +
     `</Prestador>` +
-  `</ConsultarNfsePorRpsEnvio>`;
+  `</ConsultarNfseRpsEnvio>`;
 }
 
 function parseGerarNfseResposta(xmlString) {
