@@ -74,7 +74,7 @@ jobs:
 
       - name: Instalar Dependências NFS-e
         working-directory: scripts/ipatinga-nfse
-        run: npm install
+        run: npm ci
 
       - name: Executar Bateria de Testes Unitários
         working-directory: scripts/ipatinga-nfse

@@ -27,7 +27,11 @@ const KNOWN_PATTERNS = [
     camposVariaveis: 'Competência (MM/AAAA), Valor Total (R$)',
     camposNaoHardcodar: 'Alíquota ISS (varia conforme Simples Nacional), Valor',
     confianca: 'ALTA',
-    statusHomologacao: 'HOMOLOGADO'
+    statusHomologacao: 'HOMOLOGADO',
+    quantidadeExemplos: 2,
+    numerosNfseExemplo: ['10', '13'],
+    primeiraCompetencia: '06/2026',
+    ultimaCompetencia: '07/2026'
   },
   {
     patternId: 'HIC_PRODUCAO_PS_SUS',
@@ -46,7 +50,11 @@ const KNOWN_PATTERNS = [
     camposVariaveis: 'Competência (MM/AAAA), Valor Total (R$)',
     camposNaoHardcodar: 'Alíquota ISS, Valor',
     confianca: 'ALTA',
-    statusHomologacao: 'HOMOLOGADO'
+    statusHomologacao: 'HOMOLOGADO',
+    quantidadeExemplos: 2,
+    numerosNfseExemplo: ['11', '14'],
+    primeiraCompetencia: '06/2026',
+    ultimaCompetencia: '07/2026'
   },
   {
     patternId: 'CISURG_PLANTAO_PRESENCIAL',
@@ -64,16 +72,20 @@ const KNOWN_PATTERNS = [
     camposFixos: 'Tomador, CNPJ, Código Nacional (04.03.01), Código Municipal (403), Local Prestação (Ipatinga/MG)',
     camposVariaveis: 'Horas, Tipo de dia (úteis/fim de semana), Valor, Competência (Mês/Ano), Descrição do Espelho',
     camposNaoHardcodar: 'Descrição (extraída diretamente do espelho do mês), Alíquota ISS, Valor',
-    confianca: 'ALTA',
-    statusHomologacao: 'HOMOLOGADO'
+    confianca: 'MÉDIA',
+    statusHomologacao: 'VALIDADO_COM_UM_EXEMPLO',
+    quantidadeExemplos: 1,
+    numerosNfseExemplo: ['15'],
+    primeiraCompetencia: '07/2026',
+    ultimaCompetencia: '07/2026'
   }
 ];
 
 /**
  * Pesquisa no Google Drive todos os documentos e PDFs fiscais relacionados à DEXMED
  */
-async function scanDriveNfseFiles() {
-  const drive = getDriveClient();
+async function scanDriveNfseFiles(dependencies = {}) {
+  const drive = (dependencies.getDriveClient || getDriveClient)();
   const query = "mimeType = 'application/pdf' and (name contains 'NFS' or name contains 'NF' or name contains 'DEXMED' or name contains 'Nota' or name contains 'HIC' or name contains 'CISURG') and trashed = false";
 
   const res = await drive.files.list({
@@ -82,23 +94,24 @@ async function scanDriveNfseFiles() {
     fields: 'files(id, name, mimeType, size, modifiedTime, createdTime, parents)'
   });
 
-  const files = res.data.files || [];
-  return files;
+  return Array.from(new Map((res.data.files || []).map(file => [file.id, file])).values());
 }
 
 /**
  * Executa a análise histórica completa do Google Drive e consolida os padrões
  */
-async function runHistoricalAnalysis() {
+async function runHistoricalAnalysis({ dryRun = false } = {}, dependencies = {}) {
   console.log('🔍 Executando Análise Histórica de NFS-e no Google Drive...');
   const startTime = Date.now();
 
-  const driveFiles = await scanDriveNfseFiles();
+  const driveFiles = await scanDriveNfseFiles(dependencies);
   console.log(`  - Total de arquivos PDF candidatos encontrados no Drive: ${driveFiles.length}`);
 
   // Carrega dados da planilha para confrontar
   const ssId = CONFIG.SHEETS.SPREADSHEET_ID;
-  const notasPlanilha = await readSheetValues(ssId, `${CONFIG.SHEETS.TABS.NOTAS}!A:T`);
+  const readValues = dependencies.readSheetValues || readSheetValues;
+  const updateValues = dependencies.updateSheetValues || updateSheetValues;
+  const notasPlanilha = await readValues(ssId, `${CONFIG.SHEETS.TABS.NOTAS}!A:T`);
   const totalNotasPlanilha = Math.max(0, (notasPlanilha ? notasPlanilha.length : 0) - 1);
 
   // Mapeamento de Tomadores Consolidados
@@ -147,11 +160,11 @@ async function runHistoricalAnalysis() {
       t.totalNfse
     ]);
   }
-  try {
-    await updateSheetValues(ssId, `${CONFIG.SHEETS.TABS.TOMADORES}!A1:J${tomadoresRows.length}`, tomadoresRows);
+  if (!dryRun) {
+    await updateValues(ssId, `${CONFIG.SHEETS.TABS.TOMADORES}!A1:J${tomadoresRows.length}`, tomadoresRows);
     console.log('  ✓ Aba Tomadores sincronizada e enriquecida no Google Sheets.');
-  } catch (err) {
-    console.log('  ⚠️ Aviso ao atualizar aba Tomadores:', err.message);
+  } else {
+    console.log('  🔎 DRY-RUN: nenhuma escrita na aba Tomadores.');
   }
 
   // Atualiza / Enriquece a aba Padrões de Emissão no Sheets
@@ -159,7 +172,8 @@ async function runHistoricalAnalysis() {
     [
       'ID Padrão', 'Nome Padrão', 'Tomador', 'CNPJ Tomador', 'Categoria', 'Template / Descrição Oficial',
       'Cód. Trib. Nacional', 'Cód. Trib. Municipal', 'Local Prestação', 'ISS Retido', 'Campos Fixos',
-      'Campos Variáveis', 'Campos Não Hardcodar', 'Confiança', 'Status'
+      'Campos Variáveis', 'Campos Não Hardcodar', 'Qtd Exemplos', 'NFS-e Exemplos',
+      'Drive File IDs Exemplos', 'Primeira Competência', 'Última Competência', 'Confiança', 'Status'
     ]
   ];
   for (const p of KNOWN_PATTERNS) {
@@ -176,16 +190,18 @@ async function runHistoricalAnalysis() {
       p.issRetido ? 'SIM' : 'NÃO',
       p.camposFixos,
       p.camposVariaveis,
-      p.camposNaoHardcodar,
+      p.camposNaoHardcodar, p.quantidadeExemplos, p.numerosNfseExemplo.join(', '),
+      driveFiles.filter(file => String(file.name).toUpperCase().includes(p.patternId.startsWith('CISURG') ? 'CISURG' : 'HIC')).slice(0, 3).map(file => file.id).join(', '),
+      p.primeiraCompetencia, p.ultimaCompetencia,
       p.confianca,
       p.statusHomologacao
     ]);
   }
-  try {
-    await updateSheetValues(ssId, `${CONFIG.SHEETS.TABS.PADROES}!A1:O${padroesRows.length}`, padroesRows);
+  if (!dryRun) {
+    await updateValues(ssId, `${CONFIG.SHEETS.TABS.PADROES}!A1:T${padroesRows.length}`, padroesRows);
     console.log('  ✓ Aba Padrões de Emissão sincronizada e enriquecida no Google Sheets.');
-  } catch (err) {
-    console.log('  ⚠️ Aviso ao atualizar aba Padrões de Emissão:', err.message);
+  } else {
+    console.log('  🔎 DRY-RUN: nenhuma escrita na aba Padrões de Emissão.');
   }
 
   const durationSec = ((Date.now() - startTime) / 1000).toFixed(2);
@@ -193,6 +209,10 @@ async function runHistoricalAnalysis() {
   const reportData = {
     timestamp: new Date().toISOString(),
     durationSec: Number(durationSec),
+    operation: 'historical_analysis',
+    status: dryRun ? 'DRY_RUN' : 'SUCCESS',
+    dryRun,
+    writeAllowed: !dryRun,
     totalArquivosDrivePesquisados: driveFiles.length,
     arquivosPdfCandidatos: driveFiles.map(f => ({ id: f.id, name: f.name, size: f.size })),
     totalNotasPlanilha,

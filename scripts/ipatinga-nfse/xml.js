@@ -1,6 +1,6 @@
 'use strict';
 
-const { XMLParser, XMLBuilder } = require('fast-xml-parser');
+const { XMLParser, XMLBuilder, XMLValidator } = require('fast-xml-parser');
 const crypto = require('crypto');
 
 const defaultParserOptions = {
@@ -23,7 +23,7 @@ const xmlBuilder = new XMLBuilder({
 });
 
 function parseXml(xmlString) {
-  if (!xmlString || typeof xmlString !== 'string') return {};
+  if (!xmlString || typeof xmlString !== 'string') throw new Error('XML_EMPTY');
   // Se contiver entidades HTML não decodificadas
   let clean = xmlString.trim();
   if (clean.includes('&lt;') && !clean.startsWith('<')) {
@@ -34,6 +34,8 @@ function parseXml(xmlString) {
       .replace(/&quot;/g, '"')
       .replace(/&apos;/g, "'");
   }
+  const validation = XMLValidator.validate(clean);
+  if (validation !== true) throw new Error('XML_INVALID: ' + validation.err.msg);
   return xmlParser.parse(clean);
 }
 
@@ -87,10 +89,36 @@ function ensureArray(val) {
   return [val];
 }
 
+function findXmlNode(node, tagName) {
+  if (!node || typeof node !== 'object') return null;
+  const expected = String(tagName).toLowerCase();
+  for (const [key, value] of Object.entries(node)) {
+    const cleanKey = key.includes(':') ? key.split(':').pop() : key;
+    if (cleanKey.toLowerCase() === expected) return value;
+    if (value && typeof value === 'object') {
+      const nested = findXmlNode(value, tagName);
+      if (nested !== null) return nested;
+    }
+  }
+  return null;
+}
+
+function findXmlValue(node, tagName) {
+  const found = findXmlNode(node, tagName);
+  if (found === null || found === undefined) return null;
+  if (typeof found === 'object') {
+    if (found['#text'] !== undefined) return String(found['#text']).trim();
+    if (found.__cdata !== undefined) return String(found.__cdata).trim();
+  }
+  return typeof found === 'string' || typeof found === 'number' ? String(found).trim() : null;
+}
+
 module.exports = {
   parseXml,
   buildXml,
   getXmlValue,
   getXmlNode,
-  ensureArray
+  ensureArray,
+  findXmlNode,
+  findXmlValue
 };

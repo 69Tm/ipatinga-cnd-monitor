@@ -9,11 +9,12 @@ const { buildCabecalho, buildConsultarNfseFaixaEnvio } = require('./abrasf');
 const { callSoapOperation } = require('./soap');
 const { isValidCnpj, formatCurrency, formatDateBr } = require('./validators');
 const { runHistoricalAnalysis } = require('./patterns');
+const { inspectWsdl } = require('./wsdl');
 
 /**
  * Preflight Check: Valida todos os componentes sem realizar emissao ou alteracao fiscal
  */
-async function preflight() {
+async function preflight(dependencies = {}) {
   console.log('====================================================');
   console.log('  🔍 PREFLIGHT CHECK — AUTOMAÇÃO NFS-e DEXMED (IPATINGA)');
   console.log('====================================================\n');
@@ -29,8 +30,12 @@ async function preflight() {
     pfxPasswordConfigured: false,
     pfxValidated: false,
     pfxDetails: null,
-    productionWsdlAccessible: true,
-    homologationWsdlAccessible: true,
+    productionWsdlAccessible: false,
+    homologationWsdlAccessible: false,
+    wsdl: {},
+    certificateKeyMatch: 'BLOCKED',
+    certificateCnpj: 'BLOCKED',
+    certificateValidity: 'BLOCKED',
     status: 'UNKNOWN',
     warnings: [],
     errors: []
@@ -85,6 +90,10 @@ async function preflight() {
       const certData = await loadCertificate();
       if (certData.loaded && certData.isValid) {
         results.pfxValidated = true;
+        results.certificateValidity = 'OK';
+        results.certificateKeyMatch = certData.keyMatchesCertificate ? 'OK' : 'FAILED';
+        results.certificateCnpj = certData.certificateCnpj ? 'OK' : 'CERT_CNPJ_NOT_EXTRACTED';
+        results.warnings.push(...(certData.warnings || []));
         console.log(`✓ PFX senha configurada: OK`);
         console.log(`✓ PFX conteudo validado: OK (${certData.commonName} valido ate ${formatDateBr(certData.notAfter)})`);
       } else {
@@ -101,19 +110,33 @@ async function preflight() {
     console.log('🔒 PFX conteudo validado: BLOQUEADO PELA SENHA');
   }
 
-  // 5. WSDL / Webservice Producao & Homologacao
-  console.log('✓ WSDL producao: OK (https://abrasfipatinga.meumunicipio.online/ws/nfs?wsdl)');
-  console.log('✓ WSDL homologacao: OK (https://testeipatinga.meumunicipio.online/abrasf/ws/nfs?wsdl)');
+  // 5. WSDL real: somente HTTP GET, sem chamar operação fiscal.
+  const inspect = dependencies.inspectWsdl || inspectWsdl;
+  for (const environment of ['production', 'homologation']) {
+    try {
+      const inspected = await inspect(CONFIG.ENDPOINTS[environment].wsdl);
+      results.wsdl[environment] = inspected;
+      results[`${environment}WsdlAccessible`] = true;
+      console.log(`✓ WSDL ${environment}: OK HTTP ${inspected.statusCode}, ${inspected.latencyMs}ms, ${inspected.contract.operation}`);
+    } catch (err) {
+      results.wsdl[environment] = { accessible: false, error: sanitize(err.message) };
+      results.errors.push(`WSDL ${environment}: ${sanitize(err.message)}`);
+      console.log(`✗ WSDL ${environment}: FALHA (${sanitize(err.message)})`);
+    }
+  }
 
   // 6. Status Geral
-  if (results.googleServiceAccount && results.sheetsAccess && results.pfxAccessibleOnDrive) {
+  if (results.googleServiceAccount && results.sheetsAccess && results.pfxAccessibleOnDrive &&
+      results.productionWsdlAccessible && results.homologationWsdlAccessible) {
     if (results.pfxValidated) {
       results.status = 'READY_ALL_OK';
-    } else {
+    } else if (!results.pfxPasswordConfigured) {
       results.status = 'READY_EXCEPT_CERT_PASSWORD';
+    } else {
+      results.status = 'FAILED';
     }
   } else {
-    results.status = 'INFRASTRUCTURE_PENDING';
+    results.status = 'FAILED';
   }
 
   console.log('\n====================================================');
@@ -170,6 +193,12 @@ async function handlePrepare({ requestId, environment }) {
   };
 }
 
+function enforceOperationSafety(operation, environment) {
+  if (operation === 'issue' && environment === 'production') {
+    throw new Error('PRODUCTION_ISSUE_DISABLED: Emissao de NFS-e em producao esta estritamente bloqueada.');
+  }
+}
+
 /**
  * Funcao Principal CLI
  */
@@ -197,9 +226,7 @@ async function main() {
 
   try {
     // 1. Trava de seguranca de emissao em producao
-    if (operation === 'issue' && environment === 'production') {
-      throw new Error('PRODUCTION_ISSUE_DISABLED: Emissao de NFS-e em producao esta estritamente bloqueada.');
-    }
+    enforceOperationSafety(operation, environment);
 
     // 2. Tenta carregar certificado se senha e arquivo estiverem configurados
     if (CONFIG.CERT.PASSWORD) {
@@ -217,19 +244,10 @@ async function main() {
     if (operation === 'preflight') {
       summary = await preflight();
     } else if (operation === 'historical_analysis') {
-      summary = await runHistoricalAnalysis();
+      summary = await runHistoricalAnalysis({ dryRun });
     } else if (operation === 'sync') {
       if (!certData || !certData.loaded) {
-        console.log('\n🔒 SINCRONIZACAO COM A PREFEITURA REQUER AUTENTICACAO DO CERTIFICADO A1.');
-        console.log('   Status: BLOCKED_ONLY_BY_NFE_CERT_PASSWORD (Aguardando cadastro de NFE_CERT_PASSWORD no GitHub Secrets).\n');
-        summary = {
-          operation: 'sync',
-          environment,
-          mode: syncMode,
-          status: 'BLOCKED_ONLY_BY_NFE_CERT_PASSWORD',
-          reason: 'Aguardando cadastro de NFE_CERT_PASSWORD no GitHub Secrets',
-          timestamp: new Date().toISOString()
-        };
+        throw new Error('CERT_PASSWORD_MISSING: sync bloqueado ate NFE_CERT_PASSWORD ser configurado.');
       } else {
         summary = await syncNfse({
           mode: syncMode,
@@ -246,7 +264,7 @@ async function main() {
       if (environment !== 'homologation') {
         throw new Error('PRODUCTION_ISSUE_DISABLED: Emissao permitida apenas em homologacao.');
       }
-      if (!certData || !certData.loaded) {
+      if (!certData || !certData.loaded || !certData.isValid) {
         throw new Error('CERT_PASSWORD_MISSING: Emissao em homologacao requer certificado A1 desbloqueado.');
       }
       throw new Error('Emissao em homologacao pronta para ativacao na Fase 2.');
@@ -257,13 +275,15 @@ async function main() {
     if (summary) {
       generateReport(summary);
       console.log('📄 Relatorio de execucao gerado com sucesso em report/run-summary.md');
+      if (summary.status === 'FAILED') process.exitCode = 1;
     }
   } catch (err) {
     const sanitizedMsg = sanitize(err.message || err);
     console.error('\n❌ ERRO NA EXECUCAO: ' + sanitizedMsg);
     
-    summary = {
+    summary = err.syncSummary || {
       operation,
+      status: err.code === 'PARTIAL_SYNC_FAILED' ? 'PARTIAL_SYNC_FAILED' : 'FAILED',
       environment,
       timestamp: new Date().toISOString(),
       errors: [sanitizedMsg]
@@ -282,5 +302,6 @@ if (require.main === module) {
 module.exports = {
   main,
   preflight,
-  handlePrepare
+  handlePrepare,
+  enforceOperationSafety
 };

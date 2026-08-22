@@ -8,6 +8,39 @@ const { downloadDriveFile, getDriveFileMetadata } = require('./google');
 const { normalizeCnpj } = require('./validators');
 
 let tempCertPath = null;
+const ICP_BRASIL_CNPJ_OID = '2.16.76.1.3.3';
+
+function publicKeysMatch(certPublicKey, privateKey) {
+  if (!certPublicKey || !privateKey) return false;
+  if (certPublicKey.n && certPublicKey.e && privateKey.n && privateKey.e) {
+    return certPublicKey.n.compareTo(privateKey.n) === 0 && certPublicKey.e.compareTo(privateKey.e) === 0;
+  }
+  return false;
+}
+
+function extractCertificateCnpj(cert) {
+  const candidates = [];
+  for (const attr of cert.subject.attributes || []) {
+    if (attr.type === ICP_BRASIL_CNPJ_OID && attr.value) candidates.push(attr.value);
+  }
+  const san = (cert.extensions || []).find(ext => ext.name === 'subjectAltName');
+  for (const altName of san?.altNames || []) {
+    if (altName.oid === ICP_BRASIL_CNPJ_OID && altName.value) candidates.push(altName.value);
+  }
+  for (const candidate of candidates) {
+    const digits = String(candidate).replace(/\D/g, '');
+    if (digits.length === 14) return digits;
+  }
+  return null;
+}
+
+function validateExtendedKeyUsage(cert) {
+  const eku = (cert.extensions || []).find(ext => ext.name === 'extKeyUsage');
+  if (!eku) return { present: false, compatible: true };
+  const compatible = Boolean(eku.clientAuth || eku.anyExtendedKeyUsage);
+  if (!compatible) throw new Error('CERT_EKU_INCOMPATIBLE: certificado nao permite autenticacao de cliente.');
+  return { present: true, compatible };
+}
 
 /**
  * Valida o acesso ao arquivo do certificado A1 no Drive/local sem abrir a chave privada
@@ -118,38 +151,45 @@ async function loadCertificate() {
   }
 
   // Extracao do certificado e chave privada
-  let certObj = null;
-  let keyObj = null;
-  const caCerts = [];
+  const certificates = [];
+  const privateKeys = [];
 
   for (const safeContent of p12.safeContents) {
     for (const safeBag of safeContent.safeBags) {
       if (safeBag.type === forge.pki.oids.certBag) {
-        const cert = safeBag.cert;
-        if (!certObj) {
-          certObj = cert;
-        } else {
-          caCerts.push(cert);
-        }
+        certificates.push(safeBag.cert);
       } else if (safeBag.type === forge.pki.oids.pkcs8ShroudedKeyBag || safeBag.type === forge.pki.oids.keyBag) {
-        keyObj = safeBag.key;
+        privateKeys.push(safeBag.key);
       }
     }
   }
 
-  if (!certObj) {
+  if (certificates.length === 0) {
     throw new Error('Nenhum certificado encontrado dentro do arquivo PFX.');
   }
-  if (!keyObj) {
+  if (privateKeys.length === 0) {
     throw new Error('Nenhuma chave privada encontrada dentro do arquivo PFX.');
   }
 
+  let certObj = null;
+  let keyObj = null;
+  for (const key of privateKeys) {
+    const matchingCert = certificates.find(cert => publicKeysMatch(cert.publicKey, key));
+    if (matchingCert) {
+      certObj = matchingCert;
+      keyObj = key;
+      break;
+    }
+  }
+  if (!certObj || !keyObj) throw new Error('CERT_KEY_MISMATCH: certificado e private key nao correspondem.');
+  const caCerts = certificates.filter(cert => cert !== certObj);
   const notBefore = certObj.validity.notBefore;
   const notAfter = certObj.validity.notAfter;
   const now = new Date();
 
   const isExpired = now.getTime() > notAfter.getTime();
   const isNotYetValid = now.getTime() < notBefore.getTime();
+  if (isExpired || isNotYetValid) throw new Error('CERTIFICATE_INVALID_DATE: certificado expirado ou ainda nao valido.');
 
   // Informacoes do Titular
   let commonName = '';
@@ -159,6 +199,16 @@ async function loadCertificate() {
       break;
     }
   }
+  const expectedCnpj = normalizeCnpj(CONFIG.PRESTADOR.CNPJ);
+  const certificateCnpj = extractCertificateCnpj(certObj);
+  if (certificateCnpj && certificateCnpj !== expectedCnpj) {
+    throw new Error('CERT_CNPJ_MISMATCH: CNPJ do certificado difere do prestador configurado.');
+  }
+  if (!certificateCnpj && !String(commonName).toUpperCase().includes('DEXMED')) {
+    throw new Error('CERT_SUBJECT_MISMATCH: titular do certificado nao e compativel com DEXMED.');
+  }
+  const eku = validateExtendedKeyUsage(certObj);
+  const warnings = certificateCnpj ? [] : ['CERT_CNPJ_NOT_EXTRACTED'];
 
   const pemCert = forge.pki.certificateToPem(certObj);
   const pemKey = forge.pki.privateKeyToPem(keyObj);
@@ -171,7 +221,11 @@ async function loadCertificate() {
     notAfter,
     isExpired,
     isNotYetValid,
-    isValid: !isExpired && !isNotYetValid,
+    isValid: true,
+    keyMatchesCertificate: true,
+    certificateCnpj,
+    eku,
+    warnings,
     pemCert,
     pemKey,
     pemCa,
@@ -195,5 +249,8 @@ function cleanupCertificate() {
 module.exports = {
   checkCertificateAccess,
   loadCertificate,
-  cleanupCertificate
+  cleanupCertificate,
+  publicKeysMatch,
+  extractCertificateCnpj,
+  validateExtendedKeyUsage
 };

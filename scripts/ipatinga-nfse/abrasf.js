@@ -122,12 +122,12 @@ function parseCompNfse(compNode) {
   let situacaoDetalhe = 'Normal';
   let dataCancelamento = null;
 
-  if (cancelamentoNode) {
+  if (cancelamentoNode !== null) {
     status = 'CANCELADA';
     const confirmacao = getXmlNode(cancelamentoNode, ['Confirmacao', 'tc:Confirmacao']);
     dataCancelamento = confirmacao ? getXmlValue(confirmacao, ['DataHora', 'tc:DataHora']) : null;
     situacaoDetalhe = `Cancelada em ${dataCancelamento ? formatDateBr(dataCancelamento) : 'data desconhecida'}`;
-  } else if (substituicaoNode) {
+  } else if (substituicaoNode !== null) {
     status = 'SUBSTITUIDA';
     situacaoDetalhe = 'Substituída';
   }
@@ -219,7 +219,7 @@ function parseConsultarNfseResposta(xmlString) {
   notas.sort((a, b) => Number(a.numero || 0) - Number(b.numero || 0));
 
   return {
-    success: notas.length > 0 || mensagens.length === 0,
+    success: mensagens.every(msg => !msg.codigo || String(msg.codigo).toUpperCase() === 'L000'),
     notas,
     mensagens,
     totalNotas: notas.length

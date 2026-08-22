@@ -28,7 +28,8 @@ async function loadExistingNotas(spreadsheetId = null) {
       headers: [],
       notas: [],
       byNumber: new Map(),
-      byChave: new Map()
+      byChave: new Map(),
+      byCnpjNumero: new Map()
     };
   }
 
@@ -36,6 +37,7 @@ async function loadExistingNotas(spreadsheetId = null) {
   const notas = [];
   const byNumber = new Map();
   const byChave = new Map();
+  const byCnpjNumero = new Map();
 
   for (let i = 1; i < rows.length; i++) {
     const row = rows[i];
@@ -81,13 +83,17 @@ async function loadExistingNotas(spreadsheetId = null) {
     if (chave) {
       byChave.set(chave, record);
     }
+    if (numero && record.cnpjTomador) {
+      byCnpjNumero.set(`${onlyDigits(record.cnpjTomador)}:${onlyDigits(numero)}`, record);
+    }
   }
 
   return {
     headers,
     notas,
     byNumber,
-    byChave
+    byChave,
+    byCnpjNumero
   };
 }
 
@@ -134,12 +140,15 @@ async function ensureHeaders(spreadsheetId = null) {
 /**
  * Realiza UPSERT de uma lista de NFS-e na aba Notas
  */
-async function upsertNotas(apiNotas, spreadsheetId = null, dryRun = false) {
+async function upsertNotas(apiNotas, spreadsheetId = null, dryRun = false, dependencies = {}) {
   const ssId = spreadsheetId || CONFIG.SHEETS.SPREADSHEET_ID;
   const tab = CONFIG.SHEETS.TABS.NOTAS;
-
-  await ensureHeaders(ssId);
-  const existing = await loadExistingNotas(ssId);
+  const ensure = dependencies.ensureHeaders || ensureHeaders;
+  const load = dependencies.loadExistingNotas || loadExistingNotas;
+  const batchUpdate = dependencies.batchUpdateSheetValues || batchUpdateSheetValues;
+  const append = dependencies.appendSheetValues || appendSheetValues;
+  if (!dryRun) await ensure(ssId);
+  const existing = await load(ssId);
 
   const timestampIso = new Date().toISOString();
   const rowsToUpdate = [];
@@ -152,7 +161,9 @@ async function upsertNotas(apiNotas, spreadsheetId = null, dryRun = false) {
 
   for (const item of apiNotas) {
     const cleanNum = String(parseInt(onlyDigits(item.numero), 10) || item.numero);
-    const existingRec = (item.chaveAcesso && existing.byChave.get(item.chaveAcesso)) || existing.byNumber.get(cleanNum);
+    const cnpjNumberKey = `${onlyDigits(item.cnpjTomador)}:${onlyDigits(item.numero)}`;
+    const existingRec = (item.chaveAcesso && existing.byChave.get(item.chaveAcesso)) ||
+      existing.byCnpjNumero?.get(cnpjNumberKey) || existing.byNumber.get(cleanNum);
 
     if (item.status === 'CANCELADA') {
       totalCanceled++;
@@ -187,11 +198,16 @@ async function upsertNotas(apiNotas, spreadsheetId = null, dryRun = false) {
         item.situacaoDetalhe || existingRec.situacaoApi                     // X (técnico)
       ];
 
-      rowsToUpdate.push({
-        range: `${tab}!A${existingRec.rowNumber}:X${existingRec.rowNumber}`,
-        values: [newRow]
-      });
-      totalUpdated++;
+      const comparableNew = [...newRow];
+      comparableNew[21] = existingRec.ultimaSync || '';
+      const comparableOld = Array.from({ length: 24 }, (_, index) => existingRec.rawRow[index] ?? '');
+      const changed = comparableNew.some((value, index) => String(value ?? '') !== String(comparableOld[index] ?? ''));
+      if (changed) {
+        rowsToUpdate.push({ range: `${tab}!A${existingRec.rowNumber}:X${existingRec.rowNumber}`, values: [newRow] });
+        totalUpdated++;
+      } else {
+        totalUnchanged++;
+      }
     } else {
       // Nova Nota -> INSERT
       const newRow = [
@@ -229,11 +245,11 @@ async function upsertNotas(apiNotas, spreadsheetId = null, dryRun = false) {
   if (!dryRun) {
     // Executa batchUpdate para linhas existentes
     if (rowsToUpdate.length > 0) {
-      await batchUpdateSheetValues(ssId, rowsToUpdate);
+      await batchUpdate(ssId, rowsToUpdate);
     }
     // Executa append para novas linhas
     if (rowsToAppend.length > 0) {
-      await appendSheetValues(ssId, `${tab}!A:X`, rowsToAppend);
+      await append(ssId, `${tab}!A:X`, rowsToAppend);
     }
   }
 

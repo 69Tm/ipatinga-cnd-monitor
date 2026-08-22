@@ -57,5 +57,12 @@ const parsedEmpty = parseConsultarNfseResposta(emptyXml);
 assert.strictEqual(parsedEmpty.totalNotas, 0);
 assert.strictEqual(parsedEmpty.mensagens.length, 1);
 assert.strictEqual(parsedEmpty.mensagens[0].codigo, 'L000');
+assert.strictEqual(parsedEmpty.success, true);
+
+const statusXml = fs.readFileSync(path.join(__dirname, 'fixtures', 'consultar-faixa-status-sample.xml'), 'utf8');
+const statusParsed = parseConsultarNfseResposta(statusXml);
+assert.strictEqual(statusParsed.notas[0].status, 'CANCELADA');
+assert.strictEqual(statusParsed.notas[1].status, 'SUBSTITUIDA');
+assert.throws(() => parseConsultarNfseResposta('<broken>'), /XML_INVALID/);
 
 console.log('✓ test-xml.js PASSED');

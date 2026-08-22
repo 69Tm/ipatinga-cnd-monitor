@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<ConsultarNfseFaixaResposta xmlns="http://www.abrasf.org.br/nfse.xsd">
+  <ListaNfse>
+    <CompNfse><Nfse><InfNfse><Numero>20</Numero><DataEmissao>2026-08-01</DataEmissao></InfNfse></Nfse><NfseCancelamento><Confirmacao><DataHora>2026-08-02</DataHora></Confirmacao></NfseCancelamento></CompNfse>
+    <CompNfse><Nfse><InfNfse><Numero>21</Numero><DataEmissao>2026-08-01</DataEmissao></InfNfse></Nfse><NfseSubstituicao/></CompNfse>
+  </ListaNfse>
+</ConsultarNfseFaixaResposta>

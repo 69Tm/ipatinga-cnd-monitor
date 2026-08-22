@@ -22,6 +22,7 @@ function generateReport(summaryData) {
   mdLines.push('# Relatorio de Execucao - NFS-e DEXMED (Ipatinga ABRASF 2.04)');
   mdLines.push('');
   mdLines.push(`- **Operacao:** \`${sanitizedData.operation}\``);
+  mdLines.push(`- **Status:** \`${sanitizedData.status || 'UNKNOWN'}\``);
   mdLines.push(`- **Ambiente:** \`${sanitizedData.environment}\``);
   mdLines.push(`- **Modo:** \`${sanitizedData.mode || 'N/A'}\``);
   mdLines.push(`- **Dry Run:** \`${sanitizedData.dryRun ? 'Sim' : 'Nao'}\``);
@@ -32,7 +33,11 @@ function generateReport(summaryData) {
   if (sanitizedData.operation === 'sync') {
     mdLines.push('## Resumo da Sincronizacao');
     mdLines.push('');
-    mdLines.push(`- **Total Retornado pela API:** ${sanitizedData.totalRetornadoApi || 0}`);
+    mdLines.push(`- **Faixa solicitada:** ${JSON.stringify(sanitizedData.requestedRange || {})}`);
+    mdLines.push(`- **Faixas planejadas:** ${(sanitizedData.actualRanges || []).map(r => `${r.from}-${r.to}`).join(', ') || 'N/A'}`);
+    mdLines.push(`- **Faixas concluídas:** ${(sanitizedData.completedRanges || []).map(r => `${r.from}-${r.to}`).join(', ') || 'Nenhuma'}`);
+    mdLines.push(`- **Total Retornado pela API:** ${sanitizedData.totalApi || 0}`);
+    mdLines.push(`- **Total Normalizado:** ${sanitizedData.totalNormalized || 0}`);
     mdLines.push(`- **Primeira NFS-e Encontrada:** ${sanitizedData.primeiraNfEncontrada || 'N/A'}`);
     mdLines.push(`- **Ultima NFS-e Encontrada:** ${sanitizedData.ultimaNfEncontrada || 'N/A'}`);
     mdLines.push('');
@@ -42,6 +47,7 @@ function generateReport(summaryData) {
     mdLines.push(`- **Novas Notas Inseridas:** ${upsert.totalNew || 0}`);
     mdLines.push(`- **Notas Existentes Atualizadas:** ${upsert.totalUpdated || 0}`);
     mdLines.push(`- **Notas Canceladas Detectadas:** ${upsert.totalCanceled || 0}`);
+    mdLines.push(`- **Notas Inalteradas:** ${upsert.totalUnchanged || 0}`);
     mdLines.push('');
 
     if (sanitizedData.regressionCheck) {
@@ -64,6 +70,12 @@ function generateReport(summaryData) {
     mdLines.push(`- **Tomador:** ${sanitizedData.tomador || 'N/A'}`);
     mdLines.push(`- **Valor:** R$ ${sanitizedData.valor || 0}`);
     mdLines.push(`- **Competencia:** ${sanitizedData.competencia || 'N/A'}`);
+    mdLines.push('');
+  }
+
+  if (sanitizedData.warnings && sanitizedData.warnings.length > 0) {
+    mdLines.push('## Advertencias');
+    sanitizedData.warnings.forEach(warning => mdLines.push(`- ${typeof warning === 'object' ? JSON.stringify(warning) : warning}`));
     mdLines.push('');
   }
 

@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<wsdl:definitions xmlns:wsdl="http://schemas.xmlsoap.org/wsdl/" xmlns:soap="http://schemas.xmlsoap.org/wsdl/soap/" xmlns:xsd="http://www.w3.org/2001/XMLSchema" xmlns:tns="https://abrasfipatinga.meumunicipio.online/ws/nfs" targetNamespace="https://abrasfipatinga.meumunicipio.online/ws/nfs">
+  <wsdl:types><xsd:schema targetNamespace="https://abrasfipatinga.meumunicipio.online/ws/nfs"><xsd:element name="ConsultarNfseFaixaRequest"><xsd:complexType><xsd:sequence><xsd:element name="nfseCabecMsg" type="xsd:string"/><xsd:element name="nfseDadosMsg" type="xsd:string"/></xsd:sequence></xsd:complexType></xsd:element></xsd:schema></wsdl:types>
+  <wsdl:binding name="AbrasfBinding" type="tns:Abrasf"><wsdl:operation name="ConsultarNfseFaixa"><soap:operation soapAction="nfs#ConsultarNfseFaixa"/></wsdl:operation></wsdl:binding>
+  <wsdl:service name="AbrasfService"><wsdl:port name="AbrasfPort" binding="tns:AbrasfBinding"><soap:address location="https://abrasfipatinga.meumunicipio.online/ws/nfs"/></wsdl:port></wsdl:service>
+</wsdl:definitions>

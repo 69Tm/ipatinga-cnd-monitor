@@ -23,7 +23,7 @@ const CONFIG = Object.freeze({
     },
     homologation: {
       wsdl: 'https://testeipatinga.meumunicipio.online/abrasf/ws/nfs?wsdl',
-      url: 'https://testeipatinga.meumunicipio.online/abrasf/ws/nfs',
+      url: 'https://testeipatingaabrasf.meumunicipio.online/ws/nfs',
       namespace: 'https://testeipatingaabrasf.meumunicipio.online/ws/nfs'
     }
   },
@@ -56,6 +56,12 @@ const CONFIG = Object.freeze({
     PASSWORD: process.env.NFE_CERT_PASSWORD || '',
     FILE_ID: process.env.NFE_CERT_DRIVE_FILE_ID || '14TajJJtjSurR2tuYakbdW4dCHPHkqulb',
     LOCAL_PATH: process.env.NFE_CERT_LOCAL_PATH || ''
+  },
+  SYNC: {
+    BATCH_SIZE: Number(process.env.NFE_SYNC_BATCH_SIZE || 50),
+    OVERLAP: Number(process.env.NFE_SYNC_OVERLAP || 10),
+    INCREMENTAL_FORWARD: Number(process.env.NFE_SYNC_INCREMENTAL_FORWARD || 100),
+    MAX_NUMBER: Number(process.env.NFE_SYNC_MAX_NUMBER || 1000)
   },
 
   // Diretórios

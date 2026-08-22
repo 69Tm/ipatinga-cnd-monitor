@@ -1,163 +1,117 @@
 'use strict';
 
-const { CONFIG } = require('./config');
 const { buildCabecalho, buildConsultarNfseFaixaEnvio, parseConsultarNfseResposta } = require('./abrasf');
 const { callSoapOperation } = require('./soap');
 const { loadExistingNotas, upsertNotas } = require('./sheets');
 const { onlyDigits } = require('./validators');
+const { sanitize } = require('./config');
 
-/**
- * Orquestra a sincronização de NFS-e (Full ou Incremental)
- */
-async function syncNfse({
-  mode = 'incremental',
-  environment = 'production',
-  fromNumber = null,
-  toNumber = null,
-  dryRun = false,
-  certData = null
-}) {
+function positiveInteger(value, name, fallback = null) {
+  if (value === null || value === undefined || value === '') return fallback;
+  const parsed = Number(value);
+  if (!Number.isSafeInteger(parsed) || parsed < 1) throw new Error(`INVALID_SYNC_RANGE: ${name} deve ser um inteiro positivo.`);
+  return parsed;
+}
+
+function buildSyncRanges({
+  mode = 'incremental', maxKnown = 0, fromNumber = null, toNumber = null,
+  batchSize = 50, overlap = 10, incrementalForward = 100, fullMaxNumber = 1000
+} = {}) {
+  if (!['full', 'incremental'].includes(mode)) throw new Error(`INVALID_SYNC_MODE: ${mode}`);
+  const batch = positiveInteger(batchSize, 'batchSize');
+  const known = Math.max(0, Number(maxKnown) || 0);
+  const overlapSize = Math.max(0, Number(overlap) || 0);
+  const forward = positiveInteger(incrementalForward, 'incrementalForward');
+  const fullMax = positiveInteger(fullMaxNumber, 'fullMaxNumber');
+  const requestedFrom = positiveInteger(fromNumber, 'from_number', null);
+  const requestedTo = positiveInteger(toNumber, 'to_number', null);
+  let start;
+  let end;
+  if (mode === 'full') {
+    start = requestedFrom || 1;
+    end = requestedTo || fullMax;
+  } else {
+    start = requestedFrom || (known > 0 ? Math.max(1, known - overlapSize + 1) : 1);
+    end = requestedTo || Math.max(start, known + forward);
+  }
+  if (start > end) throw new Error(`INVALID_SYNC_RANGE: from_number (${start}) nao pode ser maior que to_number (${end}).`);
+  const ranges = [];
+  for (let from = start; from <= end; from += batch) ranges.push({ from, to: Math.min(from + batch - 1, end), page: 1 });
+  return ranges;
+}
+
+function hasBusinessError(parsed) {
+  const emptyCodes = new Set(['L000']);
+  return (parsed.mensagens || []).some(message => {
+    const code = String(message.codigo || '').toUpperCase();
+    return code && !emptyCodes.has(code);
+  });
+}
+
+async function syncNfse(options = {}, dependencies = {}) {
+  const {
+    mode = 'incremental', environment = 'production', fromNumber = null, toNumber = null,
+    dryRun = false, certData = null, batchSize = process.env.NFE_SYNC_BATCH_SIZE || 50,
+    overlap = process.env.NFE_SYNC_OVERLAP || 10, incrementalForward = process.env.NFE_SYNC_INCREMENTAL_FORWARD || 100,
+    fullMaxNumber = process.env.NFE_SYNC_MAX_NUMBER || 1000
+  } = options;
+  const loadNotas = dependencies.loadExistingNotas || loadExistingNotas;
+  const upsert = dependencies.upsertNotas || upsertNotas;
+  const soapCall = dependencies.callSoapOperation || callSoapOperation;
+  const parseResponse = dependencies.parseConsultarNfseResposta || parseConsultarNfseResposta;
   const startTime = Date.now();
-  const existing = await loadExistingNotas();
-
-  // Descobre a maior nota conhecida na planilha
+  if (!certData || certData.loaded !== true || certData.isValid !== true) {
+    throw new Error('CERTIFICATE_NOT_READY: sync autenticado exige certificado carregado e valido.');
+  }
+  const existing = await loadNotas();
   let maxKnown = 0;
   for (const numStr of existing.byNumber.keys()) {
-    const n = parseInt(onlyDigits(numStr), 10);
-    if (!isNaN(n) && n > maxKnown) maxKnown = n;
+    const number = Number.parseInt(onlyDigits(numStr), 10);
+    if (Number.isSafeInteger(number) && number > maxKnown) maxKnown = number;
   }
-
+  const ranges = buildSyncRanges({ mode, maxKnown, fromNumber, toNumber, batchSize, overlap, incrementalForward, fullMaxNumber });
   const allApiNotas = new Map();
-  const pagesConsulted = [];
-  const errors = [];
-
-  const BATCH_SIZE = 50;
-  let startRange = 1;
-  let endRange = 50;
-
-  if (fromNumber && toNumber) {
-    startRange = parseInt(fromNumber, 10);
-    endRange = parseInt(toNumber, 10);
-  } else if (mode === 'incremental' && maxKnown > 0) {
-    // Sobreposição das últimas 10 notas para capturar cancelamentos/alterações
-    startRange = Math.max(1, maxKnown - 10);
-    endRange = maxKnown + 50;
-  }
-
-  let currentStart = startRange;
-  let hasMore = true;
-  let consecutiveEmptyBatches = 0;
-
-  while (hasMore) {
-    const currentEnd = Math.min(currentStart + BATCH_SIZE - 1, endRange || currentStart + BATCH_SIZE - 1);
-    const pageNum = 1;
-
-    const cabecMsg = buildCabecalho();
-    const dadosMsg = buildConsultarNfseFaixaEnvio({
-      from: currentStart,
-      to: currentEnd,
-      page: pageNum
-    });
-
+  const completedRanges = [];
+  for (const range of ranges) {
     try {
-      const soapRes = await callSoapOperation({
-        environment,
-        operation: 'ConsultarNfseFaixa',
-        cabecMsg,
-        dadosMsg,
-        certData
+      const soapResult = await soapCall({
+        environment, operation: 'ConsultarNfseFaixa', cabecMsg: buildCabecalho(),
+        dadosMsg: buildConsultarNfseFaixaEnvio(range), certData
       });
-
-      const parsed = parseConsultarNfseResposta(soapRes.outputXml);
-
-      pagesConsulted.push({
-        range: `${currentStart}-${currentEnd}`,
-        statusCode: soapRes.statusCode,
-        notasRetornadas: parsed.notas.length,
-        mensagens: parsed.mensagens
-      });
-
-      if (parsed.notas.length > 0) {
-        consecutiveEmptyBatches = 0;
-        for (const n of parsed.notas) {
-          allApiNotas.set(String(n.numero), n);
-        }
-      } else {
-        consecutiveEmptyBatches++;
+      const parsed = parseResponse(soapResult.outputXml);
+      if (!parsed || parsed.success !== true || !Array.isArray(parsed.notas) || !Array.isArray(parsed.mensagens)) {
+        throw new Error('UNEXPECTED_ABRASF_RESPONSE: resposta sem estrutura reconhecida.');
       }
-
-      // Se atingiu o limite definido pelo usuário
-      if (toNumber && currentEnd >= parseInt(toNumber, 10)) {
-        hasMore = false;
-        break;
+      if (hasBusinessError(parsed)) throw new Error(`ABRASF_BUSINESS_ERROR: ${JSON.stringify(sanitize(parsed.mensagens))}`);
+      for (const note of parsed.notas) {
+        if (!note || !note.numero) throw new Error('UNEXPECTED_ABRASF_RESPONSE: NFS-e sem numero.');
+        const key = note.chaveAcesso || `${onlyDigits(note.cnpjTomador)}:${onlyDigits(note.numero)}`;
+        allApiNotas.set(key, note);
       }
-
-      // Se estamos em modo full ou incremental sem limite fixo
-      if (!toNumber) {
-        if (consecutiveEmptyBatches >= 2) {
-          // Se após a maior nota conhecida não houver mais nenhuma nota em 2 lotes seguidos
-          if (currentStart > maxKnown) {
-            hasMore = false;
-            break;
-          }
-        }
-        // Se já consultamos muito além de qualquer nota razoável sem retorno
-        if (currentStart > Math.max(maxKnown + 100, 200) && consecutiveEmptyBatches >= 2) {
-          hasMore = false;
-          break;
-        }
-      }
-
-      currentStart += BATCH_SIZE;
-      if (currentStart > 1000) {
-        // Trava de segurança para não rodar infinito em caso anômalo
-        hasMore = false;
-      }
-    } catch (err) {
-      errors.push({
-        range: `${currentStart}-${currentEnd}`,
-        error: err.message
-      });
-      // Em caso de erro neste range, interrompe o avanço
-      hasMore = false;
+      completedRanges.push({ ...range, statusCode: soapResult.statusCode, total: parsed.notas.length });
+    } catch (error) {
+      const failure = new Error(`PARTIAL_SYNC_FAILED: faixa ${range.from}-${range.to}: ${sanitize(error.message)}`);
+      failure.code = 'PARTIAL_SYNC_FAILED';
+      failure.syncSummary = {
+        operation: 'sync', status: 'PARTIAL_SYNC_FAILED', environment, mode, dryRun,
+        timestamp: new Date().toISOString(), durationSec: Number(((Date.now() - startTime) / 1000).toFixed(2)),
+        requestedRange: { from: fromNumber, to: toNumber }, actualRanges: ranges,
+        completedRanges, totalApi: allApiNotas.size, totalNormalized: allApiNotas.size,
+        upsertResult: null, warnings: [], errors: [sanitize(error.message)]
+      };
+      throw failure;
     }
   }
-
-  const apiNotasList = Array.from(allApiNotas.values());
-  apiNotasList.sort((a, b) => Number(a.numero) - Number(b.numero));
-
-  // Executa UPSERT no Sheets
-  const upsertResult = await upsertNotas(apiNotasList, null, dryRun);
-
-  // Verificação de Regressão das Notas Conhecidas (10, 11, 13, 14, 15) e Nota 12
-  const regressionCheck = {
-    nota10: allApiNotas.has('10') ? allApiNotas.get('10') : (existing.byNumber.get('10') || null),
-    nota11: allApiNotas.has('11') ? allApiNotas.get('11') : (existing.byNumber.get('11') || null),
-    nota12: allApiNotas.has('12') ? allApiNotas.get('12') : (existing.byNumber.get('12') || 'Inexistente / Não retornada na API'),
-    nota13: allApiNotas.has('13') ? allApiNotas.get('13') : (existing.byNumber.get('13') || null),
-    nota14: allApiNotas.has('14') ? allApiNotas.get('14') : (existing.byNumber.get('14') || null),
-    nota15: allApiNotas.has('15') ? allApiNotas.get('15') : (existing.byNumber.get('15') || null)
-  };
-
-  const durationSec = ((Date.now() - startTime) / 1000).toFixed(2);
-
+  const apiNotas = Array.from(allApiNotas.values()).sort((a, b) => Number(a.numero) - Number(b.numero));
+  const upsertResult = await upsert(apiNotas, null, dryRun);
   return {
-    operation: 'sync',
-    environment,
-    mode,
-    dryRun,
-    timestamp: new Date().toISOString(),
-    durationSec: Number(durationSec),
-    totalRetornadoApi: apiNotasList.length,
-    primeiraNfEncontrada: apiNotasList.length > 0 ? apiNotasList[0].numero : null,
-    ultimaNfEncontrada: apiNotasList.length > 0 ? apiNotasList[apiNotasList.length - 1].numero : null,
-    upsertResult,
-    regressionCheck,
-    pagesConsulted,
-    errors
+    operation: 'sync', status: dryRun ? 'DRY_RUN' : 'SUCCESS', environment, mode, dryRun,
+    timestamp: new Date().toISOString(), durationSec: Number(((Date.now() - startTime) / 1000).toFixed(2)),
+    requestedRange: { from: fromNumber, to: toNumber }, actualRanges: ranges,
+    completedRanges, totalApi: apiNotas.length, totalNormalized: apiNotas.length,
+    primeiraNfEncontrada: apiNotas[0]?.numero || null, ultimaNfEncontrada: apiNotas.at(-1)?.numero || null,
+    upsertResult, errors: [], warnings: []
   };
 }
 
-module.exports = {
-  syncNfse
-};
+module.exports = { buildSyncRanges, syncNfse, hasBusinessError };
