@@ -12,8 +12,19 @@ const {
   formatAliquot,
   formatDateBr,
   onlyDigits,
-  parseCurrency
+  parseCurrency,
+  parseAliquot
 } = require('./validators');
+
+function semanticallyEqual(columnIndex, left, right) {
+  if ([8, 13].includes(columnIndex)) {
+    return Math.abs(parseCurrency(left) - parseCurrency(right)) < 0.000001;
+  }
+  if (columnIndex === 12) {
+    return Math.abs(parseAliquot(left) - parseAliquot(right)) < 0.000001;
+  }
+  return String(left ?? '').trim() === String(right ?? '').trim();
+}
 
 /**
  * Lê a aba Notas e mapeia as linhas existentes
@@ -214,7 +225,7 @@ async function upsertNotas(apiNotas, spreadsheetId = null, dryRun = false, depen
       comparableNew[21] = existingRec.ultimaSync || '';
       const comparableOld = Array.from({ length: 24 }, (_, index) => existingRec.rawRow[index] ?? '');
       const changedIndexes = comparableNew
-        .map((value, index) => String(value ?? '') !== String(comparableOld[index] ?? '') ? index : -1)
+        .map((value, index) => !semanticallyEqual(index, value, comparableOld[index]) ? index : -1)
         .filter(index => index >= 0);
       const changed = changedIndexes.length > 0;
       if (changed) {
@@ -284,5 +295,6 @@ async function upsertNotas(apiNotas, spreadsheetId = null, dryRun = false, depen
 module.exports = {
   loadExistingNotas,
   ensureHeaders,
-  upsertNotas
+  upsertNotas,
+  semanticallyEqual
 };
