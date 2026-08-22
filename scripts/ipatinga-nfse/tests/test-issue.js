@@ -2,12 +2,11 @@
 
 const assert = require('assert');
 const forge = require('node-forge');
-const { issueHomologation, buildConsultarNfsePorRpsEnvio } = require('../issue');
+const { issueHomologation, buildConsultarNfsePorRpsEnvio, parseGerarNfseResposta } = require('../issue');
 const { RPS_STATUS } = require('../ledger');
 
 console.log('Running test-issue.js...');
 
-// Cria certificado e chave sintéticos
 const keypair = forge.pki.rsa.generateKeyPair({ bits: 2048 });
 const cert = forge.pki.createCertificate();
 cert.publicKey = keypair.publicKey;
@@ -46,7 +45,27 @@ async function run() {
   assert.ok(queryXml.includes('<Numero>1001</Numero>'));
   assert.ok(queryXml.includes('<ConsultarNfsePorRpsEnvio'));
 
-  // 2. Testa issueHomologation em modo dry_run
+  // 2. Testa parse oficial de GerarNfseResposta
+  const sampleSuccessResponse = `<GerarNfseResposta xmlns="http://www.abrasf.org.br/nfse.xsd">
+    <ListaNfse>
+      <CompNfse>
+        <Nfse>
+          <InfNfse>
+            <Numero>95001</Numero>
+            <CodigoVerificacao>ABC123XYZ</CodigoVerificacao>
+            <DataEmissao>2026-08-22T10:00:00</DataEmissao>
+          </InfNfse>
+        </Nfse>
+      </CompNfse>
+    </ListaNfse>
+  </GerarNfseResposta>`;
+  const parsedRes = parseGerarNfseResposta(sampleSuccessResponse);
+  assert.strictEqual(parsedRes.hasNfse, true);
+  assert.strictEqual(parsedRes.numero, '95001');
+  assert.strictEqual(parsedRes.codigoVerificacao, 'ABC123XYZ');
+
+  // 3. Testa issueHomologation em modo dry_run=true
+  let gerarNfseCallCount = 0;
   const dryRes = await issueHomologation({
     requestId: 'req-test-homolog',
     itemIndex: 1,
@@ -64,10 +83,12 @@ async function run() {
 
   assert.strictEqual(dryRes.status, 'DRY_RUN_SUCCESS');
   assert.strictEqual(dryRes.environment, 'homologation');
-  assert.strictEqual(dryRes.rpsNumero, '1001');
-  assert.ok(dryRes.xmlCandidate.includes('<Signature xmlns="http://www.w3.org/2000/09/xmldsig#">'));
+  assert.strictEqual(dryRes.gerarNfseCalls, 0);
+  assert.strictEqual(dryRes.xsdValidation, 'VALIDATED_OFFICIAL_XSD');
+  assert.strictEqual(dryRes.xmlSignature, 'VALIDATED_XMLDSIG_C14N');
+  assert.strictEqual(gerarNfseCallCount, 0, 'Zero chamadas SOAP em dry_run');
 
-  // 3. Testa idempotência (ALREADY_ISSUED) quando o Ledger já registra a nota emitida
+  // 4. Testa idempotência (ALREADY_ISSUED)
   const alreadyIssuedRes = await issueHomologation({
     requestId: 'req-test-homolog',
     itemIndex: 1,
@@ -81,7 +102,7 @@ async function run() {
       if (range.includes('RPS')) {
         return [
           ['environment', 'request_id', 'item_index', 'rps_numero', 'rps_serie', 'rps_tipo', 'status', 'allocated_at', 'submitted_at', 'nfse_numero', 'nfse_chave', 'last_query_at', 'error'],
-          ['homologation', 'req-test-homolog', '1', '1001', 'A', '1', RPS_STATUS.ISSUED, '2026-08-22T09:00:00Z', '2026-08-22T09:00:05Z', '9999', 'CHAVE999', '2026-08-22T09:00:10Z', '']
+          ['homologation', 'req-test-homolog', '1', '1001', 'A', '1', RPS_STATUS.ISSUED, '2026-08-22T09:00:00Z', '2026-08-22T09:00:05Z', '95001', 'ABC123XYZ', '2026-08-22T09:00:10Z', '']
         ];
       }
       return [['Nº NFS-e']];
@@ -89,7 +110,7 @@ async function run() {
   });
 
   assert.strictEqual(alreadyIssuedRes.status, 'ALREADY_ISSUED');
-  assert.strictEqual(alreadyIssuedRes.nfseNumero, '9999');
+  assert.strictEqual(alreadyIssuedRes.nfseNumero, '95001');
 
   console.log('✓ test-issue.js PASSED');
 }

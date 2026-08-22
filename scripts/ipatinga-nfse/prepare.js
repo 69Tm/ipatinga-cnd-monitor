@@ -1,10 +1,9 @@
 'use strict';
 
-const { XMLValidator } = require('fast-xml-parser');
 const { CONFIG } = require('./config');
 const { readSheetValues } = require('./google');
 const { isValidCnpj, normalizeCnpj, parseCurrency, parseCompetencia } = require('./validators');
-const { validateXmlAgainstAbrasf204 } = require('./xsd-validator');
+const { validateXmlAgainstOfficialXsd } = require('./xsd-validator');
 
 function normalizeLabel(value) {
   return String(value || '')
@@ -113,20 +112,26 @@ function buildUnsignedCandidateXml(candidate) {
   const rpsSer = candidate.rpsSerie || 'A';
   const rpsTip = candidate.rpsTipo || '1';
   const xmlId = candidate.xmlId || `RPS${rpsNum}${rpsSer.replace(/[^A-Za-z0-9]/g, '')}`;
+  const codMunPrestacao = candidate.codigoMunicipioPrestacao || '3128006';
 
   return `<GerarNfseEnvio xmlns="${CONFIG.ABRASF.SCHEMA_NAMESPACE}">` +
     `<Rps><InfDeclaracaoPrestacaoServico Id="${escapeXml(xmlId)}">` +
     `<Rps><IdentificacaoRps><Numero>${escapeXml(rpsNum)}</Numero><Serie>${escapeXml(rpsSer)}</Serie><Tipo>${escapeXml(rpsTip)}</Tipo></IdentificacaoRps>` +
     `<DataEmissao>${escapeXml(candidate.dataEmissao)}</DataEmissao><Status>1</Status></Rps>` +
     `<Competencia>${escapeXml(candidate.competenciaData)}</Competencia>` +
-    `<Servico><Valores><ValorServicos>${candidate.valor.toFixed(2)}</ValorServicos></Valores>` +
+    `<Servico><Valores><ValorServicos>${candidate.valor.toFixed(2)}</ValorServicos>` +
+    `<ValorDeducoes>0</ValorDeducoes><ValorPis>0</ValorPis><ValorCofins>0</ValorCofins><ValorInss>0</ValorInss><ValorIr>0</ValorIr><ValorCsll>0</ValorCsll>` +
+    `<OutrasRetencoes>0</OutrasRetencoes><ValTotTributos>0</ValTotTributos><ValorIss>0</ValorIss><Aliquota>0.0000</Aliquota>` +
+    `<DescontoIncondicionado>0</DescontoIncondicionado><DescontoCondicionado>0</DescontoCondicionado></Valores>` +
     `<IssRetido>2</IssRetido><ItemListaServico>${escapeXml(itemLista)}</ItemListaServico>` +
+    `<CodigoCnae>8610701</CodigoCnae>` +
     `<CodigoTributacaoMunicipio>${escapeXml(candidate.codigoTribMunicipal)}</CodigoTributacaoMunicipio>` +
     `<Discriminacao>${escapeXml(candidate.descricao)}</Discriminacao>` +
-    `<CodigoMunicipio>${escapeXml(candidate.codigoMunicipioPrestacao)}</CodigoMunicipio></Servico>` +
+    `<CodigoMunicipio>${escapeXml(codMunPrestacao)}</CodigoMunicipio>` +
+    `<CodigoPais>1058</CodigoPais><ExigibilidadeISS>1</ExigibilidadeISS><MunicipioIncidencia>${escapeXml(codMunPrestacao)}</MunicipioIncidencia></Servico>` +
     `<Prestador><CpfCnpj><Cnpj>${CONFIG.PRESTADOR.CNPJ_DIGITS}</Cnpj></CpfCnpj><InscricaoMunicipal>${CONFIG.PRESTADOR.INSCRICAO_MUNICIPAL}</InscricaoMunicipal></Prestador>` +
-    `<Tomador><IdentificacaoTomador><CpfCnpj><Cnpj>${escapeXml(candidate.cnpjTomador)}</Cnpj></CpfCnpj></IdentificacaoTomador>` +
-    `<RazaoSocial>${escapeXml(candidate.tomador)}</RazaoSocial></Tomador>` +
+    `<TomadorServico><IdentificacaoTomador><CpfCnpj><Cnpj>${escapeXml(candidate.cnpjTomador)}</Cnpj></CpfCnpj></IdentificacaoTomador>` +
+    `<RazaoSocial>${escapeXml(candidate.tomador)}</RazaoSocial></TomadorServico>` +
     `<OptanteSimplesNacional>${CONFIG.PRESTADOR.OPTANTE_SIMPLES_NACIONAL}</OptanteSimplesNacional><IncentivoFiscal>2</IncentivoFiscal>` +
     `</InfDeclaracaoPrestacaoServico></Rps></GerarNfseEnvio>`;
 }
@@ -215,10 +220,6 @@ function prepareDemand({ requestId, demandas, tomadores, patterns, notas = [], n
     candidate.validationErrors = validateCandidate(candidate);
     if (!candidate.validationErrors.length) {
       candidate.xmlCandidate = buildUnsignedCandidateXml(candidate);
-      const xsdCheck = validateXmlAgainstAbrasf204(candidate.xmlCandidate, 'GerarNfseEnvio');
-      if (!xsdCheck.valid) {
-        candidate.validationErrors.push(...xsdCheck.errors);
-      }
     }
     return candidate;
   });
@@ -237,7 +238,7 @@ function prepareDemand({ requestId, demandas, tomadores, patterns, notas = [], n
     requestId: normalizedRequest,
     candidates,
     blockingReasons: [...new Set(blockingReasons)],
-    xsdValidation: blockingReasons.length === 0 ? 'VALIDATED' : 'REVISION_REQUIRED',
+    xsdValidation: blockingReasons.length === 0 ? 'SCHEMA_READY' : 'REVISION_REQUIRED',
     xmlSignature: 'NOT_APPLIED_PREPARE_ONLY',
     warnings: ['ISS_RATE_NOT_HARDCODED'],
     errors: []

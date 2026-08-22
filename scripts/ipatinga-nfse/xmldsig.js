@@ -1,91 +1,71 @@
 'use strict';
 
-const crypto = require('crypto');
+const { SignedXml } = require('xml-crypto');
+const { DOMParser } = require('@xmldom/xmldom');
 
 /**
- * Normaliza e canonicaliza um nó XML (C14N simplificada para nós bem formados)
+ * Assina um elemento XML (InfDeclaracaoPrestacaoServico) dentro do documento GerarNfseEnvio
+ * utilizando W3C Canonical XML 1.0 (C14N), Enveloped Signature, SHA-1 Digest e RSA-SHA1.
+ * 
+ * Mantém o contexto de namespaces do nó pai (http://www.abrasf.org.br/nfse.xsd).
  */
-function canonicalizeXml(xmlSnippet) {
-  return String(xmlSnippet || '')
-    .replace(/>\s+</g, '><')
-    .replace(/\r\n/g, '\n')
-    .replace(/\r/g, '\n')
-    .trim();
-}
-
-/**
- * Assina um nó XML (como InfDeclaracaoPrestacaoServico) usando chave privada RSA e gera envelope XMLDSig
- */
-function signXmlNode({ xmlNode, targetId, pemKey, pemCert }) {
-  if (!xmlNode || !targetId || !pemKey || !pemCert) {
-    throw new Error('XMLDSIG_PARAM_MISSING: xmlNode, targetId, pemKey e pemCert são obrigatórios.');
+function signXmlNode({ xml, targetId, pemKey, pemCert }) {
+  if (!xml || !targetId || !pemKey || !pemCert) {
+    throw new Error('XMLDSIG_PARAM_MISSING: xml, targetId, pemKey e pemCert são obrigatórios.');
   }
 
-  const canonicalTarget = canonicalizeXml(xmlNode);
-  const digestSha1 = crypto.createHash('sha1').update(canonicalTarget, 'utf8').digest('base64');
+  const sig = new SignedXml();
+  sig.privateKey = pemKey;
+  sig.publicCert = pemCert;
+  
+  sig.addReference({
+    xpath: `//*[@Id='${targetId}']`,
+    transforms: [
+      "http://www.w3.org/2000/09/xmldsig#enveloped-signature",
+      "http://www.w3.org/TR/2001/REC-xml-c14n-20010315"
+    ],
+    digestAlgorithm: "http://www.w3.org/2000/09/xmldsig#sha1"
+  });
 
-  const signedInfo = `<SignedInfo xmlns="http://www.w3.org/2000/09/xmldsig#">` +
-    `<CanonicalizationMethod Algorithm="http://www.w3.org/TR/2001/REC-xml-c14n-20010315"></CanonicalizationMethod>` +
-    `<SignatureMethod Algorithm="http://www.w3.org/2000/09/xmldsig#rsa-sha1"></SignatureMethod>` +
-    `<Reference URI="#${targetId}">` +
-      `<Transforms>` +
-        `<Transform Algorithm="http://www.w3.org/2000/09/xmldsig#enveloped-signature"></Transform>` +
-        `<Transform Algorithm="http://www.w3.org/TR/2001/REC-xml-c14n-20010315"></Transform>` +
-      `</Transforms>` +
-      `<DigestMethod Algorithm="http://www.w3.org/2000/09/xmldsig#sha1"></DigestMethod>` +
-      `<DigestValue>${digestSha1}</DigestValue>` +
-    `</Reference>` +
-  `</SignedInfo>`;
+  sig.signatureAlgorithm = "http://www.w3.org/2000/09/xmldsig#rsa-sha1";
+  sig.canonicalizationAlgorithm = "http://www.w3.org/TR/2001/REC-xml-c14n-20010315";
 
-  const canonicalSignedInfo = canonicalizeXml(signedInfo);
-  const signer = crypto.createSign('RSA-SHA1');
-  signer.update(canonicalSignedInfo, 'utf8');
-  const signatureValue = signer.sign(pemKey, 'base64');
-
-  const certDerBase64 = pemCert
+  const certDer = pemCert
     .replace(/-----BEGIN[A-Z\s]+CERTIFICATE-----/g, '')
     .replace(/-----END[A-Z\s]+CERTIFICATE-----/g, '')
     .replace(/\s+/g, '');
 
-  const signatureBlock = `<Signature xmlns="http://www.w3.org/2000/09/xmldsig#">` +
-    signedInfo +
-    `<SignatureValue>${signatureValue}</SignatureValue>` +
-    `<KeyInfo>` +
-      `<X509Data>` +
-        `<X509Certificate>${certDerBase64}</X509Certificate>` +
-      `</X509Data>` +
-    `</KeyInfo>` +
-  `</Signature>`;
+  sig.keyInfoProvider = {
+    getKeyInfo: () => `<X509Data><X509Certificate>${certDer}</X509Certificate></X509Data>`
+  };
 
-  return signatureBlock;
+  sig.computeSignature(xml, {
+    prefix: '',
+    location: { reference: `//*[@Id='${targetId}']`, action: "after" }
+  });
+
+  return sig.getSignedXml();
 }
 
 /**
- * Valida criptograficamente uma assinatura XMLDSig gerada
+ * Validação independente de assinatura XMLDSig
  */
-function verifyXmlSignature({ xmlNode, signatureBlock, pemCert }) {
-  const digestMatch = signatureBlock.match(/<DigestValue>([^<]+)<\/DigestValue>/);
-  const sigMatch = signatureBlock.match(/<SignatureValue>([^<]+)<\/SignatureValue>/);
-  const signedInfoMatch = signatureBlock.match(/<SignedInfo[\s\S]*?<\/SignedInfo>/);
+function verifyXmlSignature({ signedXml, pemCert }) {
+  try {
+    const doc = new DOMParser().parseFromString(signedXml);
+    const signatureNodes = doc.getElementsByTagNameNS("http://www.w3.org/2000/09/xmldsig#", "Signature");
+    if (!signatureNodes || signatureNodes.length === 0) return false;
 
-  if (!digestMatch || !sigMatch || !signedInfoMatch) return false;
-
-  const digestExpected = digestMatch[1];
-  const signatureValue = sigMatch[1];
-  const signedInfoXml = signedInfoMatch[0];
-
-  const canonicalTarget = canonicalizeXml(xmlNode);
-  const digestActual = crypto.createHash('sha1').update(canonicalTarget, 'utf8').digest('base64');
-  if (digestExpected !== digestActual) return false;
-
-  const canonicalSignedInfo = canonicalizeXml(signedInfoXml);
-  const verifier = crypto.createVerify('RSA-SHA1');
-  verifier.update(canonicalSignedInfo, 'utf8');
-  return verifier.verify(pemCert, signatureValue, 'base64');
+    const verifier = new SignedXml();
+    verifier.publicCert = pemCert;
+    verifier.loadSignature(signatureNodes[0]);
+    return verifier.checkSignature(signedXml);
+  } catch (err) {
+    return false;
+  }
 }
 
 module.exports = {
-  canonicalizeXml,
   signXmlNode,
   verifyXmlSignature
 };

@@ -1,102 +1,89 @@
 'use strict';
 
+const fs = require('fs');
+const path = require('path');
 const { CONFIG, sanitize } = require('./config');
-const { checkCertificateAccess, loadCertificate, cleanupCertificate } = require('./certificate');
-const { syncNfse } = require('./sync');
-const { generateReport, buildConsoleSummary } = require('./report');
-const { readSheetValues } = require('./google');
-const { formatDateBr } = require('./validators');
-const { runHistoricalAnalysis } = require('./patterns');
+const { checkSheetsAccess, checkDriveFileAccess, getSpreadsheetMetadata } = require('./google');
+const { loadCertificate, formatDateBr } = require('./certificate');
 const { inspectWsdl } = require('./wsdl');
+const { syncNfse } = require('./sync');
 const { handlePrepare } = require('./prepare');
 const { issueHomologation } = require('./issue');
+const { runHistoricalAnalysis } = require('./patterns');
 
-/**
- * Preflight Check: Valida todos os componentes sem realizar emissao ou alteracao fiscal
- */
-async function preflight(dependencies = {}) {
+function formatTimestamp(d = new Date()) {
+  return d.toISOString().replace('T', ' ').slice(0, 19);
+}
+
+async function preflight(options = {}, dependencies = {}) {
   const startedAt = Date.now();
-  const environment = dependencies.environment || 'production';
-  console.log('====================================================');
-  console.log('  🔍 PREFLIGHT CHECK — AUTOMAÇÃO NFS-e DEXMED (IPATINGA)');
-  console.log('====================================================\n');
-
+  const environment = options.environment || CONFIG.ACTIVE_ENV;
   const results = {
-    operation: 'preflight',
     environment,
-    dryRun: true,
-    timestamp: new Date().toISOString(),
     googleServiceAccount: false,
     sheetsAccess: false,
-    driveAccess: false,
-    pfxFileIdConfigured: false,
     pfxAccessibleOnDrive: false,
-    pfxDownloadable: false,
     pfxPasswordConfigured: false,
     pfxValidated: false,
-    pfxDetails: null,
     productionWsdlAccessible: false,
     homologationWsdlAccessible: false,
-    wsdl: {},
-    certificateKeyMatch: 'BLOCKED',
-    certificateCnpj: 'BLOCKED',
-    certificateValidity: 'BLOCKED',
     status: 'UNKNOWN',
+    errors: [],
     warnings: [],
-    errors: []
+    wsdl: {}
   };
 
+  console.log('\n====================================================');
+  console.log('       PREFLIGHT CHECK — NFS-E IPATINGA (DEXMED)    ');
+  console.log(`       Ambiente: ${environment.toUpperCase()}`);
+  console.log('====================================================\n');
+
   // 1. Google Service Account
-  try {
-    const sa = process.env.GOOGLE_SERVICE_ACCOUNT_JSON;
-    if (!sa) throw new Error('GOOGLE_SERVICE_ACCOUNT_JSON nao configurado');
-    const parsedSa = JSON.parse(sa);
-    results.googleServiceAccount = true;
-    console.log('✓ Google Service Account: OK (' + parsedSa.client_email + ')');
-  } catch (err) {
-    results.errors.push('Service Account: ' + err.message);
-    console.log('✗ Google Service Account: FALHA (' + err.message + ')');
+  if (CONFIG.AUTH.SERVICE_ACCOUNT_JSON) {
+    try {
+      JSON.parse(CONFIG.AUTH.SERVICE_ACCOUNT_JSON);
+      results.googleServiceAccount = true;
+      console.log('✓ Google Service Account JSON: CONFIGURADO');
+    } catch (err) {
+      results.errors.push('Service Account JSON inválido: ' + err.message);
+      console.log('✗ Google Service Account JSON: INVALIDO');
+    }
+  } else {
+    results.errors.push('GOOGLE_SERVICE_ACCOUNT_JSON ausente');
+    console.log('✗ Google Service Account JSON: AUSENTE');
   }
 
   // 2. Google Sheets
+  const checkSheets = dependencies.checkSheetsAccess || checkSheetsAccess;
   try {
-    const values = await readSheetValues(CONFIG.SHEETS.SPREADSHEET_ID, `${CONFIG.SHEETS.TABS.NOTAS}!A1:D1`);
-    results.sheetsAccess = true;
-    console.log('✓ Google Sheets: OK (Aba Notas acessivel)');
+    results.sheetsAccess = await checkSheets(CONFIG.SHEETS.SPREADSHEET_ID);
+    console.log(`✓ Google Sheets (${CONFIG.SHEETS.SPREADSHEET_ID}): ACESSIVEL`);
   } catch (err) {
-    results.errors.push('Google Sheets: ' + err.message);
-    console.log('✗ Google Sheets: FALHA (' + err.message + ')');
+    results.sheetsAccess = false;
+    results.errors.push('Sheets: ' + sanitize(err.message));
+    console.log(`✗ Google Sheets: FALHA (${sanitize(err.message)})`);
   }
 
-  // 3. Google Drive & PFX File Access (sem abrir senha)
+  // 3. PFX no Google Drive
+  const checkDrive = dependencies.checkDriveFileAccess || checkDriveFileAccess;
   try {
-    results.pfxFileIdConfigured = Boolean(CONFIG.CERT.FILE_ID);
-    const pfxAccess = await checkCertificateAccess();
-    results.driveAccess = true;
-    results.pfxAccessibleOnDrive = true;
-    results.pfxDownloadable = true;
-    results.pfxDetails = {
-      fileId: pfxAccess.fileId,
-      name: pfxAccess.name,
-      sizeBytes: pfxAccess.sizeBytes
-    };
-    console.log(`✓ PFX File ID configurado: OK (${pfxAccess.fileId})`);
-    console.log(`✓ PFX acessivel no Drive: OK (${pfxAccess.name} - ${pfxAccess.sizeBytes} bytes)`);
-    console.log('✓ PFX baixavel pela Service Account: OK');
+    const driveInfo = await checkDrive(CONFIG.CERT.DRIVE_FILE_ID);
+    results.pfxAccessibleOnDrive = driveInfo.accessible;
+    console.log(`✓ PFX no Google Drive (${CONFIG.CERT.DRIVE_FILE_ID}): ENCONTRADO (${driveInfo.name}, ${driveInfo.sizeBytes} bytes)`);
   } catch (err) {
-    results.errors.push('Drive/PFX: ' + err.message);
-    console.log('✗ PFX no Google Drive: FALHA (' + err.message + ')');
+    results.pfxAccessibleOnDrive = false;
+    results.errors.push('Drive PFX: ' + sanitize(err.message));
+    console.log(`✗ PFX no Google Drive: FALHA (${sanitize(err.message)})`);
   }
 
-  // 4. PFX Password & Content Validation
+  // 4. Validação PFX
+  const loadCert = dependencies.loadCertificate || loadCertificate;
   if (CONFIG.CERT.PASSWORD) {
     results.pfxPasswordConfigured = true;
     try {
-      const certData = await loadCertificate();
-      if (certData.loaded && certData.isValid) {
-        results.pfxValidated = true;
-        results.certificateValidity = 'OK';
-        results.certificateKeyMatch = certData.keyMatchesCertificate ? 'OK' : 'FAILED';
+      const certData = await loadCert();
+      results.pfxValidated = certData.isValid;
+      if (certData.isValid) {
         results.certificateCnpj = certData.certificateCnpj ? 'OK' : 'CERT_CNPJ_NOT_EXTRACTED';
         results.warnings.push(...(certData.warnings || []));
         console.log(`✓ PFX senha configurada: OK`);
@@ -115,18 +102,18 @@ async function preflight(dependencies = {}) {
     console.log('🔒 PFX conteudo validado: BLOQUEADO PELA SENHA');
   }
 
-  // 5. WSDL real: somente HTTP GET, sem chamar operação fiscal.
+  // 5. WSDL real
   const inspect = dependencies.inspectWsdl || inspectWsdl;
-  for (const environment of ['production', 'homologation']) {
+  for (const envName of ['production', 'homologation']) {
     try {
-      const inspected = await inspect(CONFIG.ENDPOINTS[environment].wsdl);
-      results.wsdl[environment] = inspected;
-      results[`${environment}WsdlAccessible`] = true;
-      console.log(`✓ WSDL ${environment}: OK HTTP ${inspected.statusCode}, ${inspected.latencyMs}ms, ${inspected.contract.operation}`);
+      const inspected = await inspect(CONFIG.ENDPOINTS[envName].wsdl);
+      results.wsdl[envName] = inspected;
+      results[`${envName}WsdlAccessible`] = true;
+      console.log(`✓ WSDL ${envName}: OK HTTP ${inspected.statusCode}, ${inspected.latencyMs}ms, ${inspected.contract.operation}`);
     } catch (err) {
-      results.wsdl[environment] = { accessible: false, error: sanitize(err.message) };
-      results.errors.push(`WSDL ${environment}: ${sanitize(err.message)}`);
-      console.log(`✗ WSDL ${environment}: FALHA (${sanitize(err.message)})`);
+      results.wsdl[envName] = { accessible: false, error: sanitize(err.message) };
+      results.errors.push(`WSDL ${envName}: ${sanitize(err.message)}`);
+      console.log(`✗ WSDL ${envName}: FALHA (${sanitize(err.message)})`);
     }
   }
 
@@ -158,36 +145,54 @@ function enforceOperationSafety(operation, environment) {
   }
 }
 
-/**
- * Funcao Principal CLI
- */
-async function main() {
-  const args = process.argv.slice(2);
-  const getArg = (name, def = null) => {
-    const prefix = `--${name}=`;
-    const found = args.find(a => a.startsWith(prefix));
-    return found ? found.substring(prefix.length) : def;
+function generateReport(summary, outDir = path.join(__dirname, 'report')) {
+  if (!fs.existsSync(outDir)) {
+    fs.mkdirSync(outDir, { recursive: true });
+  }
+
+  const reportPath = path.join(outDir, 'run-summary.md');
+  const content = `# Relatório de Execução — Automação NFS-e DEXMED (Ipatinga)
+
+- **Data / Hora:** ${summary.timestamp || new Date().toISOString()}
+- **Operação:** \`${summary.operation || 'N/A'}\`
+- **Ambiente:** \`${summary.environment || 'N/A'}\`
+- **Status Final:** \`${summary.status || 'UNKNOWN'}\`
+- **Dry-Run:** \`${summary.dryRun ? 'SIM (sem escritas externas)' : 'NÃO (escrita real)'}\`
+
+## Detalhes da Execução
+\`\`\`json
+${JSON.stringify(summary, null, 2)}
+\`\`\`
+`;
+
+  fs.writeFileSync(reportPath, content, 'utf8');
+  return reportPath;
+}
+
+function buildConsoleSummary(summary) {
+  return {
+    operation: summary.operation,
+    environment: summary.environment,
+    status: summary.status,
+    timestamp: summary.timestamp || new Date().toISOString()
   };
+}
 
-  const operation = (process.env.INPUT_OPERATION || getArg('operation') || 'preflight').toLowerCase();
-  const syncMode = (process.env.INPUT_SYNC_MODE || getArg('sync_mode') || 'incremental').toLowerCase();
-  const environment = (process.env.INPUT_ENVIRONMENT || getArg('environment') || 'production').toLowerCase();
-  const fromNumber = process.env.INPUT_FROM_NUMBER || getArg('from_number');
-  const toNumber = process.env.INPUT_TO_NUMBER || getArg('to_number');
-  const requestId = process.env.INPUT_REQUEST_ID || getArg('request_id');
-  const dryRun = (process.env.INPUT_DRY_RUN || getArg('dry_run') || 'false').toLowerCase() === 'true';
+async function main() {
+  const operation = process.env.INPUT_OPERATION || 'preflight';
+  const syncMode = process.env.INPUT_SYNC_MODE || 'incremental';
+  const environment = process.env.INPUT_ENVIRONMENT || CONFIG.ACTIVE_ENV;
+  const fromNumber = process.env.INPUT_FROM_NUMBER || '';
+  const toNumber = process.env.INPUT_TO_NUMBER || '';
+  const requestId = process.env.INPUT_REQUEST_ID || '';
+  const dryRun = process.env.INPUT_DRY_RUN === 'true' || process.env.INPUT_DRY_RUN === true;
 
-  console.log('🚀 Iniciando Automacao NFS-e DEXMED — Prefeitura de Ipatinga');
-  console.log(`⚙️ Configuracao: Operacao=${operation}, Modo=${syncMode}, Ambiente=${environment}, DryRun=${dryRun}\n`);
+  enforceOperationSafety(operation, environment);
 
-  let certData = null;
   let summary = null;
+  let certData = null;
 
   try {
-    // 1. Trava de seguranca de emissao em producao
-    enforceOperationSafety(operation, environment);
-
-    // 2. Tenta carregar certificado se senha e arquivo estiverem configurados
     if (CONFIG.CERT.PASSWORD) {
       try {
         certData = await loadCertificate();
@@ -199,7 +204,6 @@ async function main() {
       }
     }
 
-    // 3. Executa operacao solicitada
     if (operation === 'preflight') {
       summary = await preflight({ environment });
     } else if (operation === 'historical_analysis') {
@@ -226,7 +230,15 @@ async function main() {
       if (!certData || !certData.loaded || !certData.isValid) {
         throw new Error('CERT_PASSWORD_MISSING: Emissao em homologacao requer certificado A1 desbloqueado.');
       }
-      throw new Error('Emissao em homologacao pronta para ativacao na Fase 2.');
+      if (!requestId) {
+        throw new Error('REQUEST_ID_REQUIRED: Emissao requer parâmetro request_id.');
+      }
+      summary = await issueHomologation({
+        requestId,
+        itemIndex: 1,
+        certData,
+        dryRun
+      });
     } else {
       throw new Error(`Operacao desconhecida: ${operation}`);
     }
@@ -250,8 +262,6 @@ async function main() {
     };
     generateReport(summary);
     process.exitCode = 1;
-  } finally {
-    cleanupCertificate();
   }
 }
 
@@ -260,8 +270,9 @@ if (require.main === module) {
 }
 
 module.exports = {
-  main,
   preflight,
-  handlePrepare,
-  enforceOperationSafety
+  enforceOperationSafety,
+  generateReport,
+  buildConsoleSummary,
+  main
 };
