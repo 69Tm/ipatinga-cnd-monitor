@@ -10,7 +10,11 @@ const defaultParserOptions = {
   trimValues: true,
   parseTagValue: false,
   parseAttributeValue: false,
-  cdataPropName: '__cdata'
+  cdataPropName: '__cdata',
+  // SOAP encapsula o XML ABRASF como milhares de entidades &lt;/&gt;.
+  // Mantê-las literais no envelope evita expansão automática e XML bombs;
+  // soap.js decodifica somente o campo outputXML já isolado.
+  processEntities: false
 };
 
 const xmlParser = new XMLParser(defaultParserOptions);

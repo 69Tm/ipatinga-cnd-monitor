@@ -14,6 +14,10 @@ assert.strictEqual(extractSoapOutput(okEnvelope, 'ConsultarNfseFaixa'), abrXml);
 assert.throws(() => extractSoapOutput('<broken>', 'ConsultarNfseFaixa'), /XML_INVALID/);
 assert.throws(() => extractSoapOutput('<Envelope><Body/></Envelope>', 'ConsultarNfseFaixa'), /SOAP_OUTPUT_MISSING/);
 assert.throws(() => extractSoapOutput('<Envelope><Body><Fault><faultcode>S</faultcode><faultstring>Falha</faultstring></Fault></Body></Envelope>', 'ConsultarNfseFaixa'), /SOAP_FAULT/);
+const largeInnerXml = `<ConsultarNfseFaixaResposta>${'<CompNfse><Nfse/></CompNfse>'.repeat(1200)}</ConsultarNfseFaixaResposta>`;
+const largeEscaped = largeInnerXml.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+const largeEnvelope = `<Envelope><Body><ConsultarNfseFaixaResponse><outputXML>${largeEscaped}</outputXML></ConsultarNfseFaixaResponse></Body></Envelope>`;
+assert.strictEqual(extractSoapOutput(largeEnvelope, 'ConsultarNfseFaixa'), largeInnerXml);
 
 function transportFor({ status = 200, body = okEnvelope, error = null, timeout = false }) {
   return {

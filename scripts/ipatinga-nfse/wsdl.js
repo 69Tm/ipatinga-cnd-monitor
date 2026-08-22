@@ -16,7 +16,7 @@ function asArray(value) {
 function parseWsdlContract(xml) {
   const validation = XMLValidator.validate(xml);
   if (validation !== true) throw new Error(`WSDL_INVALID_XML: ${validation.err.msg}`);
-  const parser = new XMLParser({ ignoreAttributes: false, attributeNamePrefix: '@_', removeNSPrefix: true });
+  const parser = new XMLParser({ ignoreAttributes: false, attributeNamePrefix: '@_', removeNSPrefix: true, processEntities: false });
   const parsed = parser.parse(xml);
   const definitions = parsed.definitions;
   if (!definitions) throw new Error('WSDL_DEFINITIONS_MISSING');
