@@ -18,6 +18,8 @@ async function run() {
     await require('./test-wsdl');
     await require('./test-certificate');
     await require('./test-safety');
+    await require('./test-preflight');
+    await require('./test-fiscal-xml');
     await require('./test-patterns');
     await require('./test-report');
     await require('./test-prepare');

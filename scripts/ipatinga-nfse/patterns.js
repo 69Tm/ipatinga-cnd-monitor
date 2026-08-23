@@ -23,8 +23,8 @@ const KNOWN_PATTERNS = [
     localPrestacao: 'Guanhães/MG',
     codigoIbgePrestacao: '3128006',
     codigoMunicipioIncidenciaIss: '3131307', // Regra: ISS devido no município prestador (Ipatinga/MG)
-    issRetido: false,
-    exigibilidadeIss: '1',
+    issRetido: '2', // 1 = Sim, 2 = Não
+    exigibilidadeIss: '1', // 1 = Exigível
     nbs: '123011900',
     camposFixos: 'Tomador, CNPJ, Código Nacional (04.03.01), Código Municipal (403), Local Prestação (Guanhães/MG), Cód Incidência ISS (3131307), Bloco Bancário Inter validado nos exemplos',
     camposVariaveis: 'Competência (MM/AAAA), Valor Total (R$)',
@@ -50,7 +50,7 @@ const KNOWN_PATTERNS = [
     localPrestacao: 'Guanhães/MG',
     codigoIbgePrestacao: '3128006',
     codigoMunicipioIncidenciaIss: '3131307', // Regra: ISS devido no município prestador (Ipatinga/MG)
-    issRetido: false,
+    issRetido: '2',
     exigibilidadeIss: '1',
     nbs: '123011900',
     camposFixos: 'Tomador, CNPJ, Código Nacional (04.03.01), Código Municipal (403), Local Prestação (Guanhães/MG), Cód Incidência ISS (3131307), Bloco Bancário Inter validado nos exemplos',
@@ -77,7 +77,7 @@ const KNOWN_PATTERNS = [
     localPrestacao: 'Guanhães/MG',
     codigoIbgePrestacao: '3128006',
     codigoMunicipioIncidenciaIss: '3131307', // Regra: ISS devido no município prestador (Ipatinga/MG)
-    issRetido: false,
+    issRetido: '2',
     exigibilidadeIss: '1',
     nbs: '123011900',
     camposFixos: 'Tomador, CNPJ, Código Nacional (04.03.01), Código Municipal (403), NBS (123011900)',
@@ -163,6 +163,13 @@ function competenceOrder(value) {
   return match ? Number(`${match[2]}${match[1]}`) : 0;
 }
 
+function pickField(def, key, priorVal = '') {
+  if (Object.prototype.hasOwnProperty.call(def, key)) {
+    return def[key] ?? '';
+  }
+  return priorVal ?? '';
+}
+
 function buildTomadoresRows(notasRows, existingRows) {
   const headers = [
     'CNPJ', 'Razão Social', 'Nome Curto',
@@ -209,29 +216,28 @@ function buildTomadoresRows(notasRows, existingRows) {
     const ordered = item.competencias.filter(Boolean).sort((a, b) => competenceOrder(a) - competenceOrder(b));
     const pattern = KNOWN_PATTERNS.find(candidate => candidate.cnpjTomadorClean === key);
 
-    // Se o prior já tem o formato novo completo (19 colunas) e válido, preserva valores existentes não vazios
     const isNewSchemaPrior = prior.length >= 19;
     const emailPreserved = isNewSchemaPrior ? (prior[11] || def.email || '') : (prior[4] || def.email || '');
 
     rows.push([
       pattern?.cnpjTomador || formatCnpj(key),
-      def.razaoSocial || item.razao || pattern?.tomador || prior[1] || '',
-      def.nomeCurto || prior[2] || '',
-      def.logradouro || (isNewSchemaPrior ? prior[3] : ''),
-      def.numero || (isNewSchemaPrior ? prior[4] : ''),
-      def.complemento || (isNewSchemaPrior ? prior[5] : ''),
-      def.bairro || (isNewSchemaPrior ? prior[6] : ''),
-      def.codigoMunicipio || (isNewSchemaPrior ? prior[7] : ''),
-      def.municipio || (isNewSchemaPrior ? prior[8] : ''),
-      def.uf || (isNewSchemaPrior ? prior[9] : ''),
-      def.cep || (isNewSchemaPrior ? prior[10] : ''),
+      pickField(def, 'razaoSocial', item.razao || pattern?.tomador || prior[1]),
+      pickField(def, 'nomeCurto', prior[2]),
+      pickField(def, 'logradouro', isNewSchemaPrior ? prior[3] : ''),
+      pickField(def, 'numero', isNewSchemaPrior ? prior[4] : ''),
+      pickField(def, 'complemento', isNewSchemaPrior ? prior[5] : ''),
+      pickField(def, 'bairro', isNewSchemaPrior ? prior[6] : ''),
+      pickField(def, 'codigoMunicipio', isNewSchemaPrior ? prior[7] : ''),
+      pickField(def, 'municipio', isNewSchemaPrior ? prior[8] : ''),
+      pickField(def, 'uf', isNewSchemaPrior ? prior[9] : ''),
+      pickField(def, 'cep', isNewSchemaPrior ? prior[10] : ''),
       emailPreserved,
-      def.categorias || [...item.categorias].sort().join(', '),
-      def.statusHomologacao || (isNewSchemaPrior ? prior[13] : 'HOMOLOGADO'),
-      def.fonteEndereco || (isNewSchemaPrior ? prior[14] : 'NFS-e histórica'),
-      def.validadoEm || (isNewSchemaPrior ? prior[15] : '2026-08-22'),
-      def.primeiroUso || ordered[0] || (isNewSchemaPrior ? prior[16] : ''),
-      def.ultimoUso || ordered.at(-1) || (isNewSchemaPrior ? prior[17] : ''),
+      pickField(def, 'categorias', [...item.categorias].sort().join(', ')),
+      pickField(def, 'statusHomologacao', isNewSchemaPrior ? prior[13] : 'HOMOLOGADO'),
+      pickField(def, 'fonteEndereco', isNewSchemaPrior ? prior[14] : 'NFS-e histórica'),
+      pickField(def, 'validadoEm', isNewSchemaPrior ? prior[15] : '2026-08-22'),
+      pickField(def, 'primeiroUso', ordered[0] || (isNewSchemaPrior ? prior[16] : '')),
+      pickField(def, 'ultimoUso', ordered.at(-1) || (isNewSchemaPrior ? prior[17] : '')),
       def.qtdNfse !== undefined ? def.qtdNfse : (item.total || (isNewSchemaPrior ? Number(prior[18]) : 0))
     ]);
   }
@@ -251,9 +257,8 @@ function buildPadroesRows() {
     rows.push([
       p.patternId, p.nome, p.tomador, p.cnpjTomador, p.categoria, p.template,
       p.codigoTribNacional, p.codigoTribMunicipal, p.localPrestacao, p.codigoIbgePrestacao, p.codigoMunicipioIncidenciaIss,
-      p.issRetido ? '1' : '2', p.exigibilidadeIss, p.nbs,
+      p.issRetido, p.exigibilidadeIss, p.nbs,
       p.camposFixos, p.camposVariaveis, p.camposNaoHardcodar,
-      // Força número inteiro explícito / formato texto para evitar interpretação de data no Sheets
       String(p.quantidadeExemplos),
       p.numerosNfseExemplo.join(', '), p.driveFileIdsExemplo.join(', '),
       p.primeiraCompetencia, p.ultimaCompetencia, p.confianca, p.statusHomologacao

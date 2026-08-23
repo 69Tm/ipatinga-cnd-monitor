@@ -52,7 +52,9 @@ function patternRows(rows) {
       codigoTribMunicipal: firstField(item, ['Cód. Trib. Municipal', 'codigo_tributacao_municipal']),
       localPrestacao: firstField(item, ['Local Prestação', 'local_prestacao']),
       codigoMunicipioPrestacao: firstField(item, ['Cód. Município Prestação', 'codigo_municipio_prestacao']),
-      codigoMunicipioIncidenciaIss: firstField(item, ['Cód. Município Incidência', 'codigo_municipio_incidencia', 'codigo_municipio_incidencia_iss']),
+      codigoMunicipioIncidenciaIss: firstField(item, ['Cód. Município Incidência', 'Cód. Município Incidência ISS', 'codigo_municipio_incidencia', 'codigo_municipio_incidencia_iss']),
+      issRetido: firstField(item, ['ISS Retido', 'iss_retido']) || '2',
+      exigibilidadeIss: firstField(item, ['Exigibilidade ISS', 'exigibilidade_iss']) || '1',
       nbs: firstField(item, ['NBS']),
       confianca: firstField(item, ['Confiança', 'confianca']),
       status: firstField(item, ['Status'])
@@ -63,7 +65,18 @@ function patternRows(rows) {
 function demandRows(rows) {
   if (!rows || rows.length < 2) return [];
   const headers = rows[0];
-  return rows.slice(1).filter(row => row.some(Boolean)).map(row => rowObject(headers, row));
+  return rows.slice(1).filter(row => row.some(Boolean)).map(row => {
+    const item = rowObject(headers, row);
+    return {
+      requestId: firstField(item, ['Message ID', 'request_id', 'id']),
+      periodo: firstField(item, ['Período', 'periodo', 'competencia']),
+      notasSolicitadas: firstField(item, ['Notas solicitadas', 'notas_solicitadas']),
+      valores: firstField(item, ['Valores', 'valores', 'valor']),
+      descricaoObrigatoria: firstField(item, ['Descrição obrigatória', 'descricao_obrigatoria', 'descricao']),
+      status: firstField(item, ['Status', 'status']),
+      nfseResultantes: firstField(item, ['NFS-e resultantes', 'nfse_resultantes'])
+    };
+  });
 }
 
 function tomadorRows(rows) {
@@ -72,35 +85,24 @@ function tomadorRows(rows) {
   return rows.slice(1).filter(row => row.some(Boolean)).map(row => {
     const item = rowObject(headers, row);
     return {
-      cnpj: firstField(item, ['CNPJ']),
+      cnpj: firstField(item, ['CNPJ', 'cnpj']),
       razaoSocial: firstField(item, ['Razão Social', 'razao_social']),
       nomeCurto: firstField(item, ['Nome Curto', 'nome_curto']),
-      logradouro: firstField(item, ['Logradouro', 'endereco', 'logradouro']),
+      logradouro: firstField(item, ['Logradouro', 'logradouro', 'endereco']),
       numero: firstField(item, ['Número', 'numero']),
       complemento: firstField(item, ['Complemento', 'complemento']),
       bairro: firstField(item, ['Bairro', 'bairro']),
-      codigoMunicipio: firstField(item, ['Cód. Município', 'codigo_municipio', 'codigo_municipio_ibge']),
+      codigoMunicipio: firstField(item, ['Cód. Município', 'codigo_municipio']),
       municipio: firstField(item, ['Município', 'municipio']),
       uf: firstField(item, ['UF', 'uf']),
       cep: firstField(item, ['CEP', 'cep']),
+      email: firstField(item, ['E-mail', 'email']),
+      categoriasConhecidas: firstField(item, ['Categorias Conhecidas', 'categorias_conhecidas']),
+      statusHomologacao: firstField(item, ['Status Homologação', 'status_homologacao']),
       fonteEndereco: firstField(item, ['Fonte Endereço', 'fonte_endereco']),
-      validadoEm: firstField(item, ['Validado Em', 'validado_em']),
-      categorias: firstField(item, ['Categorias Conhecidas', 'categorias']),
-      status: firstField(item, ['Status Homologação', 'status'])
+      validadoEm: firstField(item, ['Validado Em', 'validado_em'])
     };
   });
-}
-
-function selectPattern(label, patterns) {
-  const key = normalizeLabel(label);
-  if (!key) return null;
-  const exact = patterns.find(pattern => [pattern.patternId, pattern.nome, pattern.categoria]
-    .some(value => normalizeLabel(value) === key));
-  if (exact) return exact;
-  if (key.includes('cisurg')) return patterns.find(pattern => normalizeLabel(pattern.patternId).includes('cisurg')) || null;
-  if (key.includes('produc')) return patterns.find(pattern => normalizeLabel(pattern.patternId).includes('produc')) || null;
-  if (key.includes('plant')) return patterns.find(pattern => normalizeLabel(pattern.patternId).includes('plant')) || null;
-  return null;
 }
 
 function escapeXml(value) {
@@ -132,7 +134,9 @@ function buildUnsignedCandidateXml(candidate) {
   const rpsTip = candidate.rpsTipo || '1';
   const xmlId = candidate.xmlId || `RPS${rpsNum}${rpsSer.replace(/[^A-Za-z0-9]/g, '')}`;
   const codMunPrestacao = candidate.codigoMunicipioPrestacao;
-  const codMunIncidencia = candidate.codigoMunicipioIncidenciaIss || '3131307'; // Regra: ISS devido no município prestador (Ipatinga) para atividades sem retenção fora
+  const codMunIncidencia = candidate.codigoMunicipioIncidenciaIss;
+  const issRetido = candidate.issRetido || '2';
+  const exigibilidadeIss = candidate.exigibilidadeIss || '1';
   const nbsTag = candidate.nbs ? `<cNBS>${escapeXml(candidate.nbs.replace(/\D/g, ''))}</cNBS>` : '';
   const cnaeTag = candidate.codigoCnae ? `<CodigoCnae>${escapeXml(candidate.codigoCnae)}</CodigoCnae>` : '';
 
@@ -157,12 +161,12 @@ function buildUnsignedCandidateXml(candidate) {
     `<DataEmissao>${escapeXml(candidate.dataEmissao)}</DataEmissao><Status>1</Status></Rps>` +
     `<Competencia>${escapeXml(candidate.competenciaData)}</Competencia>` +
     `<Servico><Valores><ValorServicos>${candidate.valor.toFixed(2)}</ValorServicos></Valores>` +
-    `<IssRetido>2</IssRetido><ItemListaServico>${escapeXml(itemLista)}</ItemListaServico>` +
+    `<IssRetido>${escapeXml(issRetido)}</IssRetido><ItemListaServico>${escapeXml(itemLista)}</ItemListaServico>` +
     cnaeTag +
     `<CodigoTributacaoMunicipio>${escapeXml(candidate.codigoTribMunicipal)}</CodigoTributacaoMunicipio>` +
     `<Discriminacao>${escapeXml(candidate.descricao)}</Discriminacao>` +
     `<CodigoMunicipio>${escapeXml(codMunPrestacao)}</CodigoMunicipio>` +
-    `<CodigoPais>1058</CodigoPais><ExigibilidadeISS>1</ExigibilidadeISS><MunicipioIncidencia>${escapeXml(codMunIncidencia)}</MunicipioIncidencia>` +
+    `<CodigoPais>1058</CodigoPais><ExigibilidadeISS>${escapeXml(exigibilidadeIss)}</ExigibilidadeISS><MunicipioIncidencia>${escapeXml(codMunIncidencia)}</MunicipioIncidencia>` +
     nbsTag +
     `</Servico>` +
     `<Prestador><CpfCnpj><Cnpj>${CONFIG.PRESTADOR.CNPJ_DIGITS}</Cnpj></CpfCnpj><InscricaoMunicipal>${CONFIG.PRESTADOR.INSCRICAO_MUNICIPAL}</InscricaoMunicipal></Prestador>` +
@@ -177,18 +181,17 @@ function buildUnsignedCandidateXml(candidate) {
 function validateCandidate(candidate) {
   const errors = [];
   if (!candidate.requestId) errors.push('REQUEST_ID_MISSING');
-  if (!candidate.patternId) errors.push('PATTERN_NOT_IDENTIFIED');
-  if (!candidate.categoria) errors.push('CATEGORY_MISSING');
-  if (!isValidCnpj(candidate.cnpjTomador)) errors.push('TAKER_CNPJ_INVALID');
-  if (!candidate.tomador) errors.push('TAKER_NAME_MISSING');
-  if (!(candidate.valor > 0)) errors.push('SERVICE_VALUE_INVALID');
+  if (!isValidCnpj(candidate.cnpjTomador)) errors.push('CNPJ_TOMADOR_INVALID');
+  if (!candidate.tomador) errors.push('TOMADOR_NAME_MISSING');
+  if (!candidate.valor || candidate.valor <= 0) errors.push('SERVICE_VALUE_INVALID');
   if (!candidate.competenciaData) errors.push('COMPETENCE_INVALID');
-  if (!candidate.descricao || /^texto do proprio e-?mail$/i.test(normalizeLabel(candidate.descricao))) errors.push('DESCRIPTION_SOURCE_REQUIRED');
+  if (!candidate.descricao) errors.push('DESCRIPTION_MISSING');
   if (!candidate.codigoTribNacional) errors.push('NATIONAL_TAX_CODE_MISSING');
   if (!candidate.codigoTribMunicipal) errors.push('MUNICIPAL_TAX_CODE_MISSING');
-  if (!candidate.localPrestacao) errors.push('SERVICE_LOCATION_MISSING');
   if (!candidate.codigoMunicipioPrestacao) errors.push('SERVICE_LOCATION_IBGE_MISSING');
   if (!candidate.codigoMunicipioIncidenciaIss) errors.push('ISS_INCIDENCE_LOCATION_IBGE_MISSING');
+  if (!candidate.issRetido) errors.push('ISS_RETIDO_MISSING');
+  if (!candidate.exigibilidadeIss) errors.push('EXIGIBILIDADE_ISS_MISSING');
   if (!candidate.nbs) errors.push('NBS_MISSING');
   if (!candidate.enderecoTomador || !candidate.enderecoTomador.logradouro || !candidate.enderecoTomador.numero || !candidate.enderecoTomador.bairro || !candidate.enderecoTomador.codigoMunicipio || !candidate.enderecoTomador.uf || !candidate.enderecoTomador.cep) {
     errors.push('TAKER_ADDRESS_INCOMPLETE');
@@ -225,7 +228,9 @@ function buildHomologationFixture(requestId = 'fixture-homologation', now = new 
     codigoTribMunicipal: '403',
     localPrestacao: 'Guanhães/MG',
     codigoMunicipioPrestacao: '3128006',
-    codigoMunicipioIncidenciaIss: '3131307', // Incidência em Ipatinga para atividade médica da DEXMED
+    codigoMunicipioIncidenciaIss: '3131307', // Incidência explícita em Ipatinga para o fixture
+    issRetido: '2',
+    exigibilidadeIss: '1',
     nbs: '123011900',
     codigoCnae: null,
     aliquotaIss: null,
@@ -248,117 +253,135 @@ function buildHomologationFixture(requestId = 'fixture-homologation', now = new 
     requestId,
     candidates: [candidate],
     blockingReasons: candidate.validationErrors,
-    xsdValidation: 'SCHEMA_READY',
-    xmlSignature: 'NOT_APPLIED_PREPARE_ONLY',
-    warnings: ['SYNTHETIC_HOMOLOGATION_FIXTURE'],
-    errors: candidate.validationErrors
+    warnings: []
   };
 }
 
-function prepareDemand({ requestId, demandas, tomadores, patterns, notas = [], now = new Date() }) {
-  const normalizedRequest = String(requestId || '').trim();
-  if (!normalizedRequest) throw new Error('REQUEST_ID_REQUIRED');
+function findMatchingPattern(categoria, patterns) {
+  const normCat = normalizeLabel(categoria);
+  return patterns.find(p => {
+    const normPId = normalizeLabel(p.patternId);
+    const normPNome = normalizeLabel(p.nome);
+    const normPCat = normalizeLabel(p.categoria);
+    return normCat.includes(normPId) || normCat.includes(normPNome) || normCat.includes(normPCat) ||
+           normPNome.includes(normCat) || normPCat.includes(normCat);
+  }) || null;
+}
 
-  // Separado: Fixture sintética explícita
-  if (normalizedRequest.startsWith('fixture-homologation') || normalizedRequest.startsWith('fixture-controlada')) {
-    return buildHomologationFixture(normalizedRequest, now);
+function findTomador(cnpj, tomadores) {
+  const normCnpj = normalizeCnpj(cnpj);
+  return tomadores.find(t => normalizeCnpj(t.cnpj) === normCnpj) || null;
+}
+
+function prepareDemand({ requestId, demandas, tomadores, patterns, notas = [], now = new Date() }) {
+  const demanda = demandas.find(d => String(d.requestId).trim() === String(requestId).trim());
+  if (!demanda) {
+    return {
+      operation: 'prepare',
+      status: 'FAILED',
+      validationStatus: 'REVISAO_MANUAL',
+      requestId,
+      candidates: [],
+      blockingReasons: ['DEMAND_NOT_FOUND'],
+      warnings: []
+    };
   }
 
-  const demand = demandas.find(item => String(firstField(item, ['request_id', 'Message ID']) || '').trim() === normalizedRequest);
-  if (!demand) throw new Error(`REQUEST_NOT_FOUND: ${normalizedRequest}`);
-
-  const priorNfse = String(firstField(demand, ['NFS-e resultantes', 'nfse_resultantes']) || '').trim();
-  const demandStatus = String(firstField(demand, ['Status']) || '').trim();
-  if (priorNfse || /conclu|emitid/i.test(demandStatus)) {
+  // Se a demanda já foi emitida / concluída
+  if (String(demanda.status).toUpperCase().includes('CONCLU') || (demanda.nfseResultantes && String(demanda.nfseResultantes).trim() !== '')) {
     return {
       operation: 'prepare',
       status: 'SUCCESS',
       validationStatus: 'ALREADY_ISSUED',
-      requestId: normalizedRequest,
+      requestId,
       candidates: [],
-      blockingReasons: ['DEMAND_ALREADY_ISSUED'],
-      warnings: [],
-      errors: []
+      blockingReasons: [],
+      warnings: ['Demanda já consta como CONCLUÍDA na planilha']
     };
   }
 
-  const patternLabel = firstField(demand, ['Padrão Identificado', 'padrao_identificado', 'Assunto / Categoria', 'categoria', 'Notas solicitadas', 'notas_solicitadas']);
-  const pattern = selectPattern(patternLabel, patterns);
-  if (!pattern) {
-    return {
-      operation: 'prepare',
-      status: 'SUCCESS',
-      validationStatus: 'REVISAO_MANUAL',
-      requestId: normalizedRequest,
-      candidates: [],
-      blockingReasons: ['PATTERN_NOT_IDENTIFIED'],
-      warnings: [],
-      errors: ['PATTERN_NOT_IDENTIFIED']
-    };
+  const blockingReasons = [];
+  const warnings = [];
+
+  const notasSolicitadas = splitList(demanda.notasSolicitadas);
+  const valores = splitList(demanda.valores).map(parseCurrency);
+  const descricoes = splitList(demanda.descricaoObrigatoria, notasSolicitadas.length);
+
+  if (notasSolicitadas.length === 0) blockingReasons.push('NO_NOTES_REQUESTED');
+  if (notasSolicitadas.length !== valores.length) blockingReasons.push('COUNTS_MISMATCH_NOTES_VS_VALUES');
+  if (descricoes.length > 0 && descricoes.length !== notasSolicitadas.length) {
+    blockingReasons.push('COUNTS_MISMATCH_DESCRIPTIONS');
   }
 
-  const demandCnpj = normalizeCnpj(firstField(demand, ['CNPJ Tomador', 'cnpj_tomador']));
-  const patternCnpj = normalizeCnpj(pattern.cnpjTomador);
-  const cnpjTomador = demandCnpj || patternCnpj;
-
-  const tomadorCadastrado = tomadores.find(t => normalizeCnpj(t.cnpj) === cnpjTomador) || null;
-  const tomadorNome = tomadorCadastrado?.razaoSocial || pattern.tomador || firstField(demand, ['Tomador']);
-
-  let enderecoTomador = null;
-  if (tomadorCadastrado && tomadorCadastrado.logradouro && tomadorCadastrado.numero && tomadorCadastrado.bairro && tomadorCadastrado.codigoMunicipio && tomadorCadastrado.uf && tomadorCadastrado.cep) {
-    enderecoTomador = {
-      logradouro: tomadorCadastrado.logradouro,
-      numero: tomadorCadastrado.numero,
-      complemento: tomadorCadastrado.complemento || '',
-      bairro: tomadorCadastrado.bairro,
-      codigoMunicipio: tomadorCadastrado.codigoMunicipio,
-      municipio: tomadorCadastrado.municipio,
-      uf: tomadorCadastrado.uf,
-      cep: tomadorCadastrado.cep
-    };
-  }
-
-  const values = splitList(firstField(demand, ['Valor(es) Extraído(s)', 'valor_extraido', 'Valores', 'valores', 'valor'])).map(parseCurrency).filter(v => v > 0);
-  const subPadroes = splitList(firstField(demand, ['Sub-Padrão(ões)', 'sub_padroes', 'Notas solicitadas', 'notas_solicitadas']));
-  const count = Math.max(values.length, subPadroes.length, 1);
-
-  const localPrestacao = pattern.localPrestacao || firstField(demand, ['Local Prestação', 'local_prestacao']);
-  const codigoMunicipioPrestacao = pattern.codigoMunicipioPrestacao || resolveMunicipioIbge(localPrestacao);
-  const codigoMunicipioIncidenciaIss = pattern.codigoMunicipioIncidenciaIss || '3131307'; // Ipatinga por padrão para prestador estabelecido em Ipatinga
-
-  const descDemands = splitList(firstField(demand, ['Descrição obrigatória', 'Descrição / Espelho', 'descricao', 'Corpo do E-mail']));
+  const compDate = competenceDate(demanda.periodo);
+  if (!compDate) blockingReasons.push('INVALID_DEMAND_COMPETENCE');
 
   const candidates = [];
-  const blockingReasons = [];
 
-  for (let i = 0; i < count; i++) {
-    const valor = values[i] || values[0] || 0;
-    const subPadrao = subPadroes[i] || pattern.patternId;
-    const subPattern = selectPattern(subPadrao, patterns) || pattern;
+  notasSolicitadas.forEach((catSolicitada, idx) => {
+    const pattern = findMatchingPattern(catSolicitada, patterns);
+    const valor = valores[idx] || 0;
+    const descFromDemand = descricoes[idx] || '';
 
-    const descDemand = descDemands[i] || descDemands[0] || '';
-    const isCisurg = normalizeLabel(subPattern.patternId).includes('cisurg');
-    const descricao = isCisurg ? descDemand : (descDemand || subPattern.template);
+    if (!pattern) {
+      blockingReasons.push('PATTERN_NOT_IDENTIFIED');
+      blockingReasons.push(`PATTERN_NOT_FOUND_FOR_${normalizeLabel(catSolicitada)}`);
+      return;
+    }
 
-    const cand = {
-      requestId: normalizedRequest,
-      sequence: i + 1,
-      patternId: subPattern.patternId,
-      categoria: subPattern.categoria || pattern.categoria,
-      tomador: tomadorNome,
-      cnpjTomador,
-      enderecoTomador,
+    const tomador = findTomador(pattern.cnpjTomador, tomadores);
+    if (!tomador) {
+      blockingReasons.push(`TOMADOR_NOT_FOUND_FOR_${pattern.cnpjTomador}`);
+      return;
+    }
+
+    let finalDescricao = '';
+    let descriptionFromDemand = false;
+
+    if (descFromDemand) {
+      finalDescricao = descFromDemand;
+      descriptionFromDemand = true;
+    } else if (pattern.template) {
+      finalDescricao = pattern.template
+        .replace(/{MM\/AAAA}/g, parseCompetencia(demanda.periodo) || demanda.periodo)
+        .replace(/{VALOR}/g, valor.toLocaleString('pt-BR', { minimumFractionDigits: 2 }))
+        .replace(/{BLOCO_BANCARIO_VALIDADO}/g, 'Banco Inter (077) Agência 0001 Conta 13618683-0 PIX CNPJ 31.302.407/0001-05');
+    }
+
+    const codMunPrestacao = pattern.codigoMunicipioPrestacao || resolveMunicipioIbge(pattern.localPrestacao);
+    const codMunIncidencia = pattern.codigoMunicipioIncidenciaIss;
+    const issRetido = pattern.issRetido || '2';
+    const exigibilidadeIss = pattern.exigibilidadeIss || '1';
+
+    const candidate = {
+      requestId,
+      sequence: idx + 1,
+      patternId: pattern.patternId,
+      categoria: pattern.categoria || catSolicitada,
+      tomador: tomador.razaoSocial || pattern.tomador,
+      cnpjTomador: normalizeCnpj(tomador.cnpj || pattern.cnpjTomador),
+      enderecoTomador: {
+        logradouro: tomador.logradouro,
+        numero: tomador.numero,
+        complemento: tomador.complemento,
+        bairro: tomador.bairro,
+        codigoMunicipio: tomador.codigoMunicipio,
+        uf: tomador.uf,
+        cep: tomador.cep
+      },
       valor,
-      competencia: parseCompetencia(firstField(demand, ['Competência', 'competencia', 'Período', 'periodo'])),
-      competenciaData: competenceDate(firstField(demand, ['Competência', 'competencia', 'Período', 'periodo'])),
-      descricao,
-      descriptionFromDemand: Boolean(descDemand),
-      codigoTribNacional: subPattern.codigoTribNacional,
-      codigoTribMunicipal: subPattern.codigoTribMunicipal,
-      localPrestacao,
-      codigoMunicipioPrestacao,
-      codigoMunicipioIncidenciaIss,
-      nbs: subPattern.nbs,
+      competencia: parseCompetencia(demanda.periodo) || demanda.periodo,
+      competenciaData: compDate,
+      descricao: finalDescricao,
+      descriptionFromDemand,
+      codigoTribNacional: pattern.codigoTribNacional,
+      codigoTribMunicipal: pattern.codigoTribMunicipal,
+      localPrestacao: pattern.localPrestacao,
+      codigoMunicipioPrestacao: codMunPrestacao,
+      codigoMunicipioIncidenciaIss: codMunIncidencia,
+      issRetido: String(issRetido),
+      exigibilidadeIss: String(exigibilidadeIss),
+      nbs: pattern.nbs,
       codigoCnae: null,
       aliquotaIss: null,
       valorIss: null,
@@ -367,40 +390,48 @@ function prepareDemand({ requestId, demandas, tomadores, patterns, notas = [], n
       rpsSerie: 'A',
       rpsTipo: '1',
       dataEmissao: now.toISOString().slice(0, 10),
-      xmlId: `RPS_PREPARE_${i + 1}`
+      xmlId: `RPS_PREPARE_${idx + 1}`
     };
 
-    cand.validationErrors = validateCandidate(cand);
-    if (cand.validationErrors.length) {
-      blockingReasons.push(...cand.validationErrors);
+    candidate.validationErrors = validateCandidate(candidate);
+    if (candidate.validationErrors.length > 0) {
+      blockingReasons.push(...candidate.validationErrors);
+    } else {
+      candidate.xmlCandidate = buildUnsignedCandidateXml(candidate);
     }
-    cand.xmlCandidate = buildUnsignedCandidateXml(cand);
-    candidates.push(cand);
-  }
 
-  const validationStatus = blockingReasons.length ? 'REVISAO_MANUAL' : 'READY_TO_ISSUE';
+    candidates.push(candidate);
+  });
+
+  const validationStatus = blockingReasons.length > 0 ? 'REVISAO_MANUAL' : 'READY_TO_ISSUE';
 
   return {
     operation: 'prepare',
     status: 'SUCCESS',
     validationStatus,
-    requestId: normalizedRequest,
+    requestId,
     candidates,
     blockingReasons: Array.from(new Set(blockingReasons)),
-    xsdValidation: validationStatus === 'READY_TO_ISSUE' ? 'SCHEMA_READY' : 'PENDING_FIX',
-    xmlSignature: 'NOT_APPLIED_PREPARE_ONLY',
-    warnings: [],
-    errors: Array.from(new Set(blockingReasons))
+    warnings
   };
 }
 
-async function handlePrepare({ requestId, environment, dryRun }) {
-  const spreadsheetId = CONFIG.SHEETS.SPREADSHEET_ID;
+async function handlePrepare({ requestId, environment = 'homologation', dryRun = false }, dependencies = {}) {
+  const read = dependencies.readSheetValues || readSheetValues;
+  const spreadsheetId = dependencies.spreadsheetId || CONFIG.SHEETS.SPREADSHEET_ID;
+
+  if (requestId.startsWith('fixture-homologation') || requestId.startsWith('fixture-controlada')) {
+    const fixture = buildHomologationFixture(requestId);
+    const xsdRes = await validateXmlAgainstOfficialXsd(fixture.candidates[0].xmlCandidate, 'GerarNfseEnvio');
+    fixture.xsdValidation = xsdRes.valid ? 'VALIDATED_OFFICIAL_XSD' : 'INVALID';
+    return fixture;
+  }
+
   const [demandasRaw, tomadoresRaw, patternsRaw, notasRaw] = await Promise.all([
-    readSheetValues(spreadsheetId, `${CONFIG.SHEETS.TABS.DEMANDAS}!A:Z`),
-    readSheetValues(spreadsheetId, `${CONFIG.SHEETS.TABS.TOMADORES}!A:M`),
-    readSheetValues(spreadsheetId, `${CONFIG.SHEETS.TABS.PADROES}!A:T`),
-    readSheetValues(spreadsheetId, `${CONFIG.SHEETS.TABS.NOTAS}!A:X`)
+    read(spreadsheetId, `${CONFIG.SHEETS.TABS.DEMANDAS}!A:Z`),
+    read(spreadsheetId, `${CONFIG.SHEETS.TABS.TOMADORES}!A:S`),
+    read(spreadsheetId, `${CONFIG.SHEETS.TABS.PADROES}!A:X`),
+    read(spreadsheetId, `${CONFIG.SHEETS.TABS.NOTAS}!A:X`)
   ]);
 
   const prepared = prepareDemand({
@@ -411,21 +442,22 @@ async function handlePrepare({ requestId, environment, dryRun }) {
     notas: notasRaw
   });
 
+  if (prepared.candidates.length > 0 && prepared.candidates[0].xmlCandidate) {
+    const xsdRes = await validateXmlAgainstOfficialXsd(prepared.candidates[0].xmlCandidate, 'GerarNfseEnvio');
+    prepared.xsdValidation = xsdRes.valid ? 'VALIDATED_OFFICIAL_XSD' : 'INVALID';
+    if (!xsdRes.valid) {
+      prepared.validationStatus = 'REVISAO_MANUAL';
+      prepared.blockingReasons.push(`XSD_ERROR: ${xsdRes.errors.join('; ')}`);
+    }
+  }
+
   return prepared;
 }
 
 module.exports = {
-  normalizeLabel,
-  rowObject,
-  firstField,
-  splitList,
   patternRows,
   demandRows,
   tomadorRows,
-  selectPattern,
-  escapeXml,
-  competenceDate,
-  resolveMunicipioIbge,
   buildUnsignedCandidateXml,
   validateCandidate,
   buildHomologationFixture,

@@ -29,32 +29,59 @@ const transformedCorrupted = transformLegacyLedgerRow(corruptedRow);
 assert.strictEqual(transformedCorrupted[12], '1', 'attempt_count numérico corrigido');
 assert.strictEqual(transformedCorrupted[16], 'ERRO_SCHEMA_EL78', 'error restaurado');
 
-// 3. Testa migração da aba Tomadores v1 -> v2
-const legacyTomadoresRows = [
-  ['CNPJ', 'Razão Social', 'Nome Curto', 'Município', 'E-mail', 'Categorias Conhecidas', 'Status Homologação', 'Primeiro Uso', 'Último Uso', 'Qtd NFS-e'],
-  ['20.724.357/0001-20', 'ASSOCIACAO DE CARIDADE NOSSA SENHORA DO CARMO', 'HIC', 'GUANHAES', 'financeiro@hicguanhaes.com.br', 'HIC', 'HOMOLOGADO', '01/2026', '08/2026', '11'],
-  ['50.098.089/0001-49', 'CONSORCIO INTERMUNICIPAL DE SAUDE DA REGIAO DO MEDIO PIRACICABA - CISURG', 'CISURG', 'ITABIRA', 'samu192cisurg@gmail.com', 'CISURG', 'HOMOLOGADO', '06/2026', '08/2026', '4']
+// 3. Testa migração da aba Tomadores v1 -> v2 com caso regressivo de complemento
+const legacyTomadoresWithCorruptedComplemento = [
+  ['CNPJ', 'Razão Social', 'Nome Curto', 'Logradouro', 'Número', 'Complemento', 'Bairro', 'Cód. Município', 'Município', 'UF', 'CEP', 'E-mail', 'Categorias Conhecidas', 'Status Homologação', 'Fonte Endereço', 'Validado Em', 'Primeiro Uso', 'Último Uso', 'Qtd NFS-e'],
+  ['20.724.357/0001-20', 'ASSOCIACAO DE CARIDADE NOSSA SENHORA DO CARMO', 'HIC', 'CAPITAO BERNARDO', '257', 'HIC — Plantões Médicos PS SUS', 'CENTRO', '3128006', 'Guanhães', 'MG', '39740000', 'financeiro@hicguanhaes.com.br', 'HIC', 'HOMOLOGADO', 'NFS-e histórica', '2026-08-22', '01/2026', '08/2026', '11'],
+  ['50.098.089/0001-49', 'CONSORCIO PUBLICO INTERMUNICIPAL DE SAUDE PARA GERENCIAMENTO DOS SERVICOS DE URGENCIA E EMERGENCIA DA REGIAO DO MEDIO PIRACICABA', 'CISURG', 'RUA SAO PAULO', '377', 'CISURG — Plantão médico presencial', 'AMAZONAS', '3131703', 'Itabira', 'MG', '35900352', 'samu192cisurg@gmail.com', 'CISURG', 'HOMOLOGADO', 'Portal Oficial CISURG', '2026-08-22', '06/2026', '08/2026', '4']
 ];
 
-const migratedTomadores = buildTomadoresRows([], legacyTomadoresRows);
+const migratedTomadores = buildTomadoresRows([], legacyTomadoresWithCorruptedComplemento);
 assert.strictEqual(migratedTomadores.length, 3);
 assert.strictEqual(migratedTomadores[0].length, 19);
+
 // Verifica HIC
-assert.strictEqual(migratedTomadores[1][0], '20.724.357/0001-20');
-assert.strictEqual(migratedTomadores[1][2], 'HIC Guanhães');
-assert.strictEqual(migratedTomadores[1][3], 'CAPITAO BERNARDO');
-assert.strictEqual(migratedTomadores[1][4], '257');
-assert.strictEqual(migratedTomadores[1][7], '3128006');
-assert.strictEqual(migratedTomadores[1][11], 'financeiro@hicguanhaes.com.br', 'E-mail preservado na coluna L');
-assert.strictEqual(migratedTomadores[1][18], 11, 'Qtd NFS-e preservada na coluna S');
+const hic = migratedTomadores[1];
+assert.strictEqual(hic[0], '20.724.357/0001-20');
+assert.strictEqual(hic[1], 'ASSOCIACAO DE CARIDADE NOSSA SENHORA DO CARMO');
+assert.strictEqual(hic[2], 'HIC Guanhães');
+assert.strictEqual(hic[3], 'CAPITAO BERNARDO');
+assert.strictEqual(hic[4], '257');
+assert.strictEqual(hic[5], '', 'Complemento HIC deve ser estritamente vazio');
+assert.strictEqual(hic[6], 'CENTRO');
+assert.strictEqual(hic[7], '3128006');
+assert.strictEqual(hic[8], 'Guanhães');
+assert.strictEqual(hic[9], 'MG');
+assert.strictEqual(hic[10], '39740000');
+assert.strictEqual(hic[11], 'financeiro@hicguanhaes.com.br');
+assert.strictEqual(hic[12], 'HIC — Plantões Médicos PS SUS, HIC — Produção PS SUS');
+assert.strictEqual(hic[13], 'HOMOLOGADO');
+assert.strictEqual(hic[14], 'NFS-e histórica DEXMED');
+assert.strictEqual(hic[15], '2026-08-22');
+assert.strictEqual(hic[16], '01/2026');
+assert.strictEqual(hic[17], '08/2026');
+assert.strictEqual(hic[18], 11);
 
 // Verifica CISURG
-assert.strictEqual(migratedTomadores[2][0], '50.098.089/0001-49');
-assert.strictEqual(migratedTomadores[2][2], 'CISURG Médio Piracicaba');
-assert.strictEqual(migratedTomadores[2][3], 'RUA SAO PAULO');
-assert.strictEqual(migratedTomadores[2][4], '377');
-assert.strictEqual(migratedTomadores[2][7], '3131703');
-assert.strictEqual(migratedTomadores[2][11], 'samu192cisurg@gmail.com', 'E-mail CISURG preservado na coluna L');
-assert.strictEqual(migratedTomadores[2][18], 4, 'Qtd NFS-e CISURG preservada');
+const cisurg = migratedTomadores[2];
+assert.strictEqual(cisurg[0], '50.098.089/0001-49');
+assert.strictEqual(cisurg[1], 'CONSORCIO PUBLICO INTERMUNICIPAL DE SAUDE PARA GERENCIAMENTO DOS SERVICOS DE URGENCIA E EMERGENCIA DA REGIAO DO MEDIO PIRACICABA');
+assert.strictEqual(cisurg[2], 'CISURG Médio Piracicaba');
+assert.strictEqual(cisurg[3], 'RUA SAO PAULO');
+assert.strictEqual(cisurg[4], '377');
+assert.strictEqual(cisurg[5], '', 'Complemento CISURG deve ser estritamente vazio');
+assert.strictEqual(cisurg[6], 'AMAZONAS');
+assert.strictEqual(cisurg[7], '3131703');
+assert.strictEqual(cisurg[8], 'Itabira');
+assert.strictEqual(cisurg[9], 'MG');
+assert.strictEqual(cisurg[10], '35900352');
+assert.strictEqual(cisurg[11], 'samu192cisurg@gmail.com');
+assert.strictEqual(cisurg[12], 'CISURG — Plantão médico presencial');
+assert.strictEqual(cisurg[13], 'HOMOLOGADO');
+assert.strictEqual(cisurg[14], 'Portal Oficial CISURG');
+assert.strictEqual(cisurg[15], '2026-08-22');
+assert.strictEqual(cisurg[16], '06/2026');
+assert.strictEqual(cisurg[17], '08/2026');
+assert.strictEqual(cisurg[18], 4);
 
 console.log('✓ test-migrations.js PASSED');

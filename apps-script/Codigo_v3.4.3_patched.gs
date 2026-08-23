@@ -46,7 +46,7 @@ const SYSTEM = Object.freeze({
   CND_DRIVE_FOLDER_ID: '16Dw9pUbpv_ViCP6a2MAgUbW1h37t3859',
   CND_RENEWAL_STATE_KEY: 'BARK_MANAGER_CND_RENEWAL_STATE_V1',
   CND_RENEWAL_COOLDOWN_HOURS: 24,
-INFOSIMPLES_TOKEN_EMBUTIDO: 'V_JU5q0bm5_5e7HKHr1gymK7bgQ80Z5CfJNH7uda',
+INFOSIMPLES_TOKEN_EMBUTIDO: '',
   INFOSIMPLES_TOKEN_PROPERTY: 'INFOSIMPLES_TOKEN',
   INFOSIMPLES_TIMEOUT_SECONDS: 120,
   SERPRO_CND_CONSUMER_KEY_PROPERTY: 'SERPRO_CND_CONSUMER_KEY',
@@ -1974,7 +1974,7 @@ function testeCndDiagnosticoSemEmitir() {
 
 function testeInfosimplesFgtsUmaVez() {
   const props = PropertiesService.getScriptProperties();
-  const token = 'V_JU5q0bm5_5e7HKHr1gymK7bgQ80Z5CfJNH7uda';
+  const token = String(props.getProperty(SYSTEM.INFOSIMPLES_TOKEN_PROPERTY) || '').trim();
   if (!token) {
     throw new Error('INFOSIMPLES_TOKEN não configurado nas Propriedades do script.');
   }
@@ -2036,7 +2036,7 @@ function verificarConfiguracaoApisCnd() {
   const status = {
     version: SYSTEM.VERSION,
     renovacao: 'somente certidoes vencidas',
-    infosimplesTokenConfigurado: Boolean(String(SYSTEM.INFOSIMPLES_TOKEN_EMBUTIDO || '').trim()),
+    infosimplesTokenConfigurado: Boolean(String(props.getProperty(SYSTEM.INFOSIMPLES_TOKEN_PROPERTY) || '').trim()),
     serproConsumerKeyConfigurado: Boolean(String(props.getProperty(SYSTEM.SERPRO_CND_CONSUMER_KEY_PROPERTY) || '').trim()),
     serproConsumerSecretConfigurado: Boolean(String(props.getProperty(SYSTEM.SERPRO_CND_CONSUMER_SECRET_PROPERTY) || '').trim()),
     infosimplesTimeoutSeconds: SYSTEM.INFOSIMPLES_TIMEOUT_SECONDS,
@@ -2555,7 +2555,7 @@ function registrarResultadoRenovacaoCnd_(cnpj, tipo, result) {
 }
 
 function emitirCndViaInfosimples_(cnpj, cfg) {
-  const token = String(SYSTEM.INFOSIMPLES_TOKEN_EMBUTIDO || '').trim();
+  const token = String(PropertiesService.getScriptProperties().getProperty(SYSTEM.INFOSIMPLES_TOKEN_PROPERTY) || '').trim();
   if (!token) {
     return {
       success: false,
@@ -3932,5 +3932,117 @@ function testeValidacaoCndMunicipalPlanilha() {
   }
 
   console.log(JSON.stringify(resultado, null, 2));
+  return resultado;
+}
+
+
+
+/***************************************************************
+ * TESTE E2E REAL — PIPELINE INTEGRADO APPS SCRIPT ↔ GITHUB (DRY-RUN)
+ ***************************************************************/
+
+function dispararWorkflowGitHubNfse_(payload) {
+  const props = PropertiesService.getScriptProperties();
+  const token = String(props.getProperty('GITHUB_NFSE_TOKEN') || props.getProperty('GITHUB_TOKEN') || '').trim();
+  if (!token) {
+    throw new Error('GITHUB_NFSE_TOKEN não configurado nas Propriedades do script.');
+  }
+
+  const repo = '69Tm/ipatinga-cnd-monitor';
+  const workflow = 'ipatinga-nfse.yml';
+  const url = 'https://api.github.com/repos/' + repo + '/actions/workflows/' + workflow + '/dispatches';
+
+  const response = UrlFetchApp.fetch(url, {
+    method: 'post',
+    contentType: 'application/json',
+    headers: {
+      'Authorization': 'Bearer ' + token,
+      'Accept': 'application/vnd.github+json',
+      'User-Agent': 'Dexmed-AppsScript'
+    },
+    payload: JSON.stringify({
+      ref: 'main',
+      inputs: {
+        operation: String(payload.operation || 'issue'),
+        environment: String(payload.environment || 'production'),
+        request_id: String(payload.request_id || ''),
+        item_index: String(payload.item_index || '1'),
+        dry_run: String(payload.dry_run === true || payload.dry_run === 'true')
+      }
+    }),
+    muteHttpExceptions: true
+  });
+
+  const code = response.getResponseCode();
+  if (code < 200 || code >= 300) {
+    throw new Error('GitHub Dispatch HTTP ' + code + ': ' + response.getContentText());
+  }
+
+  return { ok: true, dispatchAt: new Date().toISOString() };
+}
+
+function testePipelineNfseE2E() {
+  const timestamp = Date.now();
+  const requestId = 'e2e-integration-test-' + timestamp;
+  const cnpj = '31.302.407/0001-05';
+
+  console.log('[E2E] 1. Consultando CNDs em modo READ-ONLY...');
+  const situacaoCnds = obterSituacaoCndsParaCnpj_(cnpj);
+  const cndDecision = {
+    totalVigentes: situacaoCnds.vigentes.length,
+    totalVencidas: situacaoCnds.vencidas.length,
+    totalAusentes: situacaoCnds.ausentes.length,
+    modo: 'CND_READ_ONLY',
+    mutacaoExecutada: false
+  };
+  console.log('[E2E] Decisão CND:', JSON.stringify(cndDecision));
+
+  console.log('[E2E] 2. Inserindo demanda sintética de teste na planilha...');
+  const ss = SpreadsheetApp.openById(SYSTEM.CND_CONTROL_SPREADSHEET_ID);
+  let sheetDemandas = ss.getSheetByName('Demandas');
+  if (!sheetDemandas) {
+    sheetDemandas = ss.insertSheet('Demandas');
+    sheetDemandas.appendRow(['Message ID', 'Período', 'Notas solicitadas', 'Valores', 'Descrição obrigatória', 'Status', 'NFS-e resultantes']);
+  }
+
+  const testRow = [
+    requestId,
+    '08/2026',
+    'HIC — Plantões Médicos PS SUS',
+    '10,00',
+    'TESTE DE INTEGRACAO DRY-RUN — NAO EMITIR',
+    'READY_TO_PREPARE',
+    ''
+  ];
+  sheetDemandas.appendRow(testRow);
+  const rowNumber = sheetDemandas.getLastRow();
+
+  console.log('[E2E] 3. Disparando GitHub Actions (dry_run=true, environment=production)...');
+  let dispatchRes;
+  try {
+    dispatchRes = dispararWorkflowGitHubNfse_({
+      operation: 'issue',
+      environment: 'production',
+      request_id: requestId,
+      item_index: '1',
+      dry_run: true
+    });
+  } catch (err) {
+    sheetDemandas.getRange(rowNumber, 6).setValue('E2E_DISPATCH_FAILED');
+    throw err;
+  }
+
+  sheetDemandas.getRange(rowNumber, 6).setValue('TESTE_E2E_CONCLUIDO');
+
+  const resultado = {
+    ok: true,
+    requestId: requestId,
+    demandRowNumber: rowNumber,
+    cndDecision: cndDecision,
+    dispatch: dispatchRes,
+    statusFinalDemanda: 'TESTE_E2E_CONCLUIDO'
+  };
+
+  console.log('[E2E] Concluído com sucesso:', JSON.stringify(resultado, null, 2));
   return resultado;
 }

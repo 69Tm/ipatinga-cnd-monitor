@@ -215,7 +215,6 @@ async function reconcileRps({ environment = 'homologation', requestId = null, it
   const msgTexts = msgs.map(m => String(m.mensagem || ''));
 
   // Códigos de "RPS não encontrado / não cadastrado"
-  // E4 / E10 / E159 / E212 / E182 / mensagens textuais explícitas
   const isNotFound = msgCodes.some(c => ['E4', 'E10', 'E159', 'E212', 'E182', 'E04'].includes(c)) ||
                      msgTexts.some(t => /nao encontrado|nao localizado|inexistente|sem dados/i.test(t));
 
@@ -410,7 +409,7 @@ async function issueNfse({ requestId, itemIndex = 1, certData, dryRun = false },
 
   // 3. Prepara a demanda (se não for caso já emitido/bloqueado no ledger)
   let prepared;
-  if (requestId.startsWith('fixture-homologation') || requestId.startsWith('fixture-controlada') || requestId.startsWith('fixture-pipeline')) {
+  if (requestId.startsWith('fixture-homologation') || requestId.startsWith('fixture-controlada')) {
     prepared = buildHomologationFixture(requestId);
   } else {
     const [demandasRaw, tomadoresRaw, patternsRaw, notasRaw] = await Promise.all([
@@ -480,6 +479,8 @@ async function issueNfse({ requestId, itemIndex = 1, certData, dryRun = false },
   const itemLista = String(candidate.codigoTribNacional || '').split('.').slice(0, 2).join('.');
   const codMunPrestacao = candidate.codigoMunicipioPrestacao;
   const codMunIncidencia = candidate.codigoMunicipioIncidenciaIss;
+  const issRetido = candidate.issRetido || '2';
+  const exigibilidadeIss = candidate.exigibilidadeIss || '1';
   const nbsTag = candidate.nbs ? `<cNBS>${escapeXml(candidate.nbs.replace(/\D/g, ''))}</cNBS>` : '';
   const cnaeTag = candidate.codigoCnae ? `<CodigoCnae>${escapeXml(candidate.codigoCnae)}</CodigoCnae>` : '';
 
@@ -547,14 +548,14 @@ async function issueNfse({ requestId, itemIndex = 1, certData, dryRun = false },
           `<Valores>` +
             valoresXml +
           `</Valores>` +
-          `<IssRetido>2</IssRetido>` +
+          `<IssRetido>${escapeXml(issRetido)}</IssRetido>` +
           `<ItemListaServico>${escapeXml(itemLista)}</ItemListaServico>` +
           cnaeTag +
           `<CodigoTributacaoMunicipio>${escapeXml(candidate.codigoTribMunicipal)}</CodigoTributacaoMunicipio>` +
           `<Discriminacao>${escapeXml(candidate.descricao)}</Discriminacao>` +
           `<CodigoMunicipio>${escapeXml(codMunPrestacao)}</CodigoMunicipio>` +
           `<CodigoPais>1058</CodigoPais>` +
-          `<ExigibilidadeISS>1</ExigibilidadeISS>` +
+          `<ExigibilidadeISS>${escapeXml(exigibilidadeIss)}</ExigibilidadeISS>` +
           `<MunicipioIncidencia>${escapeXml(codMunIncidencia)}</MunicipioIncidencia>` +
           nbsTag +
         `</Servico>` +
@@ -737,6 +738,5 @@ module.exports = {
   parseGerarNfseResposta,
   reconcileRps,
   issueNfse,
-  // Alias retrocompatível
   issueHomologation: issueNfse
 };

@@ -46,7 +46,7 @@ const SYSTEM = Object.freeze({
   CND_DRIVE_FOLDER_ID: '16Dw9pUbpv_ViCP6a2MAgUbW1h37t3859',
   CND_RENEWAL_STATE_KEY: 'BARK_MANAGER_CND_RENEWAL_STATE_V1',
   CND_RENEWAL_COOLDOWN_HOURS: 24,
-INFOSIMPLES_TOKEN_EMBUTIDO: 'V_JU5q0bm5_5e7HKHr1gymK7bgQ80Z5CfJNH7uda',
+INFOSIMPLES_TOKEN_EMBUTIDO: '',
   INFOSIMPLES_TOKEN_PROPERTY: 'INFOSIMPLES_TOKEN',
   INFOSIMPLES_TIMEOUT_SECONDS: 120,
   SERPRO_CND_CONSUMER_KEY_PROPERTY: 'SERPRO_CND_CONSUMER_KEY',
@@ -1973,7 +1973,7 @@ function testeCndDiagnosticoSemEmitir() {
 
 function testeInfosimplesFgtsUmaVez() {
   const props = PropertiesService.getScriptProperties();
-  const token = 'V_JU5q0bm5_5e7HKHr1gymK7bgQ80Z5CfJNH7uda';
+  const token = String(props.getProperty(SYSTEM.INFOSIMPLES_TOKEN_PROPERTY) || '').trim();
   if (!token) {
     throw new Error('INFOSIMPLES_TOKEN não configurado nas Propriedades do script.');
   }
@@ -2035,7 +2035,7 @@ function verificarConfiguracaoApisCnd() {
   const status = {
     version: SYSTEM.VERSION,
     renovacao: 'somente certidoes vencidas',
-    infosimplesTokenConfigurado: Boolean(String(SYSTEM.INFOSIMPLES_TOKEN_EMBUTIDO || '').trim()),
+    infosimplesTokenConfigurado: Boolean(String(props.getProperty(SYSTEM.INFOSIMPLES_TOKEN_PROPERTY) || '').trim()),
     serproConsumerKeyConfigurado: Boolean(String(props.getProperty(SYSTEM.SERPRO_CND_CONSUMER_KEY_PROPERTY) || '').trim()),
     serproConsumerSecretConfigurado: Boolean(String(props.getProperty(SYSTEM.SERPRO_CND_CONSUMER_SECRET_PROPERTY) || '').trim()),
     infosimplesTimeoutSeconds: SYSTEM.INFOSIMPLES_TIMEOUT_SECONDS,
@@ -2487,7 +2487,7 @@ function registrarResultadoRenovacaoCnd_(cnpj, tipo, result) {
 }
 
 function emitirCndViaInfosimples_(cnpj, cfg) {
-  const token = String(SYSTEM.INFOSIMPLES_TOKEN_EMBUTIDO || '').trim();
+  const token = String(PropertiesService.getScriptProperties().getProperty(SYSTEM.INFOSIMPLES_TOKEN_PROPERTY) || '').trim();
   if (!token) {
     return {
       success: false,

@@ -4,7 +4,8 @@ const fs = require('fs');
 const path = require('path');
 const { CONFIG, sanitize } = require('./config');
 const { checkSheetsAccess, checkDriveFileAccess, getSpreadsheetMetadata } = require('./google');
-const { loadCertificate, formatDateBr } = require('./certificate');
+const { loadCertificate, checkCertificateAccess } = require('./certificate');
+const { formatDateBr } = require('./validators');
 const { inspectWsdl } = require('./wsdl');
 const { syncNfse } = require('./sync');
 const { handlePrepare } = require('./prepare');
@@ -49,18 +50,23 @@ async function preflight(options = {}, dependencies = {}) {
     console.log(`  ✗ Erro ao acessar Google Sheets: ${err.message}`);
   }
 
-  // 2. Validação do Certificado A1 no Google Drive
+  // 2. Validação do Certificado A1 no Google Drive / Local
   try {
-    const pfxMeta = await (dependencies.checkDriveFileAccess || checkDriveFileAccess)(CONFIG.CERTIFICATE.DRIVE_FILE_ID);
-    results.pfxAccessibleOnDrive = true;
-    console.log(`  ✓ Certificado PFX encontrado no Drive (${pfxMeta.name}, ${pfxMeta.size} bytes).`);
+    const pfxAccess = await (dependencies.checkCertificateAccess || checkCertificateAccess)();
+    if (pfxAccess && pfxAccess.accessible) {
+      results.pfxAccessibleOnDrive = true;
+      console.log(`  ✓ Certificado PFX encontrado (${pfxAccess.name || pfxAccess.source}, ${pfxAccess.sizeBytes || 0} bytes).`);
+    } else {
+      results.errors.push('Certificado PFX não encontrado no Drive ou caminho local.');
+      console.log('  ✗ Erro ao localizar PFX.');
+    }
   } catch (err) {
-    results.errors.push(`Google Drive PFX error: ${err.message}`);
-    console.log(`  ✗ Erro ao localizar PFX no Drive: ${err.message}`);
+    results.errors.push(`PFX access error: ${err.message}`);
+    console.log(`  ✗ Erro ao localizar PFX: ${err.message}`);
   }
 
   // 3. Validação da Senha e Conteúdo do Certificado
-  const certPassword = process.env.NFE_CERT_PASSWORD;
+  const certPassword = process.env.NFE_CERT_PASSWORD || CONFIG.CERT.PASSWORD;
   if (!certPassword) {
     results.warnings.push('NFE_CERT_PASSWORD não configurado. Certificado não pôde ser descriptografado.');
     console.log('  ⚠ NFE_CERT_PASSWORD ausente (esperado em rotas de inspeção sem emissão).');
@@ -70,7 +76,9 @@ async function preflight(options = {}, dependencies = {}) {
       const certData = await (dependencies.loadCertificate || loadCertificate)({ certPassword });
       if (certData.isValid) {
         results.pfxValidated = true;
-        console.log(`  ✓ Certificado A1 válido (CNPJ: ${certData.cnpj}, Validade: ${formatDateBr(certData.validTo)}).`);
+        const validTo = certData.notAfter || certData.validTo;
+        const cnpj = certData.certificateCnpj || certData.cnpj || CONFIG.PRESTADOR.CNPJ;
+        console.log(`  ✓ Certificado A1 válido (CNPJ: ${cnpj}, Validade: ${formatDateBr(validTo)}).`);
       } else {
         results.errors.push(`Certificado inválido: ${certData.error}`);
         console.log(`  ✗ Certificado A1 inválido: ${certData.error}`);
@@ -172,7 +180,7 @@ async function main() {
     if (process.env.NFE_CERT_PASSWORD) {
       try {
         certData = await loadCertificate({ certPassword: process.env.NFE_CERT_PASSWORD });
-        console.log(`[CERT] Certificado A1 carregado. CNPJ: ${certData.cnpj}`);
+        console.log(`[CERT] Certificado A1 carregado. CNPJ: ${certData.certificateCnpj || certData.cnpj || CONFIG.PRESTADOR.CNPJ}`);
       } catch (err) {
         console.log(`[CERT] Falha ao descriptografar certificado: ${err.message}`);
       }
