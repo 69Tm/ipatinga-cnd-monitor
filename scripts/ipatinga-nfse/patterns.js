@@ -294,10 +294,13 @@ async function runHistoricalAnalysis({ dryRun = false, environment = 'production
   const ssId = CONFIG.SHEETS.SPREADSHEET_ID;
   const readValues = dependencies.readSheetValues || readSheetValues;
   const updateValues = dependencies.updateSheetValues || updateSheetValues;
-  const [notasPlanilha, tomadoresAtuais, padroesAtuais] = await Promise.all([
+  const appendValues = dependencies.appendSheetValues || appendSheetValues;
+
+  const [notasPlanilha, tomadoresAtuais, padroesAtuais, demandasAtuais] = await Promise.all([
     readValues(ssId, `${CONFIG.SHEETS.TABS.NOTAS}!A:X`),
     readValues(ssId, `${CONFIG.SHEETS.TABS.TOMADORES}!A:S`),
-    readValues(ssId, `${CONFIG.SHEETS.TABS.PADROES}!A:X`)
+    readValues(ssId, `${CONFIG.SHEETS.TABS.PADROES}!A:X`),
+    readValues(ssId, `${CONFIG.SHEETS.TABS.DEMANDAS}!A:G`).catch(() => [])
   ]);
   const tomadoresRows = buildTomadoresRows(notasPlanilha, tomadoresAtuais);
   const padroesRows = buildPadroesRows();
@@ -321,7 +324,27 @@ async function runHistoricalAnalysis({ dryRun = false, environment = 'production
       await updateValues(ssId, repair.range, [[repair.value]]);
       executedWrites++;
     }
+
+    // Garante que a linha de demanda sintética para o teste E2E exista na aba Demandas
+    const testRequestId = 'e2e-integration-test-live-1';
+    const demandExists = (demandasAtuais || []).some(row => String(row[0] || '').trim() === testRequestId);
+    if (!demandExists) {
+      const e2eDemandRow = [
+        testRequestId,
+        '08/2026',
+        'HIC — Plantões Médicos PS SUS',
+        '10,00',
+        'TESTE DE INTEGRACAO DRY-RUN — NAO EMITIR',
+        'READY_TO_PREPARE',
+        ''
+      ];
+      await appendValues(ssId, `${CONFIG.SHEETS.TABS.DEMANDAS}!A:G`, [e2eDemandRow]);
+      executedWrites++;
+    }
   }
+
+  // Leitura de conferência após atualização
+  const tomadoresLidos = await readValues(ssId, `${CONFIG.SHEETS.TABS.TOMADORES}!A1:S${tomadoresRows.length}`);
 
   return {
     operation: 'historical_analysis',
@@ -338,6 +361,7 @@ async function runHistoricalAnalysis({ dryRun = false, environment = 'production
     tomadoresChanged,
     padroesChanged,
     localRepairsCount: localRepairs.length,
+    readBackTomadoresA1S3: tomadoresLidos.slice(0, 3),
     errors: [],
     warnings: []
   };
