@@ -39,7 +39,8 @@ const SYSTEM = Object.freeze({
   SHEET_SCHEDULES: 'Agendamentos',
   SHEET_LISTS: 'Listas',
   SHEET_LAST_ERROR_KEY: 'BARK_MANAGER_SHEET_LAST_ERROR_V3_2',
-  CND_CONTROL_SPREADSHEET_ID: '1UHIo_2GiwIr4847y_AsPX3ZQHujaUOMkD-EE0uBEJcs',
+  CND_CONTROL_SPREADSHEET_ID: '1UHIo_2GiwIr4847y_AsPX3ZQHujaUOMkD-EE0uBEJcs',
+  NFSE_SPREADSHEET_ID: '1-qnJjv0YuZkrAHnfiyJuyKiU3lR3VzFl76nNQ1DCHWo',
   CND_CONTROL_SHEET: 'CNDs',
   CND_AUTO_DRAFT_KEY: 'BARK_MANAGER_CND_AUTO_DRAFT_V1',
   CND_AUTO_DRAFT_MAX: 500,
@@ -2274,7 +2275,7 @@ function ehSolicitacaoProfissionalDeNotaFiscal_(message) {
 }
 
 function obterSituacaoCndsParaCnpj_(cnpj) {
-  const ss = SpreadsheetApp.openById(SYSTEM.CND_CONTROL_SPREADSHEET_ID);
+  const ss = SpreadsheetApp.openById(SYSTEM.NFSE_SPREADSHEET_ID || '1-qnJjv0YuZkrAHnfiyJuyKiU3lR3VzFl76nNQ1DCHWo');
   const sheet = ss.getSheetByName(SYSTEM.CND_CONTROL_SHEET);
   if (!sheet) throw new Error('Aba de controle de CNDs não encontrada: ' + SYSTEM.CND_CONTROL_SHEET);
 
