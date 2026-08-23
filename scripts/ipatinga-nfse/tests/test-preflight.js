@@ -14,7 +14,7 @@ async function run() {
       certificateCnpj: '31302407000105',
       notAfter: new Date(Date.now() + 86400000)
     }),
-    inspectWsdl: async () => ({ success: true, httpStatus: 200, operations: ['GerarNfse'] })
+    inspectWsdl: async (url) => ({ success: true, accessible: true, httpStatus: 200, statusCode: 200, operations: ['GerarNfse'] })
   };
 
   process.env.NFE_CERT_PASSWORD = 'mock-password';

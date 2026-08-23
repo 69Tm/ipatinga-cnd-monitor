@@ -91,25 +91,29 @@ async function preflight(options = {}, dependencies = {}) {
 
   // 4. Conectividade WSDL / Endpoints
   console.log('\n  Inspecionando WSDL dos ambientes...');
+  const inspector = dependencies.inspectWsdl || inspectWsdl;
+  const prodWsdlUrl = CONFIG.ENDPOINTS.production.wsdl;
+  const homWsdlUrl = CONFIG.ENDPOINTS.homologation.wsdl;
+
   const [prodWsdl, homWsdl] = await Promise.all([
-    (dependencies.inspectWsdl || inspectWsdl)({ environment: 'production' }).catch(err => ({ success: false, error: err.message })),
-    (dependencies.inspectWsdl || inspectWsdl)({ environment: 'homologation' }).catch(err => ({ success: false, error: err.message }))
+    inspector(prodWsdlUrl).catch(err => ({ success: false, error: err.message })),
+    inspector(homWsdlUrl).catch(err => ({ success: false, error: err.message }))
   ]);
 
   results.wsdl.production = prodWsdl;
   results.wsdl.homologation = homWsdl;
 
-  if (prodWsdl.success) {
+  if (prodWsdl.accessible || prodWsdl.success) {
     results.productionWsdlAccessible = true;
-    console.log(`  ✓ WSDL Produção acessível (HTTP ${prodWsdl.httpStatus}, ${prodWsdl.operations?.length || 0} operações).`);
+    console.log(`  ✓ WSDL Produção acessível (HTTP ${prodWsdl.statusCode || prodWsdl.httpStatus}).`);
   } else {
     results.warnings.push(`WSDL Produção inacessível: ${prodWsdl.error}`);
     console.log(`  ⚠ WSDL Produção inacessível: ${prodWsdl.error}`);
   }
 
-  if (homWsdl.success) {
+  if (homWsdl.accessible || homWsdl.success) {
     results.homologationWsdlAccessible = true;
-    console.log(`  ✓ WSDL Homologação acessível (HTTP ${homWsdl.httpStatus}, ${homWsdl.operations?.length || 0} operações).`);
+    console.log(`  ✓ WSDL Homologação acessível (HTTP ${homWsdl.statusCode || homWsdl.httpStatus}).`);
   } else {
     results.warnings.push(`WSDL Homologação inacessível: ${homWsdl.error}`);
     console.log(`  ⚠ WSDL Homologação inacessível: ${homWsdl.error}`);
