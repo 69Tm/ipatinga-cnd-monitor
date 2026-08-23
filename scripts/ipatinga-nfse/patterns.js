@@ -3,7 +3,7 @@
 const fs = require('fs');
 const path = require('path');
 const { CONFIG, sanitize } = require('./config');
-const { getDriveClient, readSheetValues, updateSheetValues, appendSheetValues, batchUpdateSheetValues } = require('./google');
+const { getDriveClient, readSheetValues, updateSheetValues, appendSheetValues, createSheetIfNotExists, getSpreadsheetMetadata } = require('./google');
 const { normalizeCnpj, formatCnpj, parseCompetencia } = require('./validators');
 
 /**
@@ -295,6 +295,11 @@ async function runHistoricalAnalysis({ dryRun = false, environment = 'production
   const readValues = dependencies.readSheetValues || readSheetValues;
   const updateValues = dependencies.updateSheetValues || updateSheetValues;
   const appendValues = dependencies.appendSheetValues || appendSheetValues;
+  const ensureSheet = dependencies.createSheetIfNotExists || createSheetIfNotExists;
+
+  if (!dryRun) {
+    await ensureSheet(ssId, CONFIG.SHEETS.TABS.DEMANDAS);
+  }
 
   const [notasPlanilha, tomadoresAtuais, padroesAtuais, demandasAtuais] = await Promise.all([
     readValues(ssId, `${CONFIG.SHEETS.TABS.NOTAS}!A:X`),
@@ -322,6 +327,14 @@ async function runHistoricalAnalysis({ dryRun = false, environment = 'production
     }
     for (const repair of localRepairs) {
       await updateValues(ssId, repair.range, [[repair.value]]);
+      executedWrites++;
+    }
+
+    // Se a aba Demandas estiver sem cabeçalho, cria o cabeçalho
+    if (!demandasAtuais || demandasAtuais.length === 0) {
+      await updateValues(ssId, `${CONFIG.SHEETS.TABS.DEMANDAS}!A1:G1`, [[
+        'Message ID', 'Período', 'Notas solicitadas', 'Valores', 'Descrição obrigatória', 'Status', 'NFS-e resultantes'
+      ]]);
       executedWrites++;
     }
 
