@@ -70,7 +70,7 @@ async function run() {
   const hic = migratedTomadores[1];
   assert.strictEqual(hic[0], '20.724.357/0001-20');
   assert.strictEqual(hic[1], 'ASSOCIACAO DE CARIDADE NOSSA SENHORA DO CARMO');
-  assert.strictEqual(hic[2], 'HIC Guanhães');
+  assert.strictEqual(hic[2], 'HIC');
   assert.strictEqual(hic[3], 'CAPITAO BERNARDO');
   assert.strictEqual(hic[4], '257');
   assert.strictEqual(hic[5], '', 'Complemento HIC deve ser estritamente vazio');
@@ -80,9 +80,9 @@ async function run() {
   assert.strictEqual(hic[9], 'MG');
   assert.strictEqual(hic[10], '39740000');
   assert.strictEqual(hic[11], 'financeiro@hicguanhaes.com.br');
-  assert.strictEqual(hic[12], 'HIC — Plantões Médicos PS SUS, HIC — Produção PS SUS');
+  assert.strictEqual(hic[12], 'HIC');
   assert.strictEqual(hic[13], 'HOMOLOGADO');
-  assert.strictEqual(hic[14], 'NFS-e histórica DEXMED');
+  assert.strictEqual(hic[14], 'NFS-e histórica');
   assert.strictEqual(hic[15], '2026-08-22');
   assert.strictEqual(hic[16], '01/2026');
   assert.strictEqual(hic[17], '08/2026');
@@ -92,7 +92,7 @@ async function run() {
   const cisurg = migratedTomadores[2];
   assert.strictEqual(cisurg[0], '50.098.089/0001-49');
   assert.strictEqual(cisurg[1], 'CONSORCIO PUBLICO INTERMUNICIPAL DE SAUDE PARA GERENCIAMENTO DOS SERVICOS DE URGENCIA E EMERGENCIA DA REGIAO DO MEDIO PIRACICABA');
-  assert.strictEqual(cisurg[2], 'CISURG Médio Piracicaba');
+  assert.strictEqual(cisurg[2], 'CISURG');
   assert.strictEqual(cisurg[3], 'RUA SAO PAULO');
   assert.strictEqual(cisurg[4], '377');
   assert.strictEqual(cisurg[5], '', 'Complemento CISURG deve ser estritamente vazio');
