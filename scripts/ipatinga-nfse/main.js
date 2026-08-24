@@ -9,7 +9,7 @@ const { formatDateBr } = require('./validators');
 const { inspectWsdl } = require('./wsdl');
 const { syncNfse } = require('./sync');
 const { handlePrepare } = require('./prepare');
-const { issueNfse, reconcileRps } = require('./issue');
+const { issueNfse, reconcileRps, probeProviderHealth } = require('./issue');
 const { runHistoricalAnalysis } = require('./patterns');
 
 function formatTimestamp(d = new Date()) {
@@ -28,10 +28,12 @@ async function preflight(options = {}, dependencies = {}) {
     pfxValidated: false,
     productionWsdlAccessible: false,
     homologationWsdlAccessible: false,
-    status: 'UNKNOWN',
+    wsdl: {
+      production: null,
+      homologation: null
+    },
     errors: [],
-    warnings: [],
-    wsdl: {}
+    warnings: []
   };
 
   console.log('\n====================================================');
@@ -39,23 +41,29 @@ async function preflight(options = {}, dependencies = {}) {
   console.log(`       Ambiente: ${environment.toUpperCase()}`);
   console.log('====================================================\n');
 
-  // 1. Validação do Google Service Account
+  // 1. Google Sheets Connection
   try {
-    const sheetsMeta = await (dependencies.getSpreadsheetMetadata || getSpreadsheetMetadata)(CONFIG.SHEETS.SPREADSHEET_ID);
-    results.googleServiceAccount = true;
-    results.sheetsAccess = true;
-    console.log(`  ✓ Planilha Google Sheets acessível: ${sheetsMeta.sheets?.length || 0} abas.`);
+    const meta = await (dependencies.getSpreadsheetMetadata || getSpreadsheetMetadata)();
+    if (meta && meta.sheets) {
+      results.googleServiceAccount = true;
+      results.sheetsAccess = true;
+      console.log(`  ✓ Planilha Google Sheets acessível: ${meta.sheets.length} abas.`);
+    } else {
+      results.errors.push('Não foi possível obter metadados da planilha.');
+      console.log('  ✗ Erro ao acessar Google Sheets.');
+    }
   } catch (err) {
-    results.errors.push(`Google Sheets error: ${err.message}`);
+    results.errors.push(`Google Sheets access error: ${err.message}`);
     console.log(`  ✗ Erro ao acessar Google Sheets: ${err.message}`);
   }
 
-  // 2. Validação do Certificado A1 no Google Drive / Local
+  // 2. Acesso ao Certificado PFX
   try {
-    const pfxAccess = await (dependencies.checkCertificateAccess || checkCertificateAccess)();
-    if (pfxAccess && pfxAccess.accessible) {
+    const certFileId = CONFIG.CERT.FILE_ID;
+    const certAccess = await (dependencies.checkCertificateAccess || checkCertificateAccess)(certFileId);
+    if (certAccess.accessible) {
       results.pfxAccessibleOnDrive = true;
-      console.log(`  ✓ Certificado PFX encontrado (${pfxAccess.name || pfxAccess.source}, ${pfxAccess.sizeBytes || 0} bytes).`);
+      console.log(`  ✓ Certificado PFX encontrado (${certAccess.name}, ${certAccess.sizeBytes} bytes).`);
     } else {
       results.errors.push('Certificado PFX não encontrado no Drive ou caminho local.');
       console.log('  ✗ Erro ao localizar PFX.');
@@ -180,18 +188,21 @@ async function main() {
     let summary = {};
     let certData = null;
 
-    // Carrega o certificado se a senha estiver disponível
-    if (process.env.NFE_CERT_PASSWORD) {
-      try {
-        certData = await loadCertificate({ certPassword: process.env.NFE_CERT_PASSWORD });
-        console.log(`[CERT] Certificado A1 carregado. CNPJ: ${certData.certificateCnpj || certData.cnpj || CONFIG.PRESTADOR.CNPJ}`);
-      } catch (err) {
-        console.log(`[CERT] Falha ao descriptografar certificado: ${err.message}`);
+    if (['sync', 'issue', 'reconcile_rps', 'provider_health'].includes(operation)) {
+      const certPassword = process.env.NFE_CERT_PASSWORD || CONFIG.CERT.PASSWORD;
+      if (certPassword) {
+        try {
+          certData = await loadCertificate({ certPassword });
+        } catch (err) {
+          console.log(`[WARN] Falha ao carregar certificado: ${err.message}`);
+        }
       }
     }
 
     if (operation === 'preflight') {
       summary = await preflight({ environment });
+    } else if (operation === 'provider_health') {
+      summary = await probeProviderHealth({ certData });
     } else if (operation === 'historical_analysis') {
       summary = await runHistoricalAnalysis({ dryRun, environment });
     } else if (operation === 'sync') {
@@ -248,14 +259,19 @@ async function main() {
       process.exit(1);
     }
   } catch (err) {
-    console.error(`[FATAL ERROR] ${err.message}`);
-    generateReport({
+    console.error(`\n[FATAL ERROR] Execução abortada: ${err.message}`);
+    console.error(err.stack);
+
+    const errorSummary = {
       operation,
       environment,
       status: 'FAILED',
       error: err.message,
-      stack: err.stack
-    });
+      stack: err.stack,
+      timestamp: new Date().toISOString()
+    };
+
+    generateReport(errorSummary);
     process.exit(1);
   }
 }
@@ -265,7 +281,7 @@ if (require.main === module) {
 }
 
 module.exports = {
+  main,
   preflight,
-  generateReport,
-  enforceOperationSafety
+  generateReport
 };

@@ -10,6 +10,7 @@ on:
         type: choice
         options:
           - preflight
+          - provider_health
           - historical_analysis
           - sync
           - prepare
@@ -58,58 +59,54 @@ on:
         type: boolean
 
 concurrency:
-  group: nfse-${{ (inputs.operation == 'issue' || inputs.operation == 'reconcile_rps') && 'issue-engine' || 'default' }}
+  group: ipatinga-nfse-sync
   cancel-in-progress: false
 
 jobs:
-  nfse-automation:
-    name: NFS-e ${{ inputs.operation }} (${{ inputs.environment }})
+  ipatinga-nfse-job:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 15
 
     steps:
-      - name: Checkout do Repositório
+      - name: Checkout repositório
         uses: actions/checkout@v4
 
-      - name: Configurar Node.js 22
+      - name: Configurar Node.js 20.x
         uses: actions/setup-node@v4
         with:
-          node-version: 22
+          node-version: 20.x
 
-      - name: Instalar Utilitário Independente XMLSec1
-        run: sudo apt-get update && sudo apt-get install -y xmlsec1
-
-      - name: Instalar Dependências NFS-e
-        working-directory: scripts/ipatinga-nfse
+      - name: Instalar dependências da automação NFS-e
+        working-directory: ./scripts/ipatinga-nfse
         run: npm ci
 
-      - name: Executar Bateria de Testes Unitários
-        working-directory: scripts/ipatinga-nfse
-        run: npm test
+      - name: Executar bateria de testes unitários NFS-e
+        working-directory: ./scripts/ipatinga-nfse
+        run: node tests/test-runner.js
 
-      - name: Executar Automação NFS-e
-        working-directory: scripts/ipatinga-nfse
+      - name: Executar Operação NFS-e DEXMED
+        working-directory: ./scripts/ipatinga-nfse
         env:
-          INPUT_OPERATION: ${{ inputs.operation }}
-          INPUT_SYNC_MODE: ${{ inputs.sync_mode }}
-          INPUT_ENVIRONMENT: ${{ inputs.environment }}
-          INPUT_FROM_NUMBER: ${{ inputs.from_number }}
-          INPUT_TO_NUMBER: ${{ inputs.to_number }}
-          INPUT_REQUEST_ID: ${{ inputs.request_id }}
-          INPUT_ITEM_INDEX: ${{ inputs.item_index }}
-          INPUT_DRY_RUN: ${{ inputs.dry_run }}
-          NFE_ISSUE_KILL_SWITCH: ${{ vars.NFE_ISSUE_KILL_SWITCH || secrets.NFE_ISSUE_KILL_SWITCH || 'false' }}
           GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
-          DRIVE_FOLDER_ID: ${{ secrets.DRIVE_FOLDER_ID }}
-          NFE_CERT_DRIVE_FILE_ID: ${{ secrets.NFE_CERT_DRIVE_FILE_ID || vars.NFE_CERT_DRIVE_FILE_ID || '14TajJJtjSurR2tuYakbdW4dCHPHkqulb' }}
+          NFE_SPREADSHEET_ID: ${{ vars.NFE_SPREADSHEET_ID || '1-qnJjv0YuZkrAHnfiyJuyKiU3lR3VzFl76nNQ1DCHWo' }}
+          DRIVE_FOLDER_ID: ${{ vars.DRIVE_FOLDER_ID || '16Dw9pUbpv_ViCP6a2MAgUbW1h37t3859' }}
+          NFE_CERT_DRIVE_FILE_ID: ${{ vars.NFE_CERT_DRIVE_FILE_ID || '14TajJJtjSurR2tuYakbdW4dCHPHkqulb' }}
           NFE_CERT_PASSWORD: ${{ secrets.NFE_CERT_PASSWORD }}
-          NFE_SPREADSHEET_ID: ${{ secrets.NFE_SPREADSHEET_ID || vars.NFE_SPREADSHEET_ID || '1-qnJjv0YuZkrAHnfiyJuyKiU3lR3VzFl76nNQ1DCHWo' }}
+          NFE_ISSUE_KILL_SWITCH: ${{ vars.NFE_ISSUE_KILL_SWITCH || 'false' }}
+          INPUT_OPERATION: ${{ github.event.inputs.operation }}
+          INPUT_SYNC_MODE: ${{ github.event.inputs.sync_mode }}
+          INPUT_ENVIRONMENT: ${{ github.event.inputs.environment }}
+          INPUT_FROM_NUMBER: ${{ github.event.inputs.from_number }}
+          INPUT_TO_NUMBER: ${{ github.event.inputs.to_number }}
+          INPUT_REQUEST_ID: ${{ github.event.inputs.request_id }}
+          INPUT_ITEM_INDEX: ${{ github.event.inputs.item_index }}
+          INPUT_DRY_RUN: ${{ github.event.inputs.dry_run }}
         run: node main.js
 
-      - name: Upload Relatório de Execução
+      - name: Upload Relatório de Execução como Artefato
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: nfse-run-report
+          name: ipatinga-nfse-report-${{ github.run_id }}
           path: scripts/ipatinga-nfse/report/
-          retention-days: 14
+          retention-days: 30

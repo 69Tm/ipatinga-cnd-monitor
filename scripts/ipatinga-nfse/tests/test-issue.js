@@ -147,7 +147,6 @@ async function run() {
     ['production', 'req-timeout-test', '1', '1004', 'A', '1', 'ALLOCATED', '2026-08-22T10:00:00Z', '', '', '', '', '0', '', '', '', '']
   ];
 
-  let soapCallCount = 0;
   const timeoutResult = await issueNfse({
     requestId: 'fixture-controlada-timeout',
     itemIndex: 1,
@@ -158,7 +157,6 @@ async function run() {
     updateSheetValues: async (_id, _range, rows) => { rpsStorageTimeout[1] = rows[0]; },
     appendSheetValues: async () => {},
     callSoapOperation: async ({ operation }) => {
-      soapCallCount++;
       if (operation === 'GerarNfse') {
         throw new Error('ETIMEDOUT: Connection timed out on GerarNfse');
       }
@@ -176,6 +174,30 @@ async function run() {
   assert.strictEqual(timeoutResult.status, 'ISSUED');
   assert.strictEqual(timeoutResult.nfseNumero, '95004');
   assert.strictEqual(timeoutResult.recoveredViaRpsQuery, true);
+
+  // 7. Testa tratamento de PROVIDER_INFRA_UNAVAILABLE (HTTP 500 / WSDL SOAP Fault)
+  let rpsStorageInfra = [
+    ['environment', 'request_id', 'item_index', 'rps_numero', 'rps_serie', 'rps_tipo', 'status', 'allocated_at', 'submitted_at', 'nfse_numero', 'nfse_chave', 'last_query_at', 'attempt_count', 'last_attempt_at', 'provider_error_codes', 'provider_message', 'error'],
+    ['production', 'req-infra-test', '1', '101', 'A', '1', 'ALLOCATED', '2026-08-23T22:00:00Z', '', '', '', '', '0', '', '', '', '']
+  ];
+
+  const infraResult = await issueNfse({
+    requestId: 'fixture-controlada-infra',
+    itemIndex: 1,
+    certData,
+    dryRun: false
+  }, {
+    readSheetValues: mockSheetReader({ rps: rpsStorageInfra }),
+    updateSheetValues: async (_id, _range, rows) => { rpsStorageInfra[1] = rows[0]; },
+    appendSheetValues: async () => {},
+    callSoapOperation: async () => {
+      throw new Error('SOAP_HTTP_ERROR_500: SOAP-ERROR: Parsing WSDL: Couldn\'t load from https://abrasfipatinga.meumunicipio.online/ws/nfs?wsdl');
+    }
+  });
+
+  assert.strictEqual(infraResult.status, RPS_STATUS.PROVIDER_INFRA_UNAVAILABLE);
+  assert.strictEqual(rpsStorageInfra[1][6], RPS_STATUS.PROVIDER_INFRA_UNAVAILABLE);
+  assert.strictEqual(rpsStorageInfra[1][3], '101'); // Preservou RPS 101 sem criar novo
 
   console.log('✓ test-issue.js PASSED');
 }

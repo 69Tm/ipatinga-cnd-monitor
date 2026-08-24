@@ -1,6 +1,9 @@
 'use strict';
 
 const crypto = require('crypto');
+const https = require('https');
+const http = require('http');
+const { URL } = require('url');
 const { CONFIG, sanitize } = require('./config');
 const { readSheetValues, appendSheetValues, updateSheetValues } = require('./google');
 const {
@@ -13,6 +16,7 @@ const {
   markIssued,
   markRejectedCorrectable,
   markUnknownAfterTimeout,
+  markProviderInfraUnavailable,
   markFailedSafe,
   RPS_STATUS,
   RECONCILIATION_STATUS,
@@ -32,6 +36,100 @@ function escapeXml(value) {
     .replace(/>/g, '&gt;')
     .replace(/"/g, '&quot;')
     .replace(/'/g, '&apos;');
+}
+
+function isProviderInfraError(err) {
+  if (!err) return false;
+  const msg = String(err.message || err || '').toUpperCase();
+  return msg.includes('WSDL') ||
+         msg.includes('500') ||
+         msg.includes('502') ||
+         msg.includes('503') ||
+         msg.includes('504') ||
+         msg.includes('ENOTFOUND') ||
+         msg.includes('ECONNREFUSED') ||
+         msg.includes('CERT_HAS_EXPIRED') ||
+         msg.includes('DEPTH_ZERO_SELF_SIGNED_CERT') ||
+         msg.includes('UNABLE_TO_VERIFY_LEAF_SIGNATURE');
+}
+
+function probeUrl(url, timeoutMs = 10000) {
+  return new Promise((resolve) => {
+    try {
+      const parsed = new URL(url);
+      const client = parsed.protocol === 'https:' ? https : http;
+      const req = client.get(url, { timeout: timeoutMs, rejectUnauthorized: true }, (res) => {
+        let data = '';
+        res.on('data', chunk => { data += chunk; });
+        res.on('end', () => {
+          resolve({
+            url,
+            accessible: res.statusCode >= 200 && res.statusCode < 400,
+            statusCode: res.statusCode,
+            bodySample: data.slice(0, 200)
+          });
+        });
+      });
+      req.on('timeout', () => {
+        req.destroy();
+        resolve({ url, accessible: false, error: 'TIMEOUT' });
+      });
+      req.on('error', (err) => {
+        resolve({ url, accessible: false, error: err.message });
+      });
+    } catch (e) {
+      resolve({ url, accessible: false, error: e.message });
+    }
+  });
+}
+
+/**
+ * Operação leve de probe de saúde real dos Web Services municipal
+ */
+async function probeProviderHealth({ certData = null } = {}, dependencies = {}) {
+  const prodWsdlUrl = CONFIG.ENDPOINTS.production.wsdl;
+  const homWsdlUrl = CONFIG.ENDPOINTS.homologation.wsdl;
+
+  const [prodWsdl, homWsdl] = await Promise.all([
+    probeUrl(prodWsdlUrl),
+    probeUrl(homWsdlUrl)
+  ]);
+
+  let prodSoapRead = { accessible: false, status: 'NOT_CHECKED' };
+  if (certData && certData.isValid && prodWsdl.accessible) {
+    try {
+      const soapCall = dependencies.callSoapOperation || callSoapOperation;
+      const testXml = buildConsultarNfsePorRpsEnvio({ rpsNumero: '1', rpsSerie: 'A', rpsTipo: '1' });
+      const res = await soapCall({
+        environment: 'production',
+        operation: 'ConsultarNfsePorRps',
+        cabecMsg: buildCabecalho(),
+        dadosMsg: testXml,
+        certData
+      });
+      prodSoapRead = { accessible: true, statusCode: res.statusCode };
+    } catch (err) {
+      prodSoapRead = { accessible: false, error: err.message };
+    }
+  }
+
+  const productionWsdlStatus = prodWsdl.accessible ? 'UP' : 'DOWN';
+  const homologationWsdlStatus = homWsdl.accessible ? 'UP' : 'DOWN';
+  const productionSoapReadStatus = prodSoapRead.accessible ? 'UP' : 'DOWN';
+
+  return {
+    operation: 'provider_health',
+    status: (productionWsdlStatus === 'UP' || homologationWsdlStatus === 'UP') ? 'SUCCESS' : 'FAILED',
+    PRODUCTION_WSDL: productionWsdlStatus,
+    HOMOLOGATION_WSDL: homologationWsdlStatus,
+    PRODUCTION_SOAP_READ: productionSoapReadStatus,
+    details: {
+      productionWsdl: prodWsdl,
+      homologationWsdl: homWsdl,
+      productionSoapRead: prodSoapRead
+    },
+    timestamp: new Date().toISOString()
+  };
 }
 
 function buildConsultarNfsePorRpsEnvio({ rpsNumero, rpsSerie = 'A', rpsTipo = '1', cnpj = null, im = null }) {
@@ -315,6 +413,35 @@ async function issueNfse({ requestId, itemIndex = 1, certData, dryRun = false },
       };
     }
 
+    if (ledgerEntry.status === RPS_STATUS.PROVIDER_INFRA_UNAVAILABLE) {
+      // Reconciliação prévia obrigatória antes de retentar
+      const reconcile = await reconcileRps({ environment, requestId, itemIndex, certData }, dependencies);
+      if (reconcile.status === RECONCILIATION_STATUS.ISSUED) {
+        return {
+          status: 'ISSUED',
+          environment,
+          requestId,
+          itemIndex,
+          rpsNumero: reconcile.rpsNumero,
+          nfseNumero: reconcile.nfseNumero,
+          nfseChave: reconcile.nfseChave,
+          dataEmissao: reconcile.dataEmissao,
+          recoveredViaRpsQuery: true
+        };
+      }
+      if (reconcile.status !== RECONCILIATION_STATUS.RPS_NOT_FOUND_CONFIRMED) {
+        return {
+          status: 'PROVIDER_INFRA_UNAVAILABLE',
+          environment,
+          requestId,
+          itemIndex,
+          rpsNumero: ledgerEntry.rps_numero,
+          message: `Reconciliação retornou ${reconcile.status}. Provedor municipal continua instável ou com status inconclusivo.`
+        };
+      }
+      // Se RPS_NOT_FOUND_CONFIRMED, prossegue com o mesmo RPS 101 sem alocar novo
+    }
+
     if (ledgerEntry.status === RPS_STATUS.SUBMITTED_ASYNC_PROCESSING) {
       const reconcile = await reconcileRps({ environment, requestId, itemIndex, certData }, dependencies);
       if (reconcile.status === RECONCILIATION_STATUS.ISSUED) {
@@ -460,7 +587,7 @@ async function issueNfse({ requestId, itemIndex = 1, certData, dryRun = false },
         environment,
         request_id: requestId,
         item_index: String(itemIndex),
-        rps_numero: '1001',
+        rps_numero: '101',
         rps_serie: 'A',
         rps_tipo: '1',
         status: RPS_STATUS.ALLOCATED,
@@ -634,6 +761,17 @@ async function issueNfse({ requestId, itemIndex = 1, certData, dryRun = false },
     const errMsg = String(err.message || '').toUpperCase();
     if (errMsg.includes('TIMEOUT') || errMsg.includes('ECONNRESET') || errMsg.includes('TIMED OUT')) {
       timeoutOccurred = true;
+    } else if (isProviderInfraError(err)) {
+      ledgerEntry = await markProviderInfraUnavailable(ledgerEntry, { error: err.message }, dependencies);
+      return {
+        status: RPS_STATUS.PROVIDER_INFRA_UNAVAILABLE,
+        environment,
+        requestId,
+        itemIndex,
+        rpsNumero: candidate.rpsNumero,
+        error: err.message,
+        message: 'Servidor municipal de produção temporariamente indisponível (WSDL / HTTP 500). Estado preservado como PROVIDER_INFRA_UNAVAILABLE para recuperação automática sem alocação de novo RPS.'
+      };
     } else {
       ledgerEntry = await markFailedSafe(ledgerEntry, { error: err.message }, dependencies);
       throw err;
@@ -735,6 +873,8 @@ async function issueNfse({ requestId, itemIndex = 1, certData, dryRun = false },
 
 module.exports = {
   escapeXml,
+  isProviderInfraError,
+  probeProviderHealth,
   buildConsultarNfsePorRpsEnvio,
   parseGerarNfseResposta,
   reconcileRps,

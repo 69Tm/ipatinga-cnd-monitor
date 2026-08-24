@@ -10,6 +10,7 @@ const RPS_STATUS = Object.freeze({
   ISSUED: 'ISSUED',
   REJECTED_CORRECTABLE: 'REJECTED_CORRECTABLE',
   UNKNOWN_AFTER_TIMEOUT: 'UNKNOWN_AFTER_TIMEOUT',
+  PROVIDER_INFRA_UNAVAILABLE: 'PROVIDER_INFRA_UNAVAILABLE',
   FAILED_SAFE: 'FAILED_SAFE'
 });
 
@@ -44,12 +45,8 @@ const LEDGER_HEADERS = [
 ];
 
 function transformLegacyLedgerRow(row) {
-  // Schema Legado (13 colunas: A:M):
-  // 0: env, 1: req_id, 2: item_index, 3: rps_num, 4: rps_ser, 5: rps_tip,
-  // 6: status, 7: alloc_at, 8: subm_at, 9: nfse_num, 10: nfse_key, 11: last_query_at, 12: error
   if (!row || row.length === 0) return [];
   
-  // Se a linha tem 13 colunas ou menos, a coluna 12 (M) é o erro legado
   if (row.length <= 13) {
     const legacyError = row[12] ? String(row[12]).trim() : '';
     const isSubmitted = Boolean(row[8]);
@@ -59,43 +56,11 @@ function transformLegacyLedgerRow(row) {
     return [
       row[0] || '',
       row[1] || '',
-      row[2] || '1',
+      row[2] || '',
       row[3] || '',
-      row[4] || 'A',
-      row[5] || '1',
-      row[6] || RPS_STATUS.ALLOCATED,
-      row[7] || '',
-      row[8] || '',
-      row[9] || '',
-      row[10] || '',
-      row[11] || '',
-      attemptCount,       // M: attempt_count
-      lastAttemptAt,      // N: last_attempt_at
-      '',                 // O: provider_error_codes
-      legacyError ? legacyError.slice(0, 500) : '', // P: provider_message
-      legacyError         // Q: error
-    ];
-  }
-
-  // Se a linha já tem mais de 13 colunas, verificar se a coluna M (attempt_count) contém texto não-numérico acidental
-  const mVal = String(row[12] || '').trim();
-  const isMValNumeric = mVal === '' || !isNaN(Number(mVal));
-  
-  if (!isMValNumeric) {
-    // Houve corrupção por shift anterior: M continha o antigo error
-    const legacyError = mVal;
-    const isSubmitted = Boolean(row[8]);
-    const attemptCount = isSubmitted ? '1' : '0';
-    const lastAttemptAt = row[8] ? String(row[8]).trim() : '';
-
-    return [
-      row[0] || '',
-      row[1] || '',
-      row[2] || '1',
-      row[3] || '',
-      row[4] || 'A',
-      row[5] || '1',
-      row[6] || RPS_STATUS.ALLOCATED,
+      row[4] || '',
+      row[5] || '',
+      row[6] || '',
       row[7] || '',
       row[8] || '',
       row[9] || '',
@@ -103,60 +68,31 @@ function transformLegacyLedgerRow(row) {
       row[11] || '',
       attemptCount,
       lastAttemptAt,
-      row[14] || '',
-      row[15] || (legacyError ? legacyError.slice(0, 500) : ''),
-      row[16] || legacyError
+      '',
+      '',
+      legacyError
     ];
   }
 
-  // Preenche até 17 colunas mantendo os valores originais
-  const expanded = [...row];
-  while (expanded.length < LEDGER_HEADERS.length) {
-    expanded.push('');
-  }
-  return expanded;
+  return row;
 }
 
 async function ensureLedgerSheet(dependencies = {}) {
-  const createSheet = dependencies.createSheetIfNotExists || (dependencies.readSheetValues ? null : createSheetIfNotExists);
-  const read = dependencies.readSheetValues || readSheetValues;
-  const update = dependencies.updateSheetValues || updateSheetValues;
   const spreadsheetId = dependencies.spreadsheetId || CONFIG.SHEETS.SPREADSHEET_ID;
   const tabName = CONFIG.SHEETS.TABS.RPS || 'RPS';
+  const createSheet = dependencies.createSheetIfNotExists || createSheetIfNotExists;
+  const read = dependencies.readSheetValues || readSheetValues;
+  const update = dependencies.updateSheetValues || updateSheetValues;
 
-  try {
-    if (createSheet) {
-      await createSheet(spreadsheetId, tabName);
-    }
-    const raw = await read(spreadsheetId, `${tabName}!A:Q`);
-    if (!raw || raw.length === 0 || !raw[0] || raw[0].length === 0) {
-      if (update) await update(spreadsheetId, `${tabName}!A1:Q1`, [LEDGER_HEADERS]);
-      return;
-    }
+  await createSheet(spreadsheetId, tabName);
 
-    // Migração de schema estruturada v1 -> v2 se necessário
-    const isHeaderOld = raw[0].length < LEDGER_HEADERS.length || raw[0][12]?.toLowerCase() === 'error';
-    const hasCorruptedRows = raw.slice(1).some(r => {
-      const m = String(r[12] || '').trim();
-      return m !== '' && isNaN(Number(m));
-    });
-
-    if (isHeaderOld || hasCorruptedRows) {
-      const migratedRows = [LEDGER_HEADERS];
-      for (let i = 1; i < raw.length; i++) {
-        migratedRows.push(transformLegacyLedgerRow(raw[i]));
-      }
-      if (update) {
-        await update(spreadsheetId, `${tabName}!A1:Q${migratedRows.length}`, migratedRows);
-      }
-    }
-  } catch (err) {
-    if (String(err.message).includes('Unable to parse range') || String(err.message).includes('not found')) {
-      if (update) await update(spreadsheetId, `${tabName}!A1:Q1`, [LEDGER_HEADERS]);
-    } else {
-      throw err;
-    }
+  const existing = await read(spreadsheetId, `${tabName}!A1:Q1`);
+  if (!existing || existing.length === 0 || !existing[0] || existing[0].length === 0) {
+    await update(spreadsheetId, `${tabName}!A1:Q1`, [LEDGER_HEADERS]);
+    return true;
   }
+
+  return false;
 }
 
 async function loadLedger(dependencies = {}) {
@@ -164,29 +100,36 @@ async function loadLedger(dependencies = {}) {
   const spreadsheetId = dependencies.spreadsheetId || CONFIG.SHEETS.SPREADSHEET_ID;
   const tabName = CONFIG.SHEETS.TABS.RPS || 'RPS';
 
-  let raw = [];
-  try {
-    raw = await read(spreadsheetId, `${tabName}!A:Q`);
-  } catch (err) {
-    if (String(err.message).includes('Unable to parse range') || String(err.message).includes('not found')) {
-      return [];
-    }
-    throw err;
+  const rows = await read(spreadsheetId, `${tabName}!A:Q`);
+  if (!rows || rows.length <= 1) {
+    return [];
   }
 
-  if (!raw || raw.length < 2) return [];
+  return rows.slice(1).map((rawRow, idx) => {
+    const row = transformLegacyLedgerRow(rawRow);
+    const rawAttempts = row[12];
+    const entry = {
+      rowIndex: idx + 2,
+      environment: row[0] || '',
+      request_id: row[1] || '',
+      item_index: row[2] || '1',
+      rps_numero: row[3] || '',
+      rps_serie: row[4] || 'A',
+      rps_tipo: row[5] || '1',
+      status: row[6] || RPS_STATUS.ALLOCATED,
+      allocated_at: row[7] || '',
+      submitted_at: row[8] || '',
+      nfse_numero: row[9] || '',
+      nfse_chave: row[10] || '',
+      last_query_at: row[11] || '',
+      attempt_count: 0,
+      last_attempt_at: row[13] || '',
+      provider_error_codes: row[14] || '',
+      provider_message: row[15] || '',
+      error: row[16] || ''
+    };
 
-  const headers = raw[0].map(h => String(h || '').trim().toLowerCase());
-  return raw.slice(1).map((row, idx) => {
-    const entry = { _rowIndex: idx + 2 };
-    headers.forEach((h, i) => {
-      entry[h] = row[i] !== undefined ? String(row[i]).trim() : '';
-    });
-    
-    // Sanitização de attempt_count caso contenha string legada
-    const rawAttempts = entry.attempt_count;
-    if (rawAttempts !== '' && isNaN(Number(rawAttempts))) {
-      entry.error = entry.error || rawAttempts;
+    if (rawAttempts === undefined || rawAttempts === null || isNaN(Number(rawAttempts))) {
       entry.attempt_count = entry.submitted_at ? 1 : 0;
     } else {
       entry.attempt_count = rawAttempts !== '' ? Number(rawAttempts) : (entry.submitted_at ? 1 : 0);
@@ -258,7 +201,7 @@ async function allocateRpsAtomically({ environment, requestId, itemIndex = 1, se
     '', // nfse_numero
     '', // nfse_chave
     '', // last_query_at
-    0,  // attempt_count
+    '0', // attempt_count
     '', // last_attempt_at
     '', // provider_error_codes
     '', // provider_message
@@ -268,7 +211,7 @@ async function allocateRpsAtomically({ environment, requestId, itemIndex = 1, se
   await append(spreadsheetId, `${tabName}!A:Q`, [newRow]);
 
   return {
-    _rowIndex: ledgerEntries.length + 2,
+    rowIndex: ledgerEntries.length + 2,
     environment,
     request_id: requestId,
     item_index: String(itemIndex),
@@ -294,46 +237,42 @@ async function updateLedgerEntry(entry, updates, dependencies = {}) {
   const spreadsheetId = dependencies.spreadsheetId || CONFIG.SHEETS.SPREADSHEET_ID;
   const tabName = CONFIG.SHEETS.TABS.RPS || 'RPS';
 
-  const rowIndex = entry._rowIndex;
-  if (!rowIndex) {
-    throw new Error('LEDGER_ROW_INDEX_MISSING: Impossível atualizar linha sem _rowIndex.');
-  }
+  const updatedEntry = { ...entry, ...updates };
+  const attempts = Number(updatedEntry.attempt_count || 0);
 
-  const merged = { ...entry, ...updates };
   const rowValues = [
-    merged.environment,
-    merged.request_id,
-    merged.item_index,
-    merged.rps_numero,
-    merged.rps_serie,
-    merged.rps_tipo,
-    merged.status,
-    merged.allocated_at,
-    merged.submitted_at || '',
-    merged.nfse_numero || '',
-    merged.nfse_chave || '',
-    merged.last_query_at || '',
-    merged.attempt_count !== undefined ? Number(merged.attempt_count) : 0,
-    merged.last_attempt_at || '',
-    merged.provider_error_codes || '',
-    merged.provider_message || '',
-    merged.error || ''
+    updatedEntry.environment,
+    updatedEntry.request_id,
+    String(updatedEntry.item_index),
+    updatedEntry.rps_numero,
+    updatedEntry.rps_serie,
+    updatedEntry.rps_tipo,
+    updatedEntry.status,
+    updatedEntry.allocated_at,
+    updatedEntry.submitted_at,
+    updatedEntry.nfse_numero,
+    updatedEntry.nfse_chave,
+    updatedEntry.last_query_at,
+    String(attempts),
+    updatedEntry.last_attempt_at,
+    updatedEntry.provider_error_codes,
+    updatedEntry.provider_message,
+    updatedEntry.error
   ];
 
-  await update(spreadsheetId, `${tabName}!A${rowIndex}:Q${rowIndex}`, [rowValues]);
-  return merged;
+  await update(spreadsheetId, `${tabName}!A${entry.rowIndex}:Q${entry.rowIndex}`, [rowValues]);
+  return updatedEntry;
 }
 
 async function markSubmitting(entry, dependencies = {}) {
-  const currentCount = Number(entry.attempt_count || 0);
-  const nextCount = currentCount + 1;
-  const nowIso = new Date().toISOString();
+  const now = new Date().toISOString();
+  const currentAttempts = Number(entry.attempt_count || 0);
 
   return updateLedgerEntry(entry, {
     status: RPS_STATUS.SUBMITTING,
-    submitted_at: entry.submitted_at || nowIso,
-    attempt_count: nextCount,
-    last_attempt_at: nowIso
+    submitted_at: entry.submitted_at || now,
+    last_attempt_at: now,
+    attempt_count: currentAttempts + 1
   }, dependencies);
 }
 
@@ -341,7 +280,7 @@ async function markSubmittedAsyncProcessing(entry, { providerMessage = '' } = {}
   return updateLedgerEntry(entry, {
     status: RPS_STATUS.SUBMITTED_ASYNC_PROCESSING,
     last_query_at: new Date().toISOString(),
-    provider_message: String(providerMessage || '').slice(0, 500)
+    provider_message: String(providerMessage || 'Aguardando processamento assíncrono').slice(0, 500)
   }, dependencies);
 }
 
@@ -379,6 +318,14 @@ async function markUnknownAfterTimeout(entry, { error }, dependencies = {}) {
   }, dependencies);
 }
 
+async function markProviderInfraUnavailable(entry, { error }, dependencies = {}) {
+  return updateLedgerEntry(entry, {
+    status: RPS_STATUS.PROVIDER_INFRA_UNAVAILABLE,
+    last_query_at: new Date().toISOString(),
+    error: String(error || 'PROVIDER_INFRA_UNAVAILABLE')
+  }, dependencies);
+}
+
 async function markFailedSafe(entry, { error }, dependencies = {}) {
   return updateLedgerEntry(entry, {
     status: RPS_STATUS.FAILED_SAFE,
@@ -404,5 +351,6 @@ module.exports = {
   markIssued,
   markRejectedCorrectable,
   markUnknownAfterTimeout,
+  markProviderInfraUnavailable,
   markFailedSafe
 };
