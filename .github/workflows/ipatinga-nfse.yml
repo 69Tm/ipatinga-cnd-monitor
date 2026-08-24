@@ -11,6 +11,7 @@ on:
         options:
           - preflight
           - provider_health
+          - auto_recovery
           - historical_analysis
           - sync
           - prepare
@@ -59,7 +60,7 @@ on:
         type: boolean
 
 concurrency:
-  group: ipatinga-nfse-sync
+  group: nfse-production-mutation
   cancel-in-progress: false
 
 jobs:

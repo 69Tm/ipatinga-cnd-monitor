@@ -7,6 +7,10 @@
   - `EXPLICIT_PRODUCTION_TEST = ALLOWED`
   - `USER_RECONFIRMATION_PER_NOTE = NOT_REQUIRED`
   - `HOMOLOGATION_FALLBACK_WHEN_PRODUCTION_REQUESTED = FORBIDDEN`
+- **Auto-Recovery Periódico & Resiliência:**
+  - `AUTO_RECOVERY = ENABLED` (Workflow dedicado `.github/workflows/ipatinga-nfse-recovery.yml` com trigger `schedule: cron '*/15 * * * *'`).
+  - **Eficiência de CI:** O job inicial de probe é leve (execução de poucos segundos via Node.js nativo sem instalação de pacotes pesados). O job fiscal completo só é engatilhado quando `PRODUCTION_WSDL = UP`.
+  - **Controle de Concorrência:** Operações mutáveis compartilham o grupo de concorrência `concurrency: group: nfse-production-mutation` com `cancel-in-progress: false`.
 - **Classificação de Falhas de Infraestrutura do Provedor:**
   - Erros como HTTP 500 com SOAP Fault WSDL, WSDL indisponível, falhas DNS, timeout de upstream, servidor municipal indisponível ou 502/503/504 são classificados estritamente como **`PROVIDER_INFRA_UNAVAILABLE`** (e **NUNCA** como `FAILED_SAFE`).
   - `FAILED_SAFE` fica reservado exclusivamente para inconsistências fiscais/cadastrais reais não reconciliáveis ou limite de tentativas excedido.

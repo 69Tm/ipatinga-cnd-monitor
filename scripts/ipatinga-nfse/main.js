@@ -9,7 +9,7 @@ const { formatDateBr } = require('./validators');
 const { inspectWsdl } = require('./wsdl');
 const { syncNfse } = require('./sync');
 const { handlePrepare } = require('./prepare');
-const { issueNfse, reconcileRps, probeProviderHealth } = require('./issue');
+const { issueNfse, reconcileRps, probeProviderHealth, runAutoRecoveryBatch } = require('./issue');
 const { runHistoricalAnalysis } = require('./patterns');
 
 function formatTimestamp(d = new Date()) {
@@ -188,7 +188,7 @@ async function main() {
     let summary = {};
     let certData = null;
 
-    if (['sync', 'issue', 'reconcile_rps', 'provider_health'].includes(operation)) {
+    if (['sync', 'issue', 'reconcile_rps', 'provider_health', 'auto_recovery'].includes(operation)) {
       const certPassword = process.env.NFE_CERT_PASSWORD || CONFIG.CERT.PASSWORD;
       if (certPassword) {
         try {
@@ -203,6 +203,8 @@ async function main() {
       summary = await preflight({ environment });
     } else if (operation === 'provider_health') {
       summary = await probeProviderHealth({ certData });
+    } else if (operation === 'auto_recovery') {
+      summary = await runAutoRecoveryBatch({ certData, dryRun });
     } else if (operation === 'historical_analysis') {
       summary = await runHistoricalAnalysis({ dryRun, environment });
     } else if (operation === 'sync') {

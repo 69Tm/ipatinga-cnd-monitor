@@ -44,6 +44,21 @@ const LEDGER_HEADERS = [
   'error'
 ];
 
+function isHistoricalInfraError(errorStr) {
+  if (!errorStr) return false;
+  const s = String(errorStr).toUpperCase();
+  return s.includes('WSDL') ||
+         s.includes('PARSING WSDL') ||
+         s.includes('FAILED TO LOAD EXTERNAL ENTITY') ||
+         s.includes('SOAP-ERROR') ||
+         s.includes('500') ||
+         s.includes('502') ||
+         s.includes('503') ||
+         s.includes('504') ||
+         s.includes('ENOTFOUND') ||
+         s.includes('ECONNREFUSED');
+}
+
 function transformLegacyLedgerRow(row) {
   if (!row || row.length === 0) return [];
   
@@ -91,6 +106,39 @@ function transformLegacyLedgerRow(row) {
   return transformed;
 }
 
+async function migrateHistoricalLedgerStorage(dependencies = {}) {
+  const spreadsheetId = dependencies.spreadsheetId || CONFIG.SHEETS.SPREADSHEET_ID;
+  const tabName = CONFIG.SHEETS.TABS.RPS || 'RPS';
+  const read = dependencies.readSheetValues || readSheetValues;
+  const update = dependencies.updateSheetValues || updateSheetValues;
+
+  const rows = await read(spreadsheetId, `${tabName}!A:Q`);
+  if (!rows || rows.length <= 1) {
+    return { migratedCount: 0 };
+  }
+
+  let migratedCount = 0;
+  for (let idx = 1; idx < rows.length; idx++) {
+    const rawRow = rows[idx];
+    const transformed = transformLegacyLedgerRow(rawRow);
+    const env = String(transformed[0] || '').trim().toLowerCase();
+    const status = String(transformed[6] || '').trim();
+    const errorText = String(transformed[16] || '');
+
+    if (env === 'production' && status === RPS_STATUS.FAILED_SAFE && isHistoricalInfraError(errorText)) {
+      transformed[6] = RPS_STATUS.PROVIDER_INFRA_UNAVAILABLE;
+      if (!transformed[15] || transformed[15] === '') {
+        transformed[15] = 'Indisponibilidade do provedor municipal (WSDL/HTTP 500) migrada para PROVIDER_INFRA_UNAVAILABLE';
+      }
+      const rowIndex = idx + 1;
+      await update(spreadsheetId, `${tabName}!A${rowIndex}:Q${rowIndex}`, [transformed]);
+      migratedCount++;
+    }
+  }
+
+  return { migratedCount };
+}
+
 async function ensureLedgerSheet(dependencies = {}) {
   const spreadsheetId = dependencies.spreadsheetId || CONFIG.SHEETS.SPREADSHEET_ID;
   const tabName = CONFIG.SHEETS.TABS.RPS || 'RPS';
@@ -105,6 +153,9 @@ async function ensureLedgerSheet(dependencies = {}) {
     await update(spreadsheetId, `${tabName}!A1:Q1`, [LEDGER_HEADERS]);
     return true;
   }
+
+  // Executa migração idempotente de registros históricos FAILED_SAFE para PROVIDER_INFRA_UNAVAILABLE
+  await migrateHistoricalLedgerStorage(dependencies);
 
   return false;
 }
@@ -125,16 +176,8 @@ async function loadLedger(dependencies = {}) {
     const rawStatus = row[6] || RPS_STATUS.ALLOCATED;
     const rawError = String(row[16] || '');
 
-    // Auto-recuperação: se estava gravado como FAILED_SAFE por erro de WSDL / HTTP 500 / Infra,
-    // reclassifica em memória e na execução para PROVIDER_INFRA_UNAVAILABLE
     let effectiveStatus = rawStatus;
-    if (rawStatus === RPS_STATUS.FAILED_SAFE && (
-      rawError.toUpperCase().includes('WSDL') ||
-      rawError.toUpperCase().includes('500') ||
-      rawError.toUpperCase().includes('502') ||
-      rawError.toUpperCase().includes('503') ||
-      rawError.toUpperCase().includes('ENOTFOUND')
-    )) {
+    if (rawStatus === RPS_STATUS.FAILED_SAFE && String(row[0]).toLowerCase() === 'production' && isHistoricalInfraError(rawError)) {
       effectiveStatus = RPS_STATUS.PROVIDER_INFRA_UNAVAILABLE;
     }
 
@@ -369,7 +412,9 @@ module.exports = {
   RECONCILIATION_STATUS,
   MAX_ATTEMPTS,
   LEDGER_HEADERS,
+  isHistoricalInfraError,
   transformLegacyLedgerRow,
+  migrateHistoricalLedgerStorage,
   ensureLedgerSheet,
   loadLedger,
   findLedgerEntry,

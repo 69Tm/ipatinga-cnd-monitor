@@ -1,0 +1,123 @@
+name: Auto-Recovery NFS-e DEXMED (Produção)
+
+on:
+  schedule:
+    # Executa verificação periódica a cada 15 minutos
+    - cron: '*/15 * * * *'
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: 'Modo simulação sem escrita no Google Sheets'
+        required: false
+        default: false
+        type: boolean
+
+concurrency:
+  group: nfse-production-mutation
+  cancel-in-progress: false
+
+jobs:
+  health-check:
+    name: Probe de Saúde da Infraestrutura Municipal
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      production_up: ${{ steps.health.outputs.production_up }}
+    steps:
+      - name: Checkout repositório
+        uses: actions/checkout@v4
+
+      - name: Configurar Node.js 20.x
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20.x
+
+      - name: Executar Probe Leve de Saúde (sem compilações pesadas)
+        id: health
+        run: |
+          node -e '
+          const https = require("https");
+          const url = "https://abrasfipatinga.meumunicipio.online/ws/nfs?wsdl";
+          const req = https.get(url, { timeout: 8000, rejectUnauthorized: true }, (res) => {
+            console.log("Status Code WSDL Producao:", res.statusCode);
+            if (res.statusCode >= 200 && res.statusCode < 400) {
+              console.log("PRODUCTION_WSDL=UP");
+              console.log("production_up=true >> $GITHUB_OUTPUT");
+              require("fs").appendFileSync(process.env.GITHUB_OUTPUT, "production_up=true\n");
+            } else {
+              console.log("PRODUCTION_WSDL=DOWN (HTTP " + res.statusCode + ")");
+              require("fs").appendFileSync(process.env.GITHUB_OUTPUT, "production_up=false\n");
+            }
+          });
+          req.on("error", (e) => {
+            console.log("PRODUCTION_WSDL=DOWN (" + e.message + ")");
+            require("fs").appendFileSync(process.env.GITHUB_OUTPUT, "production_up=false\n");
+          });
+          req.on("timeout", () => {
+            req.destroy();
+            console.log("PRODUCTION_WSDL=DOWN (TIMEOUT)");
+            require("fs").appendFileSync(process.env.GITHUB_OUTPUT, "production_up=false\n");
+          });
+          '
+
+  auto-recovery:
+    name: Reconciliação e Emissão Automática em Produção
+    needs: health-check
+    if: needs.health-check.outputs.production_up == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout repositório
+        uses: actions/checkout@v4
+
+      - name: Instalar dependências nativas XML (xmlsec1 e libxml2-utils)
+        run: sudo apt-get update && sudo apt-get install -y xmlsec1 libxml2-utils
+
+      - name: Configurar Node.js 20.x
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20.x
+
+      - name: Instalar dependências da automação NFS-e
+        working-directory: ./scripts/ipatinga-nfse
+        run: npm ci
+
+      - name: Executar bateria de testes unitários NFS-e
+        working-directory: ./scripts/ipatinga-nfse
+        run: node tests/test-runner.js
+
+      - name: Executar Auto-Recovery de Demandas Pendentes
+        working-directory: ./scripts/ipatinga-nfse
+        env:
+          GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
+          NFE_SPREADSHEET_ID: ${{ vars.NFE_SPREADSHEET_ID || '1-qnJjv0YuZkrAHnfiyJuyKiU3lR3VzFl76nNQ1DCHWo' }}
+          DRIVE_FOLDER_ID: ${{ vars.DRIVE_FOLDER_ID || '16Dw9pUbpv_ViCP6a2MAgUbW1h37t3859' }}
+          NFE_CERT_DRIVE_FILE_ID: ${{ vars.NFE_CERT_DRIVE_FILE_ID || '14TajJJtjSurR2tuYakbdW4dCHPHkqulb' }}
+          NFE_CERT_PASSWORD: ${{ secrets.NFE_CERT_PASSWORD }}
+          NFE_ISSUE_KILL_SWITCH: ${{ vars.NFE_ISSUE_KILL_SWITCH || 'false' }}
+          INPUT_OPERATION: 'auto_recovery'
+          INPUT_ENVIRONMENT: 'production'
+          INPUT_DRY_RUN: ${{ github.event.inputs.dry_run || false }}
+        run: node main.js
+
+      - name: Sincronizar Notas Emitidas na Aba Notas
+        working-directory: ./scripts/ipatinga-nfse
+        env:
+          GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
+          NFE_SPREADSHEET_ID: ${{ vars.NFE_SPREADSHEET_ID || '1-qnJjv0YuZkrAHnfiyJuyKiU3lR3VzFl76nNQ1DCHWo' }}
+          DRIVE_FOLDER_ID: ${{ vars.DRIVE_FOLDER_ID || '16Dw9pUbpv_ViCP6a2MAgUbW1h37t3859' }}
+          NFE_CERT_DRIVE_FILE_ID: ${{ vars.NFE_CERT_DRIVE_FILE_ID || '14TajJJtjSurR2tuYakbdW4dCHPHkqulb' }}
+          NFE_CERT_PASSWORD: ${{ secrets.NFE_CERT_PASSWORD }}
+          INPUT_OPERATION: 'sync'
+          INPUT_ENVIRONMENT: 'production'
+          INPUT_SYNC_MODE: 'incremental'
+          INPUT_DRY_RUN: ${{ github.event.inputs.dry_run || false }}
+        run: node main.js
+
+      - name: Upload Relatório de Execução como Artefato
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ipatinga-nfse-recovery-report-${{ github.run_id }}
+          path: scripts/ipatinga-nfse/report/
+          retention-days: 30

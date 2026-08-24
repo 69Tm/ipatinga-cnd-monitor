@@ -41,11 +41,15 @@ function escapeXml(value) {
 function isProviderInfraError(err) {
   if (!err) return false;
   const msg = String(err.message || err || '').toUpperCase();
+  // Reconhece erros específicos de rede, DNS, TLS, WSDL ou falhas HTTP de servidor do provedor
   return msg.includes('WSDL') ||
-         msg.includes('500') ||
-         msg.includes('502') ||
-         msg.includes('503') ||
-         msg.includes('504') ||
+         msg.includes('PARSING WSDL') ||
+         msg.includes('FAILED TO LOAD EXTERNAL ENTITY') ||
+         msg.includes('SOAP-ERROR') ||
+         msg.includes('SOAP_HTTP_ERROR_500') ||
+         msg.includes('SOAP_HTTP_ERROR_502') ||
+         msg.includes('SOAP_HTTP_ERROR_503') ||
+         msg.includes('SOAP_HTTP_ERROR_504') ||
          msg.includes('ENOTFOUND') ||
          msg.includes('ECONNREFUSED') ||
          msg.includes('CERT_HAS_EXPIRED') ||
@@ -115,7 +119,7 @@ async function probeProviderHealth({ certData = null } = {}, dependencies = {}) 
 
   const productionWsdlStatus = prodWsdl.accessible ? 'UP' : 'DOWN';
   const homologationWsdlStatus = homWsdl.accessible ? 'UP' : 'DOWN';
-  const productionSoapReadStatus = prodSoapRead.accessible ? 'UP' : 'DOWN';
+  const productionSoapReadStatus = prodSoapRead.accessible ? 'UP' : (prodWsdl.accessible ? 'DOWN' : 'DOWN');
 
   return {
     operation: 'provider_health',
@@ -439,7 +443,7 @@ async function issueNfse({ requestId, itemIndex = 1, certData, dryRun = false },
           message: `Reconciliação retornou ${reconcile.status}. Provedor municipal continua instável ou com status inconclusivo.`
         };
       }
-      // Se RPS_NOT_FOUND_CONFIRMED, prossegue com o mesmo RPS 101 sem alocar novo
+      // Se RPS_NOT_FOUND_CONFIRMED, prossegue com o mesmo RPS sem alocar novo
     }
 
     if (ledgerEntry.status === RPS_STATUS.SUBMITTED_ASYNC_PROCESSING) {
@@ -871,13 +875,94 @@ async function issueNfse({ requestId, itemIndex = 1, certData, dryRun = false },
   };
 }
 
+/**
+ * Executa auto-recuperação de todas as demandas pendentes em produção
+ */
+async function runAutoRecoveryBatch({ certData, dryRun = false } = {}, dependencies = {}) {
+  await ensureLedgerSheet(dependencies);
+  const ledgerEntries = await loadLedger(dependencies);
+  
+  const eligibleStatuses = [
+    RPS_STATUS.PROVIDER_INFRA_UNAVAILABLE,
+    RPS_STATUS.SUBMITTED_ASYNC_PROCESSING,
+    RPS_STATUS.UNKNOWN_AFTER_TIMEOUT
+  ];
+
+  const pendingEntries = ledgerEntries.filter(e =>
+    e.environment?.toLowerCase() === 'production' &&
+    eligibleStatuses.includes(e.status)
+  );
+
+  const results = [];
+  for (const entry of pendingEntries) {
+    const itemIndex = parseInt(entry.item_index || '1', 10);
+    const reconcile = await reconcileRps({
+      environment: 'production',
+      requestId: entry.request_id,
+      itemIndex,
+      rpsNumero: entry.rps_numero,
+      certData
+    }, dependencies);
+
+    if (reconcile.status === RECONCILIATION_STATUS.ISSUED) {
+      results.push({
+        requestId: entry.request_id,
+        itemIndex,
+        rpsNumero: entry.rps_numero,
+        action: 'RECONCILED_ISSUED',
+        nfseNumero: reconcile.nfseNumero,
+        nfseChave: reconcile.nfseChave
+      });
+      continue;
+    }
+
+    if (reconcile.status === RECONCILIATION_STATUS.RPS_NOT_FOUND_CONFIRMED) {
+      const issueResult = await issueNfse({
+        requestId: entry.request_id,
+        itemIndex,
+        certData,
+        dryRun
+      }, dependencies);
+
+      results.push({
+        requestId: entry.request_id,
+        itemIndex,
+        rpsNumero: entry.rps_numero,
+        action: 'RETRY_ISSUE',
+        status: issueResult.status,
+        nfseNumero: issueResult.nfseNumero,
+        nfseChave: issueResult.nfseChave
+      });
+      continue;
+    }
+
+    results.push({
+      requestId: entry.request_id,
+      itemIndex,
+      rpsNumero: entry.rps_numero,
+      action: 'RECONCILIATION_INCONCLUSIVE',
+      reconcileStatus: reconcile.status
+    });
+  }
+
+  return {
+    operation: 'auto_recovery',
+    status: 'SUCCESS',
+    processedCount: results.length,
+    results,
+    timestamp: new Date().toISOString()
+  };
+}
+
 module.exports = {
   escapeXml,
   isProviderInfraError,
+  probeUrl,
   probeProviderHealth,
   buildConsultarNfsePorRpsEnvio,
   parseGerarNfseResposta,
   reconcileRps,
   issueNfse,
-  issueHomologation: issueNfse
+  issueHomologation: issueNfse,
+  runAutoRecoveryBatch
 };
