@@ -102,7 +102,7 @@ async function run() {
   assert.strictEqual(cisurg[9], 'MG');
   assert.strictEqual(cisurg[10], '35900352');
   assert.strictEqual(cisurg[11], 'samu192cisurg@gmail.com');
-  assert.strictEqual(cisurg[12], 'CISURG — Plantão médico presencial');
+  assert.strictEqual(cisurg[12], 'CISURG');
   assert.strictEqual(cisurg[13], 'HOMOLOGADO');
   assert.strictEqual(cisurg[14], 'Portal Oficial CISURG');
   assert.strictEqual(cisurg[15], '2026-08-22');
