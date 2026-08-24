@@ -74,7 +74,21 @@ function transformLegacyLedgerRow(row) {
     ];
   }
 
-  return row;
+  const transformed = [...row];
+  while (transformed.length < LEDGER_HEADERS.length) {
+    transformed.push('');
+  }
+
+  const rawAttempt = transformed[12];
+  if (rawAttempt !== undefined && rawAttempt !== '' && isNaN(Number(rawAttempt))) {
+    if (!transformed[16] || transformed[16] === '') {
+      transformed[16] = String(rawAttempt).trim();
+    }
+    const isSubmitted = Boolean(transformed[8]);
+    transformed[12] = isSubmitted ? '1' : '0';
+  }
+
+  return transformed;
 }
 
 async function ensureLedgerSheet(dependencies = {}) {
