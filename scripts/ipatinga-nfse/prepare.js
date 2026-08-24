@@ -202,7 +202,12 @@ function validateCandidate(candidate) {
   return errors;
 }
 
-function buildHomologationFixture(requestId = 'fixture-homologation', now = new Date()) {
+function buildControlledCandidate({ requestId = 'fixture-controlada', environment = 'production', now = new Date() }) {
+  const isProduction = environment === 'production';
+  const descricao = isProduction
+    ? 'Dr Túlio Athélio Sathler Siman: Referente a Plantões Médicos P.S SUS no Mês 08/2026- R$ 10,00. Banco Inter (077) Agência 0001 Conta 13618683-0 PIX CNPJ 31.302.407/0001-05'
+    : 'TESTE DE HOMOLOGACAO - SEM VALOR FISCAL - AUTOMACAO DEXMED';
+
   const candidate = {
     requestId,
     sequence: 1,
@@ -222,13 +227,13 @@ function buildHomologationFixture(requestId = 'fixture-homologation', now = new 
     valor: 10.00,
     competencia: '08/2026',
     competenciaData: '2026-08-01',
-    descricao: 'TESTE DE HOMOLOGACAO - SEM VALOR FISCAL - AUTOMACAO DEXMED',
+    descricao,
     descriptionFromDemand: true,
     codigoTribNacional: '04.03.01',
     codigoTribMunicipal: '403',
     localPrestacao: 'Guanhães/MG',
     codigoMunicipioPrestacao: '3128006',
-    codigoMunicipioIncidenciaIss: '3131307', // Incidência explícita em Ipatinga para o fixture
+    codigoMunicipioIncidenciaIss: '3131307', // Regra: ISS devido em Ipatinga
     issRetido: '2',
     exigibilidadeIss: '1',
     nbs: '123011900',
@@ -255,6 +260,10 @@ function buildHomologationFixture(requestId = 'fixture-homologation', now = new 
     blockingReasons: candidate.validationErrors,
     warnings: []
   };
+}
+
+function buildHomologationFixture(requestId = 'fixture-homologation', now = new Date()) {
+  return buildControlledCandidate({ requestId, environment: 'homologation', now });
 }
 
 function findMatchingPattern(categoria, patterns) {
@@ -421,7 +430,7 @@ async function handlePrepare({ requestId, environment = 'homologation', dryRun =
   const spreadsheetId = dependencies.spreadsheetId || CONFIG.SHEETS.SPREADSHEET_ID;
 
   if (requestId.startsWith('fixture-homologation') || requestId.startsWith('fixture-controlada')) {
-    const fixture = buildHomologationFixture(requestId);
+    const fixture = buildControlledCandidate({ requestId, environment });
     const xsdRes = await validateXmlAgainstOfficialXsd(fixture.candidates[0].xmlCandidate, 'GerarNfseEnvio');
     fixture.xsdValidation = xsdRes.valid ? 'VALIDATED_OFFICIAL_XSD' : 'INVALID';
     return fixture;
@@ -460,6 +469,7 @@ module.exports = {
   tomadorRows,
   buildUnsignedCandidateXml,
   validateCandidate,
+  buildControlledCandidate,
   buildHomologationFixture,
   prepareDemand,
   handlePrepare

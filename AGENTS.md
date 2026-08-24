@@ -1,6 +1,12 @@
 # Invariantes de Segurança e Operação Fiscal (NFS-e DEXMED)
 
 - **Filosofia Operacional:** Supervised Automation — dados suficientes + padrão conhecido + validações técnicas OK → emitir sob supervisão humana.
+- **Política Permanente de Emissão em Produção:**
+  - `PRODUCTION_ISSUE_POLICY = ENABLED`
+  - `SUPERVISION_MODE = ACTIVE`
+  - `EXPLICIT_PRODUCTION_TEST = ALLOWED`
+  - `USER_RECONFIRMATION_PER_NOTE = NOT_REQUIRED`
+  - `HOMOLOGATION_FALLBACK_WHEN_PRODUCTION_REQUESTED = FORBIDDEN`
 - **Validação Estrita de TLS:** Chamadas SOAP HTTPS utilizam estritamente `rejectUnauthorized: true`. Falhas de certificado TLS do servidor interrompem o workflow (fail-closed).
 - **Tratamento de Resposta do Provedor:** 
   - Erros determinísticos (como EL78, EL244) → classificar como `REJECTED_CORRECTABLE`, corrigir e prosseguir somente após reconciliação via RPS confirmar `RPS_NOT_FOUND_CONFIRMED`.

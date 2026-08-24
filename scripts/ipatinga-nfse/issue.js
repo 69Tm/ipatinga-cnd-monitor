@@ -18,7 +18,7 @@ const {
   RECONCILIATION_STATUS,
   MAX_ATTEMPTS
 } = require('./ledger');
-const { prepareDemand, demandRows, tomadorRows, patternRows, buildHomologationFixture } = require('./prepare');
+const { prepareDemand, demandRows, tomadorRows, patternRows, buildControlledCandidate } = require('./prepare');
 const { validateXmlAgainstOfficialXsd } = require('./xsd-validator');
 const { signXmlNode, verifyXmlSignature } = require('./xmldsig');
 const { callSoapOperation } = require('./soap');
@@ -115,7 +115,7 @@ function parseGerarNfseResposta(xmlString) {
   };
 }
 
-async function reconcileRps({ environment = 'homologation', requestId = null, itemIndex = 1, rpsNumero = null, rpsSerie = 'A', rpsTipo = '1', certData = null }, dependencies = {}) {
+async function reconcileRps({ environment = 'production', requestId = null, itemIndex = 1, rpsNumero = null, rpsSerie = 'A', rpsTipo = '1', certData = null }, dependencies = {}) {
   if (!certData || !certData.loaded || !certData.isValid) {
     throw new Error('CERT_INVALID: Reconciliação requer certificado A1 válido.');
   }
@@ -261,7 +261,7 @@ async function reconcileRps({ environment = 'homologation', requestId = null, it
  * Emite NFS-e em ambiente especificado (production ou homologation)
  */
 async function issueNfse({ requestId, itemIndex = 1, certData, dryRun = false }, dependencies = {}) {
-  const environment = process.env.INPUT_ENVIRONMENT || 'homologation';
+  const environment = process.env.INPUT_ENVIRONMENT || 'production';
 
   // Kill Switch operacional
   if (process.env.NFE_ISSUE_KILL_SWITCH === 'true' || process.env.NFE_ISSUE_KILL_SWITCH === true) {
@@ -410,7 +410,7 @@ async function issueNfse({ requestId, itemIndex = 1, certData, dryRun = false },
   // 3. Prepara a demanda (se não for caso já emitido/bloqueado no ledger)
   let prepared;
   if (requestId.startsWith('fixture-homologation') || requestId.startsWith('fixture-controlada')) {
-    prepared = buildHomologationFixture(requestId);
+    prepared = buildControlledCandidate({ requestId, environment });
   } else {
     const [demandasRaw, tomadoresRaw, patternsRaw, notasRaw] = await Promise.all([
       read(spreadsheetId, `${CONFIG.SHEETS.TABS.DEMANDAS}!A:Z`),
