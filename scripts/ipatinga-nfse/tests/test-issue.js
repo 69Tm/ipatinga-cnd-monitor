@@ -91,7 +91,8 @@ async function run() {
     certData,
     dryRun: true
   }, {
-    readSheetValues: mockSheetReader()
+    readSheetValues: mockSheetReader(),
+    createSheetIfNotExists: async () => true
   });
 
   assert.strictEqual(dryResult.status, 'DRY_RUN_SUCCESS');
@@ -114,6 +115,7 @@ async function run() {
   }, {
     readSheetValues: mockSheetReader({ rps: mockRpsStorage }),
     updateSheetValues: async (_id, _range, rows) => { mockRpsStorage[1] = rows[0]; },
+    createSheetIfNotExists: async () => true,
     callSoapOperation: async () => ({
       outputXml: `<ConsultarNfseRpsResposta xmlns="http://www.abrasf.org.br/nfse.xsd">
         <CompNfse><Nfse><InfNfse><Numero>95003</Numero><CodigoVerificacao>CHAVE95003</CodigoVerificacao><DataEmissao>2026-08-22T10:05:00</DataEmissao></InfNfse></Nfse></CompNfse>
@@ -135,7 +137,8 @@ async function run() {
   }, {
     readSheetValues: mockSheetReader({ rps: mockRpsStorage }),
     updateSheetValues: async () => {},
-    appendSheetValues: async () => {}
+    appendSheetValues: async () => {},
+    createSheetIfNotExists: async () => true
   });
 
   assert.strictEqual(idempotentResult.status, 'ALREADY_ISSUED');
@@ -156,6 +159,7 @@ async function run() {
     readSheetValues: mockSheetReader({ rps: rpsStorageTimeout }),
     updateSheetValues: async (_id, _range, rows) => { rpsStorageTimeout[1] = rows[0]; },
     appendSheetValues: async () => {},
+    createSheetIfNotExists: async () => true,
     callSoapOperation: async ({ operation }) => {
       if (operation === 'GerarNfse') {
         throw new Error('ETIMEDOUT: Connection timed out on GerarNfse');
@@ -190,6 +194,7 @@ async function run() {
     readSheetValues: mockSheetReader({ rps: rpsStorageInfra }),
     updateSheetValues: async (_id, _range, rows) => { rpsStorageInfra[1] = rows[0]; },
     appendSheetValues: async () => {},
+    createSheetIfNotExists: async () => true,
     callSoapOperation: async () => {
       throw new Error('SOAP_HTTP_ERROR_500: SOAP-ERROR: Parsing WSDL: Couldn\'t load from https://abrasfipatinga.meumunicipio.online/ws/nfs?wsdl');
     }
