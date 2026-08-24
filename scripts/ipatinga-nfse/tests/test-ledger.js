@@ -2,46 +2,49 @@
 
 const assert = require('assert');
 const {
+  RPS_STATUS,
+  MAX_ATTEMPTS,
   loadLedger,
-  findLedgerEntry,
-  allocateNextRpsNumber,
   allocateRpsAtomically,
   markSubmitting,
   markSubmittedAsyncProcessing,
   markIssued,
   markRejectedCorrectable,
   markUnknownAfterTimeout,
-  markFailedSafe,
-  RPS_STATUS,
-  MAX_ATTEMPTS
+  markProviderInfraUnavailable,
+  markFailedSafe
 } = require('../ledger');
 
 console.log('Running test-ledger.js...');
 
-let mockStorage = [
-  ['environment', 'request_id', 'item_index', 'rps_numero', 'rps_serie', 'rps_tipo', 'status', 'allocated_at', 'submitted_at', 'nfse_numero', 'nfse_chave', 'last_query_at', 'attempt_count', 'last_attempt_at', 'provider_error_codes', 'provider_message', 'error'],
-  ['homologation', 'req-test-1', '1', '1001', 'A', '1', 'ISSUED', '2026-08-22T09:00:00Z', '2026-08-22T09:00:05Z', '90001', 'CHAVE123', '2026-08-22T09:00:10Z', '1', '2026-08-22T09:00:05Z', '', 'NFS-e emitida com sucesso', '']
-];
-
-const mockDependencies = {
-  readSheetValues: async () => mockStorage,
-  appendSheetValues: async (_id, _range, rows) => {
-    mockStorage.push(...rows);
-  },
-  updateSheetValues: async (_id, range, rows) => {
-    const match = range.match(/!A(\d+):Q\d+/);
-    if (match) {
-      const idx = parseInt(match[1], 10) - 1;
-      mockStorage[idx] = rows[0];
-    }
-  }
-};
-
 async function run() {
-  // 1. Alocação persistente no mockStorage
+  const mockStorage = [
+    ['environment', 'request_id', 'item_index', 'rps_numero', 'rps_serie', 'rps_tipo', 'status', 'allocated_at', 'submitted_at', 'nfse_numero', 'nfse_chave', 'last_query_at', 'attempt_count', 'last_attempt_at', 'provider_error_codes', 'provider_message', 'error'],
+    ['homologation', 'req-existente', '1', '1001', 'A', '1', 'ISSUED', '2026-08-22T10:00:00Z', '2026-08-22T10:00:01Z', '90001', 'CHAVE90001', '2026-08-22T10:00:05Z', '1', '2026-08-22T10:00:01Z', '', 'NFS-e emitida com sucesso', '']
+  ];
+
+  const mockDependencies = {
+    spreadsheetId: 'mock-ss-id',
+    readSheetValues: async (_id, _range) => mockStorage,
+    appendSheetValues: async (_id, _range, rows) => {
+      rows.forEach(r => mockStorage.push(r));
+      return { updates: { updatedRows: rows.length } };
+    },
+    updateSheetValues: async (_id, range, rows) => {
+      const match = range.match(/A(\d+):Q\1/);
+      if (match) {
+        const rowIndex = parseInt(match[1], 10) - 1;
+        mockStorage[rowIndex] = rows[0];
+      }
+      return { updatedRows: 1 };
+    },
+    createSheetIfNotExists: async () => true
+  };
+
+  // 1. Alocação Atômica de novo RPS
   let alloc = await allocateRpsAtomically({
     environment: 'homologation',
-    requestId: 'req-test-2',
+    requestId: 'req-novo',
     itemIndex: 1
   }, mockDependencies);
 
@@ -60,7 +63,7 @@ async function run() {
   assert.ok(alloc.last_attempt_at, 'last_attempt_at deve estar preenchido');
   assert.strictEqual(mockStorage[2][6], RPS_STATUS.SUBMITTING);
   assert.strictEqual(mockStorage[2][8], alloc.submitted_at);
-  assert.strictEqual(mockStorage[2][12], 1);
+  assert.strictEqual(Number(mockStorage[2][12]), 1);
 
   // 3. Transição SUBMITTING -> SUBMITTED_ASYNC_PROCESSING
   alloc = await markSubmittedAsyncProcessing(alloc, { providerMessage: 'Solicitação recebida pelo ADN' }, mockDependencies);
@@ -89,6 +92,18 @@ async function run() {
 
   assert.strictEqual(retryAlloc.attempt_count, MAX_ATTEMPTS);
   assert.strictEqual(retryAlloc.status, RPS_STATUS.FAILED_SAFE, 'Ao atingir MAX_ATTEMPTS deve travar em FAILED_SAFE');
+
+  // 6. Teste de transição PROVIDER_INFRA_UNAVAILABLE
+  let infraAlloc = await allocateRpsAtomically({
+    environment: 'production',
+    requestId: 'req-infra-test-ledger',
+    itemIndex: 1
+  }, mockDependencies);
+
+  infraAlloc = await markSubmitting(infraAlloc, mockDependencies);
+  infraAlloc = await markProviderInfraUnavailable(infraAlloc, { error: 'HTTP 500 WSDL' }, mockDependencies);
+  assert.strictEqual(infraAlloc.status, RPS_STATUS.PROVIDER_INFRA_UNAVAILABLE);
+  assert.strictEqual(infraAlloc.rps_numero, '101'); // Próximo em produção após o header
 
   console.log('✓ test-ledger.js PASSED');
 }
