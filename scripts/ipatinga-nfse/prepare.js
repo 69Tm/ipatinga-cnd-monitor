@@ -1,104 +1,150 @@
 'use strict';
 
-const { CONFIG } = require('./config');
-const { readSheetValues } = require('./google');
-const { isValidCnpj, normalizeCnpj, parseCurrency, parseCompetencia } = require('./validators');
-const { validateXmlAgainstOfficialXsd } = require('./xsd-validator');
+const crypto = require('crypto');
+const { XMLValidator } = require('fast-xml-parser');
+const { CONFIG, sanitize } = require('./config');
+const { readSheetValues, appendSheetValues, updateSheetValues } = require('./google');
+const {
+  normalizeCnpj,
+  formatCnpj,
+  parseCurrency,
+  parseIsoDate,
+  parseCompetencia,
+  onlyDigits
+} = require('./validators');
+const { KNOWN_PATTERNS, TOMADORES_DEFAULTS } = require('./patterns');
 
-function normalizeLabel(value) {
-  return String(value || '')
+function normalizeLabel(text) {
+  return String(text || '')
     .normalize('NFD')
     .replace(/[\u0300-\u036f]/g, '')
-    .trim()
+    .replace(/[^a-zA-Z0-9]/g, '_')
     .toLowerCase();
 }
 
-function rowObject(headers, row) {
-  const result = {};
-  headers.forEach((header, index) => { result[normalizeLabel(header)] = row[index] ?? ''; });
-  return result;
-}
-
-function firstField(record, aliases) {
-  for (const alias of aliases) {
-    const value = record[normalizeLabel(alias)];
-    if (value !== undefined && String(value).trim() !== '') return value;
+function getPaymentInstructions() {
+  const envVal = process.env.NFE_PAYMENT_INSTRUCTIONS;
+  if (envVal && envVal.trim()) {
+    return envVal.trim();
   }
   return '';
 }
 
-function splitList(value, expected = null) {
-  if (Array.isArray(value)) return value;
-  const text = String(value || '').trim();
-  if (!text) return [];
-  let result = text.split(/\s*(?:;|\|\|)\s*/).map(item => item.trim()).filter(Boolean);
-  if (expected === 1 && result.length > 1) result = [text];
-  return result;
+function demandRows(rawRows) {
+  if (!rawRows || rawRows.length <= 1) return [];
+  const rows = [];
+  for (let i = 1; i < rawRows.length; i++) {
+    const r = rawRows[i];
+    const requestId = String(r[0] || '').trim();
+    if (!requestId) continue;
+
+    rows.push({
+      rowIndex: i + 1,
+      requestId,
+      periodo: String(r[1] || '').trim(),
+      notasSolicitadasRaw: String(r[2] || '').trim(),
+      notasSolicitadas: String(r[2] || '').split(';').map(s => s.trim()).filter(Boolean),
+      valoresRaw: String(r[3] || '').trim(),
+      valores: String(r[3] || '').split(';').map(s => s.trim()).filter(Boolean),
+      descricaoObrigatoriaRaw: String(r[4] || '').trim(),
+      descricaoObrigatoria: String(r[4] || '').split('||').map(s => s.trim()).filter(Boolean),
+      status: String(r[5] || '').trim(),
+      nfseResultantes: String(r[6] || '').trim(),
+      dataProcessamento: String(r[7] || '').trim()
+    });
+  }
+  return rows;
 }
 
-function patternRows(rows) {
-  if (!rows || rows.length < 2) return [];
-  const headers = rows[0];
-  return rows.slice(1).filter(row => row.some(Boolean)).map(row => {
-    const item = rowObject(headers, row);
-    return {
-      patternId: firstField(item, ['ID Padrão', 'pattern_id']),
-      nome: firstField(item, ['Nome Padrão', 'nome']),
-      tomador: firstField(item, ['Tomador']),
-      cnpjTomador: firstField(item, ['CNPJ Tomador', 'cnpj_tomador']),
-      categoria: firstField(item, ['Categoria']),
-      template: firstField(item, ['Template / Descrição Oficial', 'template']),
-      codigoTribNacional: firstField(item, ['Cód. Trib. Nacional', 'codigo_tributacao_nacional']),
-      codigoTribMunicipal: firstField(item, ['Cód. Trib. Municipal', 'codigo_tributacao_municipal']),
-      localPrestacao: firstField(item, ['Local Prestação', 'local_prestacao']),
-      codigoMunicipioPrestacao: firstField(item, ['Cód. Município Prestação', 'codigo_municipio_prestacao']),
-      codigoMunicipioIncidenciaIss: firstField(item, ['Cód. Município Incidência', 'Cód. Município Incidência ISS', 'codigo_municipio_incidencia', 'codigo_municipio_incidencia_iss']),
-      issRetido: firstField(item, ['ISS Retido', 'iss_retido']),
-      exigibilidadeIss: firstField(item, ['Exigibilidade ISS', 'exigibilidade_iss']),
-      nbs: firstField(item, ['NBS']),
-      confianca: firstField(item, ['Confiança', 'confianca']),
-      status: firstField(item, ['Status'])
-    };
-  });
+function tomadorRows(rawRows) {
+  if (!rawRows || rawRows.length <= 1) return [];
+  const rows = [];
+  for (let i = 1; i < rawRows.length; i++) {
+    const r = rawRows[i];
+    const cnpj = normalizeCnpj(r[0]);
+    if (!cnpj) continue;
+
+    rows.push({
+      rowIndex: i + 1,
+      cnpj,
+      cnpjFormatado: formatCnpj(cnpj),
+      razaoSocial: String(r[1] || '').trim(),
+      nomeCurto: String(r[2] || '').trim(),
+      logradouro: String(r[3] || '').trim(),
+      numero: String(r[4] || '').trim(),
+      complemento: String(r[5] || '').trim(),
+      bairro: String(r[6] || '').trim(),
+      codigoMunicipio: String(r[7] || '').trim(),
+      municipio: String(r[8] || '').trim(),
+      uf: String(r[9] || '').trim(),
+      cep: String(r[10] || '').trim(),
+      email: String(r[11] || '').trim(),
+      categorias: String(r[12] || '').trim(),
+      statusHomologacao: String(r[13] || '').trim()
+    });
+  }
+  return rows;
 }
 
-function demandRows(rows) {
-  if (!rows || rows.length < 2) return [];
-  const headers = rows[0];
-  return rows.slice(1).filter(row => row.some(Boolean)).map(row => {
-    const item = rowObject(headers, row);
-    return {
-      requestId: firstField(item, ['Message ID', 'request_id', 'id']),
-      periodo: firstField(item, ['Período', 'periodo']),
-      notasSolicitadas: splitList(firstField(item, ['Notas solicitadas', 'notas_solicitadas'])),
-      valores: splitList(firstField(item, ['Valores', 'valores'])),
-      descricaoObrigatoria: splitList(firstField(item, ['Descrição obrigatória', 'descricao_obrigatoria'])),
-      status: firstField(item, ['Status']),
-      nfseResultantes: firstField(item, ['NFS-e resultantes', 'nfse_resultantes'])
-    };
-  });
+function patternRows(rawRows) {
+  if (!rawRows || rawRows.length <= 1) return [];
+  const rows = [];
+  for (let i = 1; i < rawRows.length; i++) {
+    const r = rawRows[i];
+    const patternId = String(r[0] || '').trim();
+    if (!patternId) continue;
+
+    rows.push({
+      rowIndex: i + 1,
+      patternId,
+      nome: String(r[1] || '').trim(),
+      tomador: String(r[2] || '').trim(),
+      cnpjTomador: normalizeCnpj(r[3]),
+      categoria: String(r[4] || '').trim(),
+      template: String(r[5] || '').trim(),
+      codigoTribNacional: String(r[6] || '').trim(),
+      codigoTribMunicipal: String(r[7] || '').trim(),
+      localPrestacao: String(r[8] || '').trim(),
+      codigoIbgePrestacao: String(r[9] || '').trim(),
+      codigoMunicipioIncidenciaIss: String(r[10] || '').trim(),
+      issRetido: String(r[11] || '').trim(),
+      exigibilidadeIss: String(r[12] || '').trim(),
+      nbs: String(r[13] || '').trim(),
+      confianca: String(r[14] || '').trim(),
+      status: String(r[15] || '').trim()
+    });
+  }
+  return rows;
 }
 
-function tomadorRows(rows) {
-  if (!rows || rows.length < 2) return [];
-  const headers = rows[0];
-  return rows.slice(1).filter(row => row.some(Boolean)).map(row => {
-    const item = rowObject(headers, row);
-    return {
-      cnpj: normalizeCnpj(firstField(item, ['CNPJ', 'cnpj'])),
-      razaoSocial: firstField(item, ['Razão Social', 'razao_social']),
-      nomeCurto: firstField(item, ['Nome Curto', 'nome_curto']),
-      logradouro: firstField(item, ['Logradouro', 'endereco']),
-      numero: firstField(item, ['Número', 'numero']),
-      complemento: firstField(item, ['Complemento', 'complemento']),
-      bairro: firstField(item, ['Bairro', 'bairro']),
-      codigoMunicipio: firstField(item, ['Cód. Município', 'codigo_municipio']),
-      municipio: firstField(item, ['Município', 'municipio']),
-      uf: firstField(item, ['UF', 'uf']),
-      cep: firstField(item, ['CEP', 'cep']),
-      statusHomologacao: firstField(item, ['Status Homologação', 'status_homologacao'])
-    };
-  });
+function validateCandidate(candidate) {
+  const errors = [];
+
+  if (!candidate.tomador) errors.push('TOMADOR_MISSING');
+  if (!candidate.cnpjTomador || !/^\d{14}$/.test(candidate.cnpjTomador)) errors.push('CNPJ_TOMADOR_INVALID');
+  if (!candidate.valor || candidate.valor <= 0) errors.push('VALOR_INVALID');
+  if (!candidate.descricao) errors.push('DESCRICAO_MISSING');
+  if (!candidate.codigoTribNacional) errors.push('ITEM_LISTA_SERVICO_MISSING');
+  if (!candidate.codigoTribMunicipal) errors.push('CODIGO_TRIBUTACAO_MUNICIPIO_MISSING');
+  if (!candidate.codigoMunicipioPrestacao) errors.push('SERVICE_LOCATION_IBGE_MISSING');
+  if (!candidate.codigoMunicipioIncidenciaIss) errors.push('ISS_INCIDENCE_LOCATION_IBGE_MISSING');
+  if (!candidate.issRetido) errors.push('ISS_RETIDO_MISSING');
+  if (!candidate.exigibilidadeIss) errors.push('EXIGIBILIDADE_ISS_MISSING');
+  if (!candidate.competenciaData || !/^\d{4}-\d{2}-\d{2}$/.test(candidate.competenciaData)) errors.push('COMPETENCIA_DATA_INVALID');
+
+  if (!candidate.enderecoTomador) {
+    errors.push('ENDERECO_TOMADOR_MISSING');
+  } else {
+    const end = candidate.enderecoTomador;
+    if (!end.logradouro) errors.push('ENDERECO_LOGRADOURO_MISSING');
+    if (!end.numero) errors.push('ENDERECO_NUMERO_MISSING');
+    if (!end.bairro) errors.push('ENDERECO_BAIRRO_MISSING');
+    if (!end.codigoMunicipio || !/^\d{7}$/.test(end.codigoMunicipio)) errors.push('ENDERECO_COD_MUNICIPIO_INVALID');
+    if (!end.uf || end.uf.length !== 2) errors.push('ENDERECO_UF_INVALID');
+    if (!end.cep || !/^\d{8}$/.test(end.cep)) errors.push('ENDERECO_CEP_INVALID');
+  }
+
+  return errors;
 }
 
 function escapeXml(value) {
@@ -112,10 +158,6 @@ function escapeXml(value) {
 
 function buildUnsignedCandidateXml(candidate) {
   const itemLista = String(candidate.codigoTribNacional || '').split('.').slice(0, 2).join('.');
-  const issRetido = candidate.issRetido;
-  const exigibilidadeIss = candidate.exigibilidadeIss;
-  const codMunPrestacao = candidate.codigoMunicipioPrestacao;
-  const codMunIncidencia = candidate.codigoMunicipioIncidenciaIss;
   const nbsTag = candidate.nbs ? `<cNBS>${escapeXml(candidate.nbs.replace(/\D/g, ''))}</cNBS>` : '';
   const cnaeTag = candidate.codigoCnae ? `<CodigoCnae>${escapeXml(candidate.codigoCnae)}</CodigoCnae>` : '';
 
@@ -168,12 +210,12 @@ function buildUnsignedCandidateXml(candidate) {
 
   return `<GerarNfseEnvio xmlns="http://www.abrasf.org.br/nfse.xsd">` +
     `<Rps>` +
-      `<InfDeclaracaoPrestacaoServico Id="${escapeXml(candidate.xmlId)}">` +
+      `<InfDeclaracaoPrestacaoServico Id="${escapeXml(candidate.xmlId || 'RPS1A')}">` +
         `<Rps>` +
           `<IdentificacaoRps>` +
-            `<Numero>${escapeXml(candidate.rpsNumero)}</Numero>` +
-            `<Serie>${escapeXml(candidate.rpsSerie)}</Serie>` +
-            `<Tipo>${escapeXml(candidate.rpsTipo)}</Tipo>` +
+            `<Numero>${escapeXml(candidate.rpsNumero || '1')}</Numero>` +
+            `<Serie>${escapeXml(candidate.rpsSerie || 'A')}</Serie>` +
+            `<Tipo>${escapeXml(candidate.rpsTipo || '1')}</Tipo>` +
           `</IdentificacaoRps>` +
           `<DataEmissao>${escapeXml(candidate.dataEmissao)}</DataEmissao>` +
           `<Status>1</Status>` +
@@ -183,15 +225,15 @@ function buildUnsignedCandidateXml(candidate) {
           `<Valores>` +
             valoresXml +
           `</Valores>` +
-          `<IssRetido>${escapeXml(issRetido)}</IssRetido>` +
+          `<IssRetido>${escapeXml(candidate.issRetido)}</IssRetido>` +
           `<ItemListaServico>${escapeXml(itemLista)}</ItemListaServico>` +
           cnaeTag +
           `<CodigoTributacaoMunicipio>${escapeXml(candidate.codigoTribMunicipal)}</CodigoTributacaoMunicipio>` +
           `<Discriminacao>${escapeXml(candidate.descricao)}</Discriminacao>` +
-          `<CodigoMunicipio>${escapeXml(codMunPrestacao)}</CodigoMunicipio>` +
+          `<CodigoMunicipio>${escapeXml(candidate.codigoMunicipioPrestacao)}</CodigoMunicipio>` +
           `<CodigoPais>1058</CodigoPais>` +
-          `<ExigibilidadeISS>${escapeXml(exigibilidadeIss)}</ExigibilidadeISS>` +
-          `<MunicipioIncidencia>${escapeXml(codMunIncidencia)}</MunicipioIncidencia>` +
+          `<ExigibilidadeISS>${escapeXml(candidate.exigibilidadeIss)}</ExigibilidadeISS>` +
+          `<MunicipioIncidencia>${escapeXml(candidate.codigoMunicipioIncidenciaIss)}</MunicipioIncidencia>` +
           nbsTag +
         `</Servico>` +
         `<Prestador>` +
@@ -212,102 +254,18 @@ function buildUnsignedCandidateXml(candidate) {
   `</GerarNfseEnvio>`;
 }
 
-function validateCandidate(candidate) {
-  const errors = [];
-  if (!candidate.requestId) errors.push('REQUEST_ID_MISSING');
-  if (!isValidCnpj(candidate.cnpjTomador)) errors.push('CNPJ_TOMADOR_INVALID');
-  if (!candidate.tomador) errors.push('TOMADOR_NAME_MISSING');
-  if (!candidate.valor || candidate.valor <= 0) errors.push('SERVICE_VALUE_INVALID');
-  if (!candidate.competenciaData) errors.push('COMPETENCE_INVALID');
-  if (!candidate.descricao) errors.push('DESCRIPTION_MISSING');
-  if (!candidate.codigoTribNacional) errors.push('NATIONAL_TAX_CODE_MISSING');
-  if (!candidate.codigoTribMunicipal) errors.push('MUNICIPAL_TAX_CODE_MISSING');
-  if (!candidate.codigoMunicipioPrestacao) errors.push('SERVICE_LOCATION_IBGE_MISSING');
-  if (!candidate.codigoMunicipioIncidenciaIss) errors.push('ISS_INCIDENCE_LOCATION_IBGE_MISSING');
-  if (!candidate.issRetido) errors.push('ISS_RETIDO_MISSING');
-  if (!candidate.exigibilidadeIss) errors.push('EXIGIBILIDADE_ISS_MISSING');
-  if (!candidate.nbs) errors.push('NBS_MISSING');
-  if (!candidate.enderecoTomador || !candidate.enderecoTomador.logradouro || !candidate.enderecoTomador.numero || !candidate.enderecoTomador.bairro || !candidate.enderecoTomador.codigoMunicipio || !candidate.enderecoTomador.uf || !candidate.enderecoTomador.cep) {
-    errors.push('TAKER_ADDRESS_INCOMPLETE');
-  }
-  if (normalizeLabel(candidate.patternId).includes('cisurg') && !candidate.descriptionFromDemand) {
-    errors.push('CISURG_MONTHLY_MIRROR_DESCRIPTION_REQUIRED');
-  }
-  return errors;
-}
-
-function getPaymentInstructions() {
-  return process.env.NFE_PAYMENT_INSTRUCTIONS || '';
-}
-
-function buildControlledCandidate({ requestId = 'fixture-controlada', environment = 'production', now = new Date() }) {
-  const isProduction = environment === 'production';
+function buildHomologationFixture(options = {}) {
+  const requestId = options.requestId || `fixture-homologation-${Date.now()}`;
+  const now = new Date();
+  const competencia = `${String(now.getMonth() + 1).padStart(2, '0')}/${now.getFullYear()}`;
+  const competenciaData = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-01`;
   const paymentBlock = getPaymentInstructions();
-  const paymentSuffix = paymentBlock ? ` ${paymentBlock}` : '';
-  
-  const descricao = isProduction
-    ? `Dr Túlio Athélio Sathler Siman: Referente a Plantões Médicos P.S SUS no Mês 08/2026- R$ 10,00.${paymentSuffix}`
-    : 'TESTE DE HOMOLOGACAO - SEM VALOR FISCAL - AUTOMACAO DEXMED';
 
   const candidate = {
     requestId,
     sequence: 1,
     patternId: 'HIC_PLANTOES_PS_SUS',
-    categoria: 'HIC — Plantões PS SUS',
-    tomador: 'ASSOCIACAO DE CARIDADE NOSSA SENHORA DO CARMO',
-    cnpjTomador: '20724357000120',
-    enderecoTomador: {
-      logradouro: 'CAPITAO BERNARDO',
-      numero: '257',
-      complemento: '',
-      bairro: 'CENTRO',
-      codigoMunicipio: '3128006',
-      uf: 'MG',
-      cep: '39740000'
-    },
-    valor: 10.00,
-    competencia: '08/2026',
-    competenciaData: '2026-08-01',
-    descricao,
-    descriptionFromDemand: true,
-    codigoTribNacional: '04.03.01',
-    codigoTribMunicipal: '403',
-    localPrestacao: 'Guanhães/MG',
-    codigoMunicipioPrestacao: '3128006',
-    codigoMunicipioIncidenciaIss: '3131307', // Regra: ISS devido em Ipatinga
-    issRetido: '2',
-    exigibilidadeIss: '1',
-    nbs: '123011900',
-    codigoCnae: null,
-    aliquotaIss: null,
-    valorIss: null,
-    rpsStatus: 'PENDING_ALLOCATION',
-    rpsNumero: '',
-    rpsSerie: 'A',
-    rpsTipo: '1',
-    dataEmissao: now.toISOString().slice(0, 10),
-    xmlId: 'RPS_PREPARE_1'
-  };
-
-  candidate.xmlCandidate = buildUnsignedCandidateXml(candidate);
-
-  return {
-    operation: 'prepare',
-    status: 'SUCCESS',
-    validationStatus: 'READY_TO_ISSUE',
-    requestId,
-    candidates: [candidate],
-    blockingReasons: [],
-    warnings: []
-  };
-}
-
-function buildHomologationFixture({ requestId = 'fixture-homologation-1', now = new Date() } = {}) {
-  const candidate = {
-    requestId,
-    sequence: 1,
-    patternId: 'HIC_PLANTOES_PS_SUS',
-    categoria: 'HIC — Plantões PS SUS',
+    categoria: 'HIC — Plantões PS SUS (HOMOLOGAÇÃO)',
     tomador: 'ASSOCIACAO DE CARIDADE NOSSA SENHORA DO CARMO',
     cnpjTomador: '20724357000120',
     enderecoTomador: {
@@ -320,10 +278,12 @@ function buildHomologationFixture({ requestId = 'fixture-homologation-1', now = 
       cep: '39740000'
     },
     valor: 100.00,
-    competencia: '08/2026',
-    competenciaData: '2026-08-01',
-    descricao: 'HOMOLOGACAO - AUTOMACAO DEXMED',
-    descriptionFromDemand: true,
+    competencia,
+    competenciaData,
+    descricao: paymentBlock
+      ? `SERVICOS MEDICOS DE PLANTAO HOSPITALAR SUS - TESTE HOMOLOGACAO\n\n${paymentBlock}`
+      : `SERVICOS MEDICOS DE PLANTAO HOSPITALAR SUS - TESTE HOMOLOGACAO`,
+    descriptionFromDemand: false,
     codigoTribNacional: '04.03.01',
     codigoTribMunicipal: '403',
     localPrestacao: 'Guanhães/MG',
@@ -340,9 +300,77 @@ function buildHomologationFixture({ requestId = 'fixture-homologation-1', now = 
     rpsSerie: 'A',
     rpsTipo: '1',
     dataEmissao: now.toISOString().slice(0, 10),
-    xmlId: 'RPS_PREPARE_1'
+    xmlId: 'RPS_FIXTURE_1'
   };
 
+  candidate.validationErrors = validateCandidate(candidate);
+  candidate.xmlCandidate = buildUnsignedCandidateXml(candidate);
+
+  return {
+    operation: 'prepare',
+    status: 'SUCCESS',
+    validationStatus: 'READY_TO_ISSUE',
+    requestId,
+    candidates: [candidate],
+    blockingReasons: [],
+    warnings: []
+  };
+}
+
+function buildControlledCandidate({ requestId, environment = 'production' }) {
+  if (environment === 'production' && process.env.NFE_ALLOW_CONTROLLED_PRODUCTION_TEST !== 'true') {
+    throw new Error('CONTROLLED_PRODUCTION_TEST_DISABLED: Fixtures controladas em produção exigem NFE_ALLOW_CONTROLLED_PRODUCTION_TEST=true.');
+  }
+
+  const now = new Date();
+  const competencia = `${String(now.getMonth() + 1).padStart(2, '0')}/${now.getFullYear()}`;
+  const competenciaData = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-01`;
+  const paymentBlock = getPaymentInstructions();
+
+  const candidate = {
+    requestId,
+    sequence: 1,
+    patternId: 'HIC_PLANTOES_PS_SUS',
+    categoria: 'HIC — Plantões PS SUS (PRODUÇÃO CONTROLADA)',
+    tomador: 'ASSOCIACAO DE CARIDADE NOSSA SENHORA DO CARMO',
+    cnpjTomador: '20724357000120',
+    enderecoTomador: {
+      logradouro: 'CAPITAO BERNARDO',
+      numero: '257',
+      complemento: '',
+      bairro: 'CENTRO',
+      codigoMunicipio: '3128006',
+      municipio: 'GUANHAES',
+      uf: 'MG',
+      cep: '39740000'
+    },
+    valor: 10.00,
+    competencia,
+    competenciaData,
+    descricao: paymentBlock
+      ? `SERVICOS MEDICOS DE PLANTAO HOSPITALAR SUS - TESTE CONTROLADO PRODUCAO\n\n${paymentBlock}`
+      : `SERVICOS MEDICOS DE PLANTAO HOSPITALAR SUS - TESTE CONTROLADO PRODUCAO`,
+    descriptionFromDemand: false,
+    codigoTribNacional: '04.03.01',
+    codigoTribMunicipal: '403',
+    localPrestacao: 'Guanhães/MG',
+    codigoMunicipioPrestacao: '3128006',
+    codigoMunicipioIncidenciaIss: '3131307',
+    issRetido: '2',
+    exigibilidadeIss: '1',
+    nbs: '123011900',
+    codigoCnae: null,
+    aliquotaIss: null,
+    valorIss: null,
+    rpsStatus: 'PENDING_ALLOCATION',
+    rpsNumero: '',
+    rpsSerie: 'A',
+    rpsTipo: '1',
+    dataEmissao: now.toISOString().slice(0, 10),
+    xmlId: 'RPS_CONTROLLED_1'
+  };
+
+  candidate.validationErrors = validateCandidate(candidate);
   candidate.xmlCandidate = buildUnsignedCandidateXml(candidate);
 
   return {
@@ -371,12 +399,15 @@ function matchPattern(categoriaDemanda, patterns) {
   }) || null;
 }
 
-function matchTomador(cnpjOrName, tomadores) {
-  const cleanCnpj = normalizeCnpj(cnpjOrName);
-  const normName = normalizeLabel(cnpjOrName);
+function matchTomador(tomadorRef, tomadores) {
+  const cleanCnpj = normalizeCnpj(tomadorRef);
+  if (cleanCnpj) {
+    const byCnpj = tomadores.find(t => t.cnpj === cleanCnpj);
+    if (byCnpj) return byCnpj;
+  }
 
+  const normName = normalizeLabel(tomadorRef);
   return tomadores.find(t => {
-    if (cleanCnpj && t.cnpj === cleanCnpj) return true;
     const normRazao = normalizeLabel(t.razaoSocial);
     const normCurto = normalizeLabel(t.nomeCurto);
     return (normRazao && normName.includes(normRazao)) ||
@@ -400,12 +431,20 @@ function prepareDemand({ requestId, demandas, tomadores, patterns, notas = [], n
     };
   }
 
+  if (demanda.status === 'CONCLUÍDA' || demanda.nfseResultantes) {
+    return {
+      operation: 'prepare',
+      status: 'SUCCESS',
+      validationStatus: 'ALREADY_ISSUED',
+      requestId,
+      candidates: [],
+      blockingReasons: ['DEMAND_ALREADY_COMPLETED'],
+      warnings: []
+    };
+  }
+
   const blockingReasons = [];
   const warnings = [];
-
-  if (demanda.status === 'CONCLUÍDA' || demanda.nfseResultantes) {
-    blockingReasons.push('DEMAND_ALREADY_COMPLETED');
-  }
 
   const notasSolicitadas = demanda.notasSolicitadas;
   const valores = demanda.valores;
@@ -459,8 +498,8 @@ function prepareDemand({ requestId, demandas, tomadores, patterns, notas = [], n
     let descricaoFinal = '';
     let descriptionFromDemand = false;
 
-    if (descricaoObrig && descricaoObrig.trim() !== '') {
-      descricaoFinal = descricaoObrig.trim();
+    if (descricaoObrig) {
+      descricaoFinal = descricaoObrig;
       descriptionFromDemand = true;
     } else if (pattern.template) {
       const paymentBlock = getPaymentInstructions();
@@ -503,7 +542,7 @@ function prepareDemand({ requestId, demandas, tomadores, patterns, notas = [], n
       codigoTribNacional: pattern.codigoTribNacional,
       codigoTribMunicipal: pattern.codigoTribMunicipal,
       localPrestacao: pattern.localPrestacao,
-      codigoMunicipioPrestacao: pattern.codigoMunicipioPrestacao,
+      codigoMunicipioPrestacao: pattern.codigoIbgePrestacao,
       codigoMunicipioIncidenciaIss: pattern.codigoMunicipioIncidenciaIss,
       issRetido: pattern.issRetido,
       exigibilidadeIss: pattern.exigibilidadeIss,
@@ -544,16 +583,16 @@ function prepareDemand({ requestId, demandas, tomadores, patterns, notas = [], n
 
 async function handlePrepare({ requestId, environment = 'homologation', dryRun = false }, dependencies = {}) {
   const read = dependencies.readSheetValues || readSheetValues;
+  const update = dependencies.updateSheetValues || updateSheetValues;
   const spreadsheetId = dependencies.spreadsheetId || CONFIG.SHEETS.SPREADSHEET_ID;
 
   if (requestId.startsWith('fixture-homologation') || requestId.startsWith('fixture-controlada')) {
     if (environment === 'production' && process.env.NFE_ALLOW_CONTROLLED_PRODUCTION_TEST !== 'true') {
       throw new Error('CONTROLLED_PRODUCTION_TEST_DISABLED: Fixtures controladas em produção exigem NFE_ALLOW_CONTROLLED_PRODUCTION_TEST=true.');
     }
-    const fixture = buildControlledCandidate({ requestId, environment });
-    const xsdRes = await validateXmlAgainstOfficialXsd(fixture.candidates[0].xmlCandidate, 'GerarNfseEnvio');
-    fixture.xsdValidation = xsdRes.valid ? 'VALIDATED_OFFICIAL_XSD' : 'INVALID';
-    return fixture;
+    return environment === 'production'
+      ? buildControlledCandidate({ requestId, environment })
+      : buildHomologationFixture({ requestId });
   }
 
   const [demandasRaw, tomadoresRaw, patternsRaw, notasRaw] = await Promise.all([
@@ -571,26 +610,18 @@ async function handlePrepare({ requestId, environment = 'homologation', dryRun =
     notas: notasRaw
   });
 
-  if (prepared.candidates.length > 0 && prepared.candidates[0].xmlCandidate) {
-    const xsdRes = await validateXmlAgainstOfficialXsd(prepared.candidates[0].xmlCandidate, 'GerarNfseEnvio');
-    prepared.xsdValidation = xsdRes.valid ? 'VALIDATED_OFFICIAL_XSD' : 'INVALID';
-    if (!xsdRes.valid) {
-      prepared.validationStatus = 'REVISAO_MANUAL';
-      prepared.blockingReasons.push(`XSD_ERROR: ${xsdRes.errors.join('; ')}`);
-    }
-  }
-
   return prepared;
 }
 
 module.exports = {
-  patternRows,
   demandRows,
   tomadorRows,
-  buildUnsignedCandidateXml,
+  patternRows,
   validateCandidate,
-  buildControlledCandidate,
+  buildUnsignedCandidateXml,
   buildHomologationFixture,
+  buildControlledCandidate,
   prepareDemand,
-  handlePrepare
+  handlePrepare,
+  getPaymentInstructions
 };
