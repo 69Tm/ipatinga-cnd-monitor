@@ -631,7 +631,8 @@ async function issueNfse({ requestId, itemIndex = 1, certData, dryRun = false },
     });
     responseXml = soapRes.outputXml;
   } catch (err) {
-    if (String(err.message).includes('TIMEOUT') || String(err.message).includes('ECONNRESET')) {
+    const errMsg = String(err.message || '').toUpperCase();
+    if (errMsg.includes('TIMEOUT') || errMsg.includes('ECONNRESET') || errMsg.includes('TIMED OUT')) {
       timeoutOccurred = true;
     } else {
       ledgerEntry = await markFailedSafe(ledgerEntry, { error: err.message }, dependencies);
