@@ -8,8 +8,18 @@
   - `INFRA_RECOVERY = VALIDATED`
   - `EXACTLY_ONCE = VALIDATED`
   - `PRODUCTION_FISCAL_ENGINE = FROZEN_VALIDATED`
-  - *A NFS-e 16 (RPS 101, Chave `RBBWD2VM`) encerrou a fase de testes e validação de emissão real em produção. Nenhuma nova nota fiscal de teste será emitida.*
+  - `GMAIL_OPERATIONAL_PIPELINE = CONFIGURED_ALIGNED`
+  - *A NFS-e 16 (RPS 101, Chave `RBBWD2VM`) encerrou a fase de testes e validação de emissão real em produção.*
   - *Proibido alterar componentes fiscais essenciais (XMLDSig, XSD, SOAP, RPS Ledger, Reconciliação) sem testes e justificativas estritas.*
+- **Roteamento Inequívoco de Planilhas (Apps Script):**
+  - `CND_CONTROL_SPREADSHEET_ID` (`1UHIo_2GiwIr4847y_AsPX3ZQHujaUOMkD-EE0uBEJcs`) -> Utilizado exclusivamente para a aba `CNDs` via `abrirPlanilhaCnds_()`.
+  - `NFSE_SPREADSHEET_ID` (`1-qnJjv0YuZkrAHnfiyJuyKiU3lR3VzFl76nNQ1DCHWo`) -> Utilizado exclusivamente para abas `Demandas`, `Tomadores`, `Padrões de Emissão`, `Notas` e `RPS` via `abrirPlanilhaNfse_()`.
+- **Máquina de Estados Operacional Gmail -> NFS-e:**
+  - `DETECTED` -> `SENDER_VALIDATED` -> `PARSED` -> `CND_CHECK` -> `READY_TO_DISPATCH` -> `DISPATCHED` -> `WAITING_FISCAL` -> `ISSUED` -> `SYNCED` -> `DOCUMENT_PENDING / DOCUMENTS_READY` -> `DRAFT_CREATED`.
+  - **Idempotência por Gmail Message ID:** Cada solicitação real utiliza o ID nativo da mensagem como `request_id`. Mesmo e-mail + item nunca duplica emissão.
+  - **Classificação de Ação:** Somente e-mails com intenção de emissão (`action === 'EMITIR'`) acionam o pipeline de `issue`. Cancelamentos e correções são direcionados a revisão manual.
+  - **Autenticação de Remetente (Anti-Spoofing):** Exige DMARC pass alinhado ou SPF/DKIM alinhado em domínios autorizados (`@hic.org.br`, `@cisurgmp.mg.gov.br`, etc.).
+  - **Criação de Rascunho:** O rascunho de resposta só é criado após a conclusão de todas as etapas (emissão concluída e certidões anexáveis disponíveis).
 - **Política Permanente de Emissão em Produção:**
   - `PRODUCTION_ISSUE_POLICY = ENABLED`
   - `SUPERVISION_MODE = ACTIVE`
