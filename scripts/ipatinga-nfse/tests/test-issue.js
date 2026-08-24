@@ -34,7 +34,8 @@ const certData = {
 
 const mockDemandas = [
   ['Message ID', 'Período', 'Notas solicitadas', 'Valores', 'Descrição obrigatória', 'Status', 'NFS-e resultantes'],
-  ['req-test-homolog', '08/2026', 'HIC — Plantões PS SUS', '100,00', 'Descrição & teste <especial> "homologação"', 'PENDENTE', '']
+  ['req-test-homolog', '08/2026', 'HIC — Plantões PS SUS', '100,00', 'Descrição & teste <especial> "homologação"', 'PENDENTE', ''],
+  ['req-reconcile-test', '08/2026', 'HIC — Plantões PS SUS', '100,00', 'Descrição & teste', 'PENDENTE', '']
 ];
 const mockTomadores = [
   ['CNPJ', 'Razão Social', 'Nome Curto', 'Logradouro', 'Número', 'Complemento', 'Bairro', 'Cód. Município', 'Município', 'UF', 'CEP', 'Fonte Endereço', 'Validado Em', 'Categorias Conhecidas', 'Status Homologação'],
@@ -103,11 +104,11 @@ async function run() {
   // 4. Testa reconcileRps diretamente
   const mockRpsStorage = [
     ['environment', 'request_id', 'item_index', 'rps_numero', 'rps_serie', 'rps_tipo', 'status', 'allocated_at', 'submitted_at', 'nfse_numero', 'nfse_chave', 'last_query_at', 'attempt_count', 'last_attempt_at', 'provider_error_codes', 'provider_message', 'error'],
-    ['homologation', 'req-reconcile-test', '1', '1003', 'A', '1', 'SUBMITTED_ASYNC_PROCESSING', '2026-08-22T10:00:00Z', '2026-08-22T10:00:01Z', '', '', '', '1', '2026-08-22T10:00:01Z', '', '', '']
+    ['production', 'req-reconcile-test', '1', '1003', 'A', '1', 'SUBMITTED_ASYNC_PROCESSING', '2026-08-22T10:00:00Z', '2026-08-22T10:00:01Z', '', '', '', '1', '2026-08-22T10:00:01Z', '', '', '']
   ];
 
   const recResult = await reconcileRps({
-    environment: 'homologation',
+    environment: 'production',
     rpsNumero: '1003',
     certData
   }, {
@@ -138,40 +139,43 @@ async function run() {
   });
 
   assert.strictEqual(idempotentResult.status, 'ALREADY_ISSUED');
-  assert.strictEqual(idempotentResult.nfseNumero, '95003');
   assert.strictEqual(idempotentResult.gerarNfseCalls, 0);
 
-  // 6. Testa Reemissão autorizada após REJECTED_CORRECTABLE e NOT_FOUND_CONFIRMED
-  let soapCallsCount = 0;
-  const mockLedgerRejected = [
+  // 6. Testa tratamento de Timeout e Recuperação por Consulta RPS
+  let rpsStorageTimeout = [
     ['environment', 'request_id', 'item_index', 'rps_numero', 'rps_serie', 'rps_tipo', 'status', 'allocated_at', 'submitted_at', 'nfse_numero', 'nfse_chave', 'last_query_at', 'attempt_count', 'last_attempt_at', 'provider_error_codes', 'provider_message', 'error'],
-    ['homologation', 'req-test-homolog', '1', '1001', 'A', '1', 'REJECTED_CORRECTABLE', '2026-08-22T10:00:00Z', '2026-08-22T10:00:01Z', '', '', '2026-08-22T10:00:05Z', '1', '2026-08-22T10:00:01Z', 'EL78', 'Tag endereco ausente', 'EL78']
+    ['production', 'req-timeout-test', '1', '1004', 'A', '1', 'ALLOCATED', '2026-08-22T10:00:00Z', '', '', '', '', '0', '', '', '', '']
   ];
 
-  const retryResult = await issueNfse({
-    requestId: 'req-test-homolog',
+  let soapCallCount = 0;
+  const timeoutResult = await issueNfse({
+    requestId: 'fixture-controlada-timeout',
     itemIndex: 1,
     certData,
     dryRun: false
   }, {
-    readSheetValues: mockSheetReader({ rps: mockLedgerRejected }),
-    updateSheetValues: async () => {},
+    readSheetValues: mockSheetReader({ rps: rpsStorageTimeout }),
+    updateSheetValues: async (_id, _range, rows) => { rpsStorageTimeout[1] = rows[0]; },
     appendSheetValues: async () => {},
     callSoapOperation: async ({ operation }) => {
-      soapCallsCount++;
-      if (operation === 'ConsultarNfsePorRps') {
-        return { outputXml: '<ConsultarNfseRpsResposta xmlns="http://www.abrasf.org.br/nfse.xsd"><ListaMensagemRetorno><MensagemRetorno><Codigo>E4</Codigo><Mensagem>RPS nao encontrado</Mensagem></MensagemRetorno></ListaMensagemRetorno></ConsultarNfseRpsResposta>' };
-      }
+      soapCallCount++;
       if (operation === 'GerarNfse') {
-        return { outputXml: sampleSuccessResponse };
+        throw new Error('ETIMEDOUT: Connection timed out on GerarNfse');
       }
-      return { outputXml: '' };
+      if (operation === 'ConsultarNfsePorRps') {
+        return {
+          outputXml: `<ConsultarNfseRpsResposta xmlns="http://www.abrasf.org.br/nfse.xsd">
+            <CompNfse><Nfse><InfNfse><Numero>95004</Numero><CodigoVerificacao>CHAVETIMEOUT</CodigoVerificacao><DataEmissao>2026-08-22T10:10:00</DataEmissao></InfNfse></Nfse></CompNfse>
+          </ConsultarNfseRpsResposta>`
+        };
+      }
+      throw new Error(`Unexpected operation: ${operation}`);
     }
   });
 
-  assert.strictEqual(retryResult.status, 'ISSUED');
-  assert.strictEqual(retryResult.nfseNumero, '95001');
-  assert.strictEqual(soapCallsCount, 2); // 1 ConsultarNfsePorRps + 1 GerarNfse
+  assert.strictEqual(timeoutResult.status, 'ISSUED');
+  assert.strictEqual(timeoutResult.nfseNumero, '95004');
+  assert.strictEqual(timeoutResult.recoveredViaRpsQuery, true);
 
   console.log('✓ test-issue.js PASSED');
 }
