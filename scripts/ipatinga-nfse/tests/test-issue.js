@@ -147,7 +147,7 @@ async function run() {
   // 6. Testa tratamento de Timeout e Recuperação por Consulta RPS
   let rpsStorageTimeout = [
     ['environment', 'request_id', 'item_index', 'rps_numero', 'rps_serie', 'rps_tipo', 'status', 'allocated_at', 'submitted_at', 'nfse_numero', 'nfse_chave', 'last_query_at', 'attempt_count', 'last_attempt_at', 'provider_error_codes', 'provider_message', 'error'],
-    ['production', 'req-timeout-test', '1', '1004', 'A', '1', 'ALLOCATED', '2026-08-22T10:00:00Z', '', '', '', '', '0', '', '', '', '']
+    ['production', 'fixture-controlada-timeout', '1', '1004', 'A', '1', 'ALLOCATED', '2026-08-22T10:00:00Z', '', '', '', '', '0', '', '', '', '']
   ];
 
   const timeoutResult = await issueNfse({
@@ -182,7 +182,7 @@ async function run() {
   // 7. Testa tratamento de PROVIDER_INFRA_UNAVAILABLE (HTTP 500 / WSDL SOAP Fault)
   let rpsStorageInfra = [
     ['environment', 'request_id', 'item_index', 'rps_numero', 'rps_serie', 'rps_tipo', 'status', 'allocated_at', 'submitted_at', 'nfse_numero', 'nfse_chave', 'last_query_at', 'attempt_count', 'last_attempt_at', 'provider_error_codes', 'provider_message', 'error'],
-    ['production', 'req-infra-test', '1', '101', 'A', '1', 'ALLOCATED', '2026-08-23T22:00:00Z', '', '', '', '', '0', '', '', '', '']
+    ['production', 'fixture-controlada-infra', '1', '101', 'A', '1', 'ALLOCATED', '2026-08-23T22:00:00Z', '', '', '', '', '0', '', '', '', '']
   ];
 
   const infraResult = await issueNfse({
