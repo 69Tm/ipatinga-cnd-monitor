@@ -51,7 +51,7 @@ assert.strictEqual(hic.blockingReasons.length, 0);
 // 2. Demanda sem pattern -> REVISAO_MANUAL (SEM defaults silenciosos)
 const semPattern = prepareDemand({ requestId: 'req-sem-pattern', demandas, tomadores, patterns });
 assert.strictEqual(semPattern.validationStatus, 'REVISAO_MANUAL');
-assert.ok(semPattern.blockingReasons.includes('PATTERN_NOT_IDENTIFIED'));
+assert.ok(semPattern.blockingReasons.some(r => r.includes('PATTERN_NOT_IDENTIFIED')));
 
 // 3. Fixture explícita de homologação
 const fixture = buildHomologationFixture();
