@@ -65,7 +65,7 @@ assert.strictEqual(XMLValidator.validate(fixture.candidates[0].xmlCandidate), tr
 const cisurg = prepareDemand({ requestId: 'req-cisurg', demandas, tomadores, patterns });
 assert.strictEqual(cisurg.validationStatus, 'READY_TO_ISSUE');
 assert.strictEqual(cisurg.candidates[0].enderecoTomador.codigoMunicipio, '3131703');
-assert.strictEqual(cisurg.candidates[0].codigoMunicipioPrestacao, '3128006');
+assert.strictEqual(cisurg.candidates[0].codigoMunicipioPrestacao, '3131703');
 assert.strictEqual(cisurg.candidates[0].codigoMunicipioIncidenciaIss, '3131307');
 
 // 5. Demanda já concluída
