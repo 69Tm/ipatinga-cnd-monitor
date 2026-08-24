@@ -122,6 +122,22 @@ async function loadLedger(dependencies = {}) {
   return rows.slice(1).map((rawRow, idx) => {
     const row = transformLegacyLedgerRow(rawRow);
     const rawAttempts = row[12];
+    const rawStatus = row[6] || RPS_STATUS.ALLOCATED;
+    const rawError = String(row[16] || '');
+
+    // Auto-recuperação: se estava gravado como FAILED_SAFE por erro de WSDL / HTTP 500 / Infra,
+    // reclassifica em memória e na execução para PROVIDER_INFRA_UNAVAILABLE
+    let effectiveStatus = rawStatus;
+    if (rawStatus === RPS_STATUS.FAILED_SAFE && (
+      rawError.toUpperCase().includes('WSDL') ||
+      rawError.toUpperCase().includes('500') ||
+      rawError.toUpperCase().includes('502') ||
+      rawError.toUpperCase().includes('503') ||
+      rawError.toUpperCase().includes('ENOTFOUND')
+    )) {
+      effectiveStatus = RPS_STATUS.PROVIDER_INFRA_UNAVAILABLE;
+    }
+
     const entry = {
       rowIndex: idx + 2,
       environment: row[0] || '',
@@ -130,7 +146,7 @@ async function loadLedger(dependencies = {}) {
       rps_numero: row[3] || '',
       rps_serie: row[4] || 'A',
       rps_tipo: row[5] || '1',
-      status: row[6] || RPS_STATUS.ALLOCATED,
+      status: effectiveStatus,
       allocated_at: row[7] || '',
       submitted_at: row[8] || '',
       nfse_numero: row[9] || '',
@@ -140,7 +156,7 @@ async function loadLedger(dependencies = {}) {
       last_attempt_at: row[13] || '',
       provider_error_codes: row[14] || '',
       provider_message: row[15] || '',
-      error: row[16] || ''
+      error: rawError
     };
 
     if (rawAttempts === undefined || rawAttempts === null || isNaN(Number(rawAttempts))) {
