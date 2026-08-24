@@ -7,12 +7,21 @@
   - `EXPLICIT_PRODUCTION_TEST = ALLOWED`
   - `USER_RECONFIRMATION_PER_NOTE = NOT_REQUIRED`
   - `HOMOLOGATION_FALLBACK_WHEN_PRODUCTION_REQUESTED = FORBIDDEN`
+- **Classificação de Falhas de Infraestrutura do Provedor:**
+  - Erros como HTTP 500 com SOAP Fault WSDL, WSDL indisponível, falhas DNS, timeout de upstream, servidor municipal indisponível ou 502/503/504 são classificados estritamente como **`PROVIDER_INFRA_UNAVAILABLE`** (e **NUNCA** como `FAILED_SAFE`).
+  - `FAILED_SAFE` fica reservado exclusivamente para inconsistências fiscais/cadastrais reais não reconciliáveis ou limite de tentativas excedido.
+- **Máquina de Estados de Recuperação Automática:**
+  - `ALLOCATED` → `SUBMITTING` → `PROVIDER_INFRA_UNAVAILABLE` → `RECONCILING` → `RPS_NOT_FOUND_CONFIRMED` → `SUBMITTING` → `ISSUED`
+  - (ou, se já tiver sido processada pelo provedor na tentativa anterior): `PROVIDER_INFRA_UNAVAILABLE` → `RECONCILING` → `ISSUED`
+  - Falha temporária da prefeitura **nunca** invalida o RPS alocado nem obriga o usuário a reiniciar o processo manualmente. O mesmo `request_id` e número de RPS são preservados para retentativa segura.
+- **Probe de Saúde em Produção e Homologação (`provider_health`):**
+  - Operação leve e não destrutiva que afere periodicamente o status real dos WSDLs de produção e homologação e executa consulta SOAP read-only.
 - **Validação Estrita de TLS:** Chamadas SOAP HTTPS utilizam estritamente `rejectUnauthorized: true`. Falhas de certificado TLS do servidor interrompem o workflow (fail-closed).
 - **Tratamento de Resposta do Provedor:** 
   - Erros determinísticos (como EL78, EL244) → classificar como `REJECTED_CORRECTABLE`, corrigir e prosseguir somente após reconciliação via RPS confirmar `RPS_NOT_FOUND_CONFIRMED`.
   - Aceitação assíncrona ADN (`"Solicitação recebida! Aguarde a confirmação..."`) → classificar como `SUBMITTED_ASYNC_PROCESSING` e aguardar reconciliação via `reconcile_rps`.
   - Falha ambígua / timeout → classificar como `UNKNOWN_AFTER_TIMEOUT` e reconciliar via `reconcile_rps` sem nova emissão automática.
-- **Ciclo de Tentativas (Attempt Count):** Máximo de 5 tentativas de correção por item/demanda. Ao atingir o limite, o registro é bloqueado como `FAILED_SAFE` para revisão manual.
+- **Ciclo de Tentativas (Attempt Count):** Máximo de 5 tentativas de correção por item/demanda.
 - **Reconciliação Explícita (`reconcile_rps`):** Operação dedicada para consultar e sincronizar o status definitivo de notas pendentes no ADN ou após timeout sem invocar `GerarNfse`.
 - **Produção Supervisionada:** Emissão em produção tecnicamente habilitada sob supervisão do usuário, com kill switch operacional de emergência (`NFE_ISSUE_KILL_SWITCH=true`).
 - **Isolamento de Homologação:** A sincronização em homologação não afeta nem altera a aba operacional `Notas` de produção.
@@ -22,5 +31,4 @@
 - **Idempotência e Ledger:** Alocação atômica de RPS antes do envio; consulta prévia por RPS para garantir entrega exactly-once (`ALREADY_ISSUED`).
 - **Google Sheets:** Preservar a integridade das abas estruturadas (`Notas`, `Demandas`, `Tomadores`, `Padrões de Emissão`, `RPS`).
 - **Sem Dados Hardcoded Silenciosos:** Município de prestação e município de incidência do ISS são campos distintos e registrados explicitamente na aba Padrões de Emissão (`3131307` para Ipatinga).
-- **TODO Futuro (Dados Bancários):** `BANKING-PAYMENT-BLOCK` parametrizável centralmente via `NFE_PAYMENT_INSTRUCTIONS` para substituição da tag `{BLOCO_BANCARIO}`.
 - **Segurança de Segredos & Logs Sanitizados:** Nunca expor tokens, senhas, chaves privadas, certificados ou payloads XML brutos nos logs ou relatórios.
