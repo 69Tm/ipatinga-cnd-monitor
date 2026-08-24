@@ -283,5 +283,6 @@ if (require.main === module) {
 module.exports = {
   main,
   preflight,
+  enforceOperationSafety,
   generateReport
 };
