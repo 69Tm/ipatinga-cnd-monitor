@@ -59,6 +59,19 @@ function semanticallyEqual(columnIndex, left, right) {
   return String(left ?? '').trim() === String(right ?? '').trim();
 }
 
+function mergeFormattedTaxCodes(rawRows, formattedCodes) {
+  if (!rawRows || rawRows.length === 0) return [];
+  return rawRows.map((row, rowIndex) => {
+    const next = [...row];
+    const formattedRow = formattedCodes?.[rowIndex];
+    if (formattedRow) {
+      if (formattedRow[0] !== undefined && formattedRow[0] !== '') next[9] = formattedRow[0];
+      if (formattedRow[1] !== undefined && formattedRow[1] !== '') next[10] = formattedRow[1];
+    }
+    return next;
+  });
+}
+
 /**
  * Lê a aba Notas e mapeia as linhas existentes
  */
@@ -145,18 +158,8 @@ async function loadExistingNotas(spreadsheetId = null) {
   };
 }
 
-function mergeFormattedTaxCodes(rawRows, formattedCodes) {
-  return (rawRows || []).map((sourceRow, index) => {
-    const row = [...sourceRow];
-    const display = formattedCodes?.[index] || [];
-    if (display[0] !== undefined && display[0] !== '') row[9] = display[0];
-    if (display[1] !== undefined && display[1] !== '') row[10] = display[1];
-    return row;
-  });
-}
-
 /**
- * Garante cabeçalhos completos incluindo as colunas técnicas extras
+ * Garante que a aba Notas tenha os cabeçalhos corretos
  */
 async function ensureHeaders(spreadsheetId = null) {
   const ssId = spreadsheetId || CONFIG.SHEETS.SPREADSHEET_ID;
@@ -164,8 +167,8 @@ async function ensureHeaders(spreadsheetId = null) {
 
   const current = await readSheetValues(ssId, `${tab}!A1:X1`);
   const baseHeaders = [
-    'Nº NFS-e',
-    'Período referência',
+    'Nº',
+    'Período ref.',
     'Competência NFS-e',
     'Emissão',
     'Tomador',
@@ -239,12 +242,14 @@ async function upsertNotas(apiNotas, spreadsheetId = null, dryRun = false, depen
       totalSubstituted++;
     }
 
+    const compFormatada = parseCompetencia(item.competencia || existingRec?.competencia || '');
+
     if (existingRec) {
       // Linha Existente -> UPDATE preservando campos humanos
       const newRow = [
         item.numero || existingRec.numero,                                  // A
         existingRec.periodoRef || '',                                       // B (humano)
-        item.competencia || existingRec.competencia,                        // C
+        compFormatada || existingRec.competencia,                           // C
         formatDateBr(item.dataEmissao) || existingRec.emissao,              // D
         item.tomador || existingRec.tomador,                                // E
         item.cnpjTomador || existingRec.cnpjTomador,                        // F
@@ -287,7 +292,7 @@ async function upsertNotas(apiNotas, spreadsheetId = null, dryRun = false, depen
       const newRow = [
         item.numero,                                                       // A
         '',                                                                // B
-        item.competencia,                                                  // C
+        compFormatada,                                                     // C
         formatDateBr(item.dataEmissao),                                    // D
         item.tomador,                                                      // E
         item.cnpjTomador,                                                  // F

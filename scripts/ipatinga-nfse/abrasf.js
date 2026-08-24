@@ -1,30 +1,42 @@
 'use strict';
 
 const { CONFIG } = require('./config');
-const { getXmlNode, getXmlValue, ensureArray, parseXml } = require('./xml');
+const { parseXml, getXmlNode, getXmlValue, findXmlNode, findXmlValue, ensureArray } = require('./xml');
 const {
   formatCnpj,
-  formatDateBr,
-  formatCurrencyBr,
-  parseAliquot,
   parseCurrency,
-  normalizeCnpj
+  parseAliquot,
+  formatDateBr,
+  parseCompetencia,
+  onlyDigits
 } = require('./validators');
 
 /**
- * Monta o cabeçalho padrão ABRASF 2.04
+ * Constrói o cabeçalho SOAP padrão ABRASF 2.04
  */
-function buildCabecalho(versao = CONFIG.ABRASF.VERSAO) {
+function buildCabecalho(versao = '2.04') {
   return `<cabecalho xmlns="${CONFIG.ABRASF.SCHEMA_NAMESPACE}" versao="${versao}">` +
     `<versaoDados>${versao}</versaoDados>` +
   `</cabecalho>`;
 }
 
 /**
- * Monta o payload ConsultarNfseFaixaEnvio
+ * Constrói a mensagem XML para a operação ConsultarNfseFaixaEnvio
  */
-function buildConsultarNfseFaixaEnvio({ from, to, page = 1, cnpj = null, im = null }) {
-  const cnpjClean = cnpj ? normalizeCnpj(cnpj) : CONFIG.PRESTADOR.CNPJ_DIGITS;
+function buildConsultarNfseFaixaEnvio({
+  from = 1,
+  to = 50,
+  page = 1,
+  numeroInicial = null,
+  numeroFinal = null,
+  pagina = null,
+  cnpj = null,
+  im = null
+}) {
+  const finalFrom = numeroInicial !== null && numeroInicial !== undefined ? numeroInicial : from;
+  const finalTo = numeroFinal !== null && numeroFinal !== undefined ? numeroFinal : to;
+  const finalPage = pagina !== null && pagina !== undefined ? pagina : page;
+  const cnpjClean = cnpj || CONFIG.PRESTADOR.CNPJ_DIGITS;
   const imClean = im || CONFIG.PRESTADOR.INSCRICAO_MUNICIPAL;
 
   return `<ConsultarNfseFaixaEnvio xmlns="${CONFIG.ABRASF.SCHEMA_NAMESPACE}">` +
@@ -33,107 +45,92 @@ function buildConsultarNfseFaixaEnvio({ from, to, page = 1, cnpj = null, im = nu
       `<InscricaoMunicipal>${imClean}</InscricaoMunicipal>` +
     `</Prestador>` +
     `<Faixa>` +
-      `<NumeroNfseInicial>${from}</NumeroNfseInicial>` +
-      `<NumeroNfseFinal>${to}</NumeroNfseFinal>` +
+      `<NumeroNfseInicial>${finalFrom}</NumeroNfseInicial>` +
+      `<NumeroNfseFinal>${finalTo}</NumeroNfseFinal>` +
     `</Faixa>` +
-    `<Pagina>${page}</Pagina>` +
+    `<Pagina>${finalPage}</Pagina>` +
   `</ConsultarNfseFaixaEnvio>`;
 }
 
 /**
- * Monta o payload ConsultarNfseServicoPrestadoEnvio
+ * Extrai dados padronizados de um nó InfNfse
  */
-function buildConsultarNfseServicoPrestadoEnvio({ dataInicial, dataFinal, page = 1, cnpj = null, im = null }) {
-  const cnpjClean = cnpj ? normalizeCnpj(cnpj) : CONFIG.PRESTADOR.CNPJ_DIGITS;
-  const imClean = im || CONFIG.PRESTADOR.INSCRICAO_MUNICIPAL;
+function extractNfseData(compNfseNode) {
+  const infNfse = getXmlNode(compNfseNode, ['InfNfse', 'tc:InfNfse']) ||
+                  getXmlNode(compNfseNode, ['Nfse', 'tc:Nfse']) ||
+                  compNfseNode;
 
-  return `<ConsultarNfseServicoPrestadoEnvio xmlns="${CONFIG.ABRASF.SCHEMA_NAMESPACE}">` +
-    `<Prestador>` +
-      `<CpfCnpj><Cnpj>${cnpjClean}</Cnpj></CpfCnpj>` +
-      `<InscricaoMunicipal>${imClean}</InscricaoMunicipal>` +
-    `</Prestador>` +
-    `<PeriodoEmissao>` +
-      `<DataInicial>${dataInicial}</DataInicial>` +
-      `<DataFinal>${dataFinal}</DataFinal>` +
-    `</PeriodoEmissao>` +
-    `<Pagina>${page}</Pagina>` +
-  `</ConsultarNfseServicoPrestadoEnvio>`;
-}
+  const cancelamentoNode = getXmlNode(compNfseNode, ['NfseCancelamento', 'tc:NfseCancelamento', 'Cancelamento', 'tc:Cancelamento']);
+  const substituicaoNode = getXmlNode(compNfseNode, ['NfseSubstituicao', 'tc:NfseSubstituicao', 'Substituicao', 'tc:Substituicao']);
 
-/**
- * Normaliza e extrai os dados de uma única NFS-e (nó CompNfse ou Nfse)
- */
-function parseCompNfse(compNode) {
-  if (!compNode) return null;
-
-  const nfseNode = getXmlNode(compNode, ['Nfse', 'tc:Nfse']) || compNode;
-  const infNfse = getXmlNode(nfseNode, ['InfNfse', 'tc:InfNfse']) || nfseNode;
-  const cancelamentoNode = getXmlNode(compNode, ['NfseCancelamento', 'tc:NfseCancelamento']);
-  const substituicaoNode = getXmlNode(compNode, ['NfseSubstituicao', 'tc:NfseSubstituicao']) ?? (compNode.NfseSubstituicao !== undefined ? compNode.NfseSubstituicao : null);
-
-  // Identificação da Nota
-  const numero = getXmlValue(infNfse, ['Numero', 'tc:Numero']);
-  const codigoVerificacao = getXmlValue(infNfse, ['CodigoVerificacao', 'tc:CodigoVerificacao']);
-  const dataEmissaoRaw = getXmlValue(infNfse, ['DataEmissao', 'tc:DataEmissao']);
+  const numero = getXmlValue(infNfse, ['Numero', 'tc:Numero']) || findXmlValue(infNfse, 'Numero');
+  const codigoVerificacao = getXmlValue(infNfse, ['CodigoVerificacao', 'tc:CodigoVerificacao']) || findXmlValue(infNfse, 'CodigoVerificacao');
+  const dataEmissaoRaw = getXmlValue(infNfse, ['DataEmissao', 'tc:DataEmissao']) || findXmlValue(infNfse, 'DataEmissao');
   const outrasInformacoes = getXmlValue(infNfse, ['OutrasInformacoes', 'tc:OutrasInformacoes']);
 
   // DPS / Declaracao Prestacao Servico
   const dpsNode = getXmlNode(infNfse, [
     'DeclaracaoPrestacaoServico', 'tc:DeclaracaoPrestacaoServico',
-    'InfDeclaracaoPrestacaoServico', 'tc:InfDeclaracaoPrestacaoServico'
-  ]);
+    'InfDeclaracaoPrestacaoServico', 'tc:InfDeclaracaoPrestacaoServico',
+    'Rps', 'tc:Rps'
+  ]) || findXmlNode(infNfse, 'InfDeclaracaoPrestacaoServico');
   const infDps = dpsNode ? (getXmlNode(dpsNode, ['InfDeclaracaoPrestacaoServico', 'tc:InfDeclaracaoPrestacaoServico']) || dpsNode) : null;
 
-  const competenciaRaw = (infDps && getXmlValue(infDps, ['Competencia', 'tc:Competencia'])) ||
-                         getXmlValue(infNfse, ['Competencia', 'tc:Competencia']);
-  const chaveAcesso = (infDps && getXmlValue(infDps, ['ChaveAcesso', 'tc:ChaveAcesso'])) ||
-                      getXmlValue(infNfse, ['ChaveAcesso', 'tc:ChaveAcesso']);
+  const competenciaRaw = (infDps && (getXmlValue(infDps, ['Competencia', 'tc:Competencia']) || findXmlValue(infDps, 'Competencia'))) ||
+                         getXmlValue(infNfse, ['Competencia', 'tc:Competencia']) ||
+                         findXmlValue(infNfse, 'Competencia');
+  const chaveAcesso = (infDps && (getXmlValue(infDps, ['ChaveAcesso', 'tc:ChaveAcesso']) || findXmlValue(infDps, 'ChaveAcesso'))) ||
+                      getXmlValue(infNfse, ['ChaveAcesso', 'tc:ChaveAcesso']) ||
+                      findXmlValue(infNfse, 'ChaveAcesso');
 
   // Serviço & Valores
-  const servicoNode = (infDps && getXmlNode(infDps, ['Servico', 'tc:Servico'])) ||
-                      getXmlNode(infNfse, ['Servico', 'tc:Servico']);
-  const valoresServicoNode = servicoNode ? getXmlNode(servicoNode, ['Valores', 'tc:Valores']) : null;
-  const valoresNfseNode = getXmlNode(infNfse, ['ValoresNfse', 'tc:ValoresNfse']);
+  const servicoNode = (infDps && (getXmlNode(infDps, ['Servico', 'tc:Servico']) || findXmlNode(infDps, 'Servico'))) ||
+                      getXmlNode(infNfse, ['Servico', 'tc:Servico']) ||
+                      findXmlNode(infNfse, 'Servico');
+  const valoresServicoNode = servicoNode ? (getXmlNode(servicoNode, ['Valores', 'tc:Valores']) || findXmlNode(servicoNode, 'Valores')) : null;
+  const valoresNfseNode = getXmlNode(infNfse, ['ValoresNfse', 'tc:ValoresNfse']) || findXmlNode(infNfse, 'ValoresNfse');
 
-  const discriminacao = servicoNode ? getXmlValue(servicoNode, ['Discriminacao', 'tc:Discriminacao']) : '';
-  const itemListaServico = servicoNode ? getXmlValue(servicoNode, ['ItemListaServico', 'tc:ItemListaServico']) : '';
-  const codigoCnae = servicoNode ? getXmlValue(servicoNode, ['CodigoCnae', 'tc:CodigoCnae']) : '';
-  const codigoTribMunicipal = servicoNode ? getXmlValue(servicoNode, ['CodigoTributacaoMunicipio', 'tc:CodigoTributacaoMunicipio']) : '';
-  const codigoMunicipioPrestacao = servicoNode ? getXmlValue(servicoNode, ['CodigoMunicipio', 'tc:CodigoMunicipio']) : '';
-  const municipioIncidencia = servicoNode ? getXmlValue(servicoNode, ['MunicipioIncidencia', 'tc:MunicipioIncidencia']) : '';
-  const issRetido = servicoNode ? getXmlValue(servicoNode, ['IssRetido', 'tc:IssRetido']) : '';
+  const discriminacao = servicoNode ? (getXmlValue(servicoNode, ['Discriminacao', 'tc:Discriminacao']) || findXmlValue(servicoNode, 'Discriminacao')) : '';
+  const itemListaServico = servicoNode ? (getXmlValue(servicoNode, ['ItemListaServico', 'tc:ItemListaServico']) || findXmlValue(servicoNode, 'ItemListaServico')) : '';
+  const codigoCnae = servicoNode ? (getXmlValue(servicoNode, ['CodigoCnae', 'tc:CodigoCnae']) || findXmlValue(servicoNode, 'CodigoCnae')) : '';
+  const codigoTribMunicipal = servicoNode ? (getXmlValue(servicoNode, ['CodigoTributacaoMunicipio', 'tc:CodigoTributacaoMunicipio']) || findXmlValue(servicoNode, 'CodigoTributacaoMunicipio')) : '';
+  const codigoMunicipioPrestacao = servicoNode ? (getXmlValue(servicoNode, ['CodigoMunicipio', 'tc:CodigoMunicipio']) || findXmlValue(servicoNode, 'CodigoMunicipio')) : '';
+  const municipioIncidencia = servicoNode ? (getXmlValue(servicoNode, ['MunicipioIncidencia', 'tc:MunicipioIncidencia']) || findXmlValue(servicoNode, 'MunicipioIncidencia')) : '';
+  const issRetido = servicoNode ? (getXmlValue(servicoNode, ['IssRetido', 'tc:IssRetido']) || findXmlValue(servicoNode, 'IssRetido')) : '';
 
-  const valorServicos = (valoresServicoNode && getXmlValue(valoresServicoNode, ['ValorServicos', 'tc:ValorServicos'])) ||
-                        (valoresNfseNode && getXmlValue(valoresNfseNode, ['ValorServicos', 'tc:ValorServicos'])) || '0';
-  const valorDeducoes = (valoresServicoNode && getXmlValue(valoresServicoNode, ['ValorDeducoes', 'tc:ValorDeducoes'])) ||
-                        (valoresNfseNode && getXmlValue(valoresNfseNode, ['ValorDeducoes', 'tc:ValorDeducoes'])) || '0';
-  const valorPis = (valoresServicoNode && getXmlValue(valoresServicoNode, ['ValorPis', 'tc:ValorPis'])) ||
-                   (valoresNfseNode && getXmlValue(valoresNfseNode, ['ValorPis', 'tc:ValorPis'])) || '0';
-  const valorCofins = (valoresServicoNode && getXmlValue(valoresServicoNode, ['ValorCofins', 'tc:ValorCofins'])) ||
-                      (valoresNfseNode && getXmlValue(valoresNfseNode, ['ValorCofins', 'tc:ValorCofins'])) || '0';
-  const valorInss = (valoresServicoNode && getXmlValue(valoresServicoNode, ['ValorInss', 'tc:ValorInss'])) ||
-                    (valoresNfseNode && getXmlValue(valoresNfseNode, ['ValorInss', 'tc:ValorInss'])) || '0';
-  const valorIr = (valoresServicoNode && getXmlValue(valoresServicoNode, ['ValorIr', 'tc:ValorIr'])) ||
-                  (valoresNfseNode && getXmlValue(valoresNfseNode, ['ValorIr', 'tc:ValorIr'])) || '0';
-  const valorCsll = (valoresServicoNode && getXmlValue(valoresServicoNode, ['ValorCsll', 'tc:ValorCsll'])) ||
-                    (valoresNfseNode && getXmlValue(valoresNfseNode, ['ValorCsll', 'tc:ValorCsll'])) || '0';
-  const outrasRetencoes = (valoresServicoNode && getXmlValue(valoresServicoNode, ['OutrasRetencoes', 'tc:OutrasRetencoes'])) ||
-                          (valoresNfseNode && getXmlValue(valoresNfseNode, ['OutrasRetencoes', 'tc:OutrasRetencoes'])) || '0';
-  const valTotTributos = (valoresServicoNode && getXmlValue(valoresServicoNode, ['ValTotTributos', 'tc:ValTotTributos'])) ||
-                         (valoresNfseNode && getXmlValue(valoresNfseNode, ['ValTotTributos', 'tc:ValTotTributos'])) || '0';
-  const valorIss = (valoresServicoNode && getXmlValue(valoresServicoNode, ['ValorIss', 'tc:ValorIss'])) ||
-                   (valoresNfseNode && getXmlValue(valoresNfseNode, ['ValorIss', 'tc:ValorIss'])) || '0';
-  const aliquota = (valoresServicoNode && getXmlValue(valoresServicoNode, ['Aliquota', 'tc:Aliquota'])) ||
-                   (valoresNfseNode && getXmlValue(valoresNfseNode, ['Aliquota', 'tc:Aliquota'])) || '0';
+  const valorServicos = (valoresServicoNode && (getXmlValue(valoresServicoNode, ['ValorServicos', 'tc:ValorServicos']) || findXmlValue(valoresServicoNode, 'ValorServicos'))) ||
+                        (valoresNfseNode && (getXmlValue(valoresNfseNode, ['ValorServicos', 'tc:ValorServicos']) || findXmlValue(valoresNfseNode, 'ValorServicos'))) || '0';
+  const valorDeducoes = (valoresServicoNode && (getXmlValue(valoresServicoNode, ['ValorDeducoes', 'tc:ValorDeducoes']) || findXmlValue(valoresServicoNode, 'ValorDeducoes'))) ||
+                        (valoresNfseNode && (getXmlValue(valoresNfseNode, ['ValorDeducoes', 'tc:ValorDeducoes']) || findXmlValue(valoresNfseNode, 'ValorDeducoes'))) || '0';
+  const valorPis = (valoresServicoNode && (getXmlValue(valoresServicoNode, ['ValorPis', 'tc:ValorPis']) || findXmlValue(valoresServicoNode, 'ValorPis'))) ||
+                   (valoresNfseNode && (getXmlValue(valoresNfseNode, ['ValorPis', 'tc:ValorPis']) || findXmlValue(valoresNfseNode, 'ValorPis'))) || '0';
+  const valorCofins = (valoresServicoNode && (getXmlValue(valoresServicoNode, ['ValorCofins', 'tc:ValorCofins']) || findXmlValue(valoresServicoNode, 'ValorCofins'))) ||
+                      (valoresNfseNode && (getXmlValue(valoresNfseNode, ['ValorCofins', 'tc:ValorCofins']) || findXmlValue(valoresNfseNode, 'ValorCofins'))) || '0';
+  const valorInss = (valoresServicoNode && (getXmlValue(valoresServicoNode, ['ValorInss', 'tc:ValorInss']) || findXmlValue(valoresServicoNode, 'ValorInss'))) ||
+                    (valoresNfseNode && (getXmlValue(valoresNfseNode, ['ValorInss', 'tc:ValorInss']) || findXmlValue(valoresNfseNode, 'ValorInss'))) || '0';
+  const valorIr = (valoresServicoNode && (getXmlValue(valoresServicoNode, ['ValorIr', 'tc:ValorIr']) || findXmlValue(valoresServicoNode, 'ValorIr'))) ||
+                  (valoresNfseNode && (getXmlValue(valoresNfseNode, ['ValorIr', 'tc:ValorIr']) || findXmlValue(valoresNfseNode, 'ValorIr'))) || '0';
+  const valorCsll = (valoresServicoNode && (getXmlValue(valoresServicoNode, ['ValorCsll', 'tc:ValorCsll']) || findXmlValue(valoresServicoNode, 'ValorCsll'))) ||
+                    (valoresNfseNode && (getXmlValue(valoresNfseNode, ['ValorCsll', 'tc:ValorCsll']) || findXmlValue(valoresNfseNode, 'ValorCsll'))) || '0';
+  const outrasRetencoes = (valoresServicoNode && (getXmlValue(valoresServicoNode, ['OutrasRetencoes', 'tc:OutrasRetencoes']) || findXmlValue(valoresServicoNode, 'OutrasRetencoes'))) ||
+                          (valoresNfseNode && (getXmlValue(valoresNfseNode, ['OutrasRetencoes', 'tc:OutrasRetencoes']) || findXmlValue(valoresNfseNode, 'OutrasRetencoes'))) || '0';
+  const valTotTributos = (valoresServicoNode && (getXmlValue(valoresServicoNode, ['ValTotTributos', 'tc:ValTotTributos']) || findXmlValue(valoresServicoNode, 'ValTotTributos'))) ||
+                         (valoresNfseNode && (getXmlValue(valoresNfseNode, ['ValTotTributos', 'tc:ValTotTributos']) || findXmlValue(valoresNfseNode, 'ValTotTributos'))) || '0';
+  const valorIss = (valoresServicoNode && (getXmlValue(valoresServicoNode, ['ValorIss', 'tc:ValorIss']) || findXmlValue(valoresServicoNode, 'ValorIss'))) ||
+                   (valoresNfseNode && (getXmlValue(valoresNfseNode, ['ValorIss', 'tc:ValorIss']) || findXmlValue(valoresNfseNode, 'ValorIss'))) || '0';
+  const aliquota = (valoresServicoNode && (getXmlValue(valoresServicoNode, ['Aliquota', 'tc:Aliquota']) || findXmlValue(valoresServicoNode, 'Aliquota'))) ||
+                   (valoresNfseNode && (getXmlValue(valoresNfseNode, ['Aliquota', 'tc:Aliquota']) || findXmlValue(valoresNfseNode, 'Aliquota'))) || '0';
 
   // Tomador
-  const tomadorNode = (infDps && getXmlNode(infDps, ['Tomador', 'tc:Tomador', 'TomadorServico', 'tc:TomadorServico'])) ||
-                      getXmlNode(infNfse, ['TomadorServico', 'tc:TomadorServico', 'Tomador', 'tc:Tomador']);
-  const tomadorIdent = tomadorNode ? getXmlNode(tomadorNode, ['IdentificacaoTomador', 'tc:IdentificacaoTomador']) : null;
-  const tomadorCpfCnpj = tomadorIdent ? getXmlNode(tomadorIdent, ['CpfCnpj', 'tc:CpfCnpj']) : null;
+  const tomadorNode = (infDps && (getXmlNode(infDps, ['Tomador', 'tc:Tomador', 'TomadorServico', 'tc:TomadorServico']) || findXmlNode(infDps, 'TomadorServico') || findXmlNode(infDps, 'Tomador'))) ||
+                      getXmlNode(infNfse, ['TomadorServico', 'tc:TomadorServico', 'Tomador', 'tc:Tomador']) ||
+                      findXmlNode(infNfse, 'TomadorServico') ||
+                      findXmlNode(infNfse, 'Tomador');
+  const tomadorIdent = tomadorNode ? (getXmlNode(tomadorNode, ['IdentificacaoTomador', 'tc:IdentificacaoTomador']) || findXmlNode(tomadorNode, 'IdentificacaoTomador')) : null;
+  const tomadorCpfCnpj = tomadorIdent ? (getXmlNode(tomadorIdent, ['CpfCnpj', 'tc:CpfCnpj']) || findXmlNode(tomadorIdent, 'CpfCnpj')) : null;
 
-  const cnpjTomadorRaw = (tomadorCpfCnpj && (getXmlValue(tomadorCpfCnpj, ['Cnpj', 'tc:Cnpj']) || getXmlValue(tomadorCpfCnpj, ['Cpf', 'tc:Cpf']))) || '';
-  const razaoSocialTomador = tomadorNode ? getXmlValue(tomadorNode, ['RazaoSocial', 'tc:RazaoSocial']) : '';
+  const cnpjTomadorRaw = (tomadorCpfCnpj && (getXmlValue(tomadorCpfCnpj, ['Cnpj', 'tc:Cnpj']) || getXmlValue(tomadorCpfCnpj, ['Cpf', 'tc:Cpf']) || findXmlValue(tomadorCpfCnpj, 'Cnpj') || findXmlValue(tomadorCpfCnpj, 'Cpf'))) || '';
+  const razaoSocialTomador = tomadorNode ? (getXmlValue(tomadorNode, ['RazaoSocial', 'tc:RazaoSocial']) || findXmlValue(tomadorNode, 'RazaoSocial')) : '';
 
   // Local da prestação descritivo
   let localPrestacaoDesc = '';
@@ -145,7 +142,7 @@ function parseCompNfse(compNode) {
   // NBS
   let nbs = '';
   if (servicoNode) {
-    nbs = getXmlValue(servicoNode, ['cNBS', 'tc:cNBS', 'NBS', 'tc:NBS']) || '';
+    nbs = getXmlValue(servicoNode, ['cNBS', 'tc:cNBS', 'NBS', 'tc:NBS']) || findXmlValue(servicoNode, 'cNBS') || findXmlValue(servicoNode, 'NBS') || '';
   }
 
   // Situação da NFS-e
@@ -168,7 +165,7 @@ function parseCompNfse(compNode) {
     numero: String(numero || '').trim(),
     codigoVerificacao: String(codigoVerificacao || '').trim(),
     dataEmissao: formatDateBr(dataEmissaoRaw),
-    competencia: formatDateBr(competenciaRaw),
+    competencia: parseCompetencia(competenciaRaw),
     chaveAcesso: String(chaveAcesso || '').trim(),
     tomador: String(razaoSocialTomador || '').trim(),
     cnpjTomador: formatCnpj(cnpjTomadorRaw),
@@ -211,58 +208,47 @@ function parseConsultarNfseResposta(xmlString) {
     'ConsultarNfseResposta', 'tc:ConsultarNfseResposta'
   ]) || parsed;
 
-  const listaNfseNode = getXmlNode(root, ['ListaNfse', 'tc:ListaNfse']);
-  const directComp = getXmlNode(root, ['CompNfse', 'tc:CompNfse']);
-  const listaMensagemNode = getXmlNode(root, ['ListaMensagemRetorno', 'tc:ListaMensagemRetorno', 'ListaMensagensRetorno', 'tc:ListaMensagensRetorno']);
+  const listaNfse = getXmlNode(root, ['ListaNfse', 'tc:ListaNfse']);
+  const compNfseList = listaNfse ? ensureArray(getXmlNode(listaNfse, ['CompNfse', 'tc:CompNfse'])) : [];
 
-  const notas = [];
-  const mensagens = [];
-
-  if (listaNfseNode) {
-    const compList = ensureArray(getXmlNode(listaNfseNode, ['CompNfse', 'tc:CompNfse']));
-    for (const comp of compList) {
-      const parsedNote = parseCompNfse(comp);
-      if (parsedNote && parsedNote.numero) {
-        notas.push(parsedNote);
-      }
-    }
-  } else if (directComp) {
-    const compList = ensureArray(directComp);
-    for (const comp of compList) {
-      const parsedNote = parseCompNfse(comp);
-      if (parsedNote && parsedNote.numero) {
-        notas.push(parsedNote);
-      }
+  // Se veio direto em CompNfse na raiz
+  if (compNfseList.length === 0) {
+    const directComp = getXmlNode(root, ['CompNfse', 'tc:CompNfse']);
+    if (directComp) {
+      compNfseList.push(...ensureArray(directComp));
     }
   }
 
-  if (listaMensagemNode) {
-    const msgList = ensureArray(getXmlNode(listaMensagemNode, ['MensagemRetorno', 'tc:MensagemRetorno']));
-    for (const msg of msgList) {
+  const notas = compNfseList
+    .filter(Boolean)
+    .map(comp => extractNfseData(comp))
+    .filter(n => n.numero && n.numero !== '');
+
+  const listaMensagem = getXmlNode(root, ['ListaMensagemRetorno', 'tc:ListaMensagemRetorno']);
+  const mensagens = [];
+
+  if (listaMensagem) {
+    const msgs = ensureArray(getXmlNode(listaMensagem, ['MensagemRetorno', 'tc:MensagemRetorno']));
+    for (const m of msgs.filter(Boolean)) {
       mensagens.push({
-        codigo: getXmlValue(msg, ['Codigo', 'tc:Codigo']),
-        mensagem: getXmlValue(msg, ['Mensagem', 'tc:Mensagem']),
-        correcao: getXmlValue(msg, ['Correcao', 'tc:Correcao'])
+        codigo: getXmlValue(m, ['Codigo', 'tc:Codigo']),
+        mensagem: getXmlValue(m, ['Mensagem', 'tc:Mensagem']),
+        correcao: getXmlValue(m, ['Correcao', 'tc:Correcao'])
       });
     }
   }
 
-  // Ordena notas por número crescente
-  notas.sort((a, b) => Number(a.numero || 0) - Number(b.numero || 0));
-
   return {
-    // Ipatinga retorna E212 para faixa válida sem NFS-e; L000 aparece em fixtures/implementações ABRASF.
-    success: mensagens.every(msg => !msg.codigo || ['L000', 'E212'].includes(String(msg.codigo).toUpperCase())),
+    success: true,
+    totalNotas: notas.length,
     notas,
-    mensagens,
-    totalNotas: notas.length
+    mensagens
   };
 }
 
 module.exports = {
   buildCabecalho,
   buildConsultarNfseFaixaEnvio,
-  buildConsultarNfseServicoPrestadoEnvio,
-  parseCompNfse,
+  extractNfseData,
   parseConsultarNfseResposta
 };

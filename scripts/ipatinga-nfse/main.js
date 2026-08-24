@@ -3,7 +3,7 @@
 const fs = require('fs');
 const path = require('path');
 const { CONFIG, sanitize } = require('./config');
-const { checkSheetsAccess, checkDriveFileAccess, getSpreadsheetMetadata } = require('./google');
+const { checkSheetsAccess, checkDriveFileAccess, getSpreadsheetMetadata, readSheetValues } = require('./google');
 const { loadCertificate, checkCertificateAccess } = require('./certificate');
 const { formatDateBr } = require('./validators');
 const { inspectWsdl } = require('./wsdl');
@@ -11,9 +11,55 @@ const { syncNfse } = require('./sync');
 const { handlePrepare } = require('./prepare');
 const { issueNfse, reconcileRps, probeProviderHealth, runAutoRecoveryBatch } = require('./issue');
 const { runHistoricalAnalysis } = require('./patterns');
+const { loadLedger, RPS_STATUS } = require('./ledger');
 
 function formatTimestamp(d = new Date()) {
   return d.toISOString().replace('T', ' ').slice(0, 19);
+}
+
+async function checkPendingEntries(dependencies = {}) {
+  const read = dependencies.readSheetValues || readSheetValues;
+  const spreadsheetId = dependencies.spreadsheetId || CONFIG.SHEETS.SPREADSHEET_ID;
+  const tabName = CONFIG.SHEETS.TABS.RPS || 'RPS';
+
+  const rows = await read(spreadsheetId, `${tabName}!A:G`);
+  if (!rows || rows.length <= 1) {
+    return { pendingCount: 0, pendingEntries: [] };
+  }
+
+  const eligibleStatuses = [
+    RPS_STATUS.PROVIDER_INFRA_UNAVAILABLE,
+    RPS_STATUS.SUBMITTED_ASYNC_PROCESSING,
+    RPS_STATUS.UNKNOWN_AFTER_TIMEOUT
+  ];
+
+  const pendingEntries = [];
+  for (let idx = 1; idx < rows.length; idx++) {
+    const row = rows[idx];
+    const env = String(row[0] || '').trim().toLowerCase();
+    const reqId = String(row[1] || '').trim();
+    const itemIdx = String(row[2] || '1').trim();
+    const rpsNum = String(row[3] || '').trim();
+    const status = String(row[6] || '').trim();
+
+    if (env === 'production' && eligibleStatuses.includes(status)) {
+      pendingEntries.push({
+        rowIndex: idx + 1,
+        requestId: reqId,
+        itemIndex: itemIdx,
+        rpsNumero: rpsNum,
+        status
+      });
+    }
+  }
+
+  return {
+    operation: 'pending_check',
+    status: 'SUCCESS',
+    pendingCount: pendingEntries.length,
+    pendingEntries,
+    timestamp: new Date().toISOString()
+  };
 }
 
 async function preflight(options = {}, dependencies = {}) {
@@ -199,7 +245,9 @@ async function main() {
       }
     }
 
-    if (operation === 'preflight') {
+    if (operation === 'pending_check') {
+      summary = await checkPendingEntries();
+    } else if (operation === 'preflight') {
       summary = await preflight({ environment });
     } else if (operation === 'provider_health') {
       summary = await probeProviderHealth({ certData });
@@ -285,6 +333,7 @@ if (require.main === module) {
 module.exports = {
   main,
   preflight,
+  checkPendingEntries,
   enforceOperationSafety,
   generateReport
 };

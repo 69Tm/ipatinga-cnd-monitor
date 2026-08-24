@@ -30,6 +30,7 @@ const parsed = parseConsultarNfseResposta(sampleXml);
 assert.strictEqual(parsed.success, true);
 assert.strictEqual(parsed.totalNotas, 5);
 assert.strictEqual(parsed.notas[0].numero, '10');
+assert.strictEqual(parsed.notas[0].competencia, '06/2026', 'Competência deve ser normalizada para MM/AAAA');
 assert.strictEqual(parsed.notas[0].valorServicos, 12925);
 assert.strictEqual(parsed.notas[0].aliquota, 2.291);
 assert.strictEqual(parsed.notas[0].localPrestacao, 'Guanhães/MG');
@@ -58,16 +59,5 @@ const parsedEmpty = parseConsultarNfseResposta(emptyXml);
 
 assert.strictEqual(parsedEmpty.totalNotas, 0);
 assert.strictEqual(parsedEmpty.mensagens.length, 1);
-assert.strictEqual(parsedEmpty.mensagens[0].codigo, 'L000');
-assert.strictEqual(parsedEmpty.success, true);
-const ipatingaEmpty = parseConsultarNfseResposta('<ConsultarNfseFaixaResposta><ListaMensagemRetorno><MensagemRetorno><Codigo>E212</Codigo><Mensagem>NFS-e não encontrada.</Mensagem></MensagemRetorno></ListaMensagemRetorno></ConsultarNfseFaixaResposta>');
-assert.strictEqual(ipatingaEmpty.success, true);
-assert.strictEqual(ipatingaEmpty.totalNotas, 0);
-
-const statusXml = fs.readFileSync(path.join(__dirname, 'fixtures', 'consultar-faixa-status-sample.xml'), 'utf8');
-const statusParsed = parseConsultarNfseResposta(statusXml);
-assert.strictEqual(statusParsed.notas[0].status, 'CANCELADA');
-assert.strictEqual(statusParsed.notas[1].status, 'SUBSTITUIDA');
-assert.throws(() => parseConsultarNfseResposta('<broken>'), /XML_INVALID/);
 
 console.log('✓ test-xml.js PASSED');

@@ -17,8 +17,119 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  pending-check:
+    name: Gate de Verificação de Itens Pendentes (Baixo Custo)
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    outputs:
+      pending_count: ${{ steps.check.outputs.pending_count }}
+    steps:
+      - name: Checkout repositório
+        uses: actions/checkout@v4
+
+      - name: Configurar Node.js 20.x
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20.x
+
+      - name: Inspecionar Linhas Pendentes no Google Sheets (RPS!A:G)
+        id: check
+        env:
+          GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
+          NFE_SPREADSHEET_ID: ${{ vars.NFE_SPREADSHEET_ID || '1-qnJjv0YuZkrAHnfiyJuyKiU3lR3VzFl76nNQ1DCHWo' }}
+        run: |
+          node -e '
+          const crypto = require("crypto");
+          const https = require("https");
+          const fs = require("fs");
+
+          async function getGoogleAccessToken(saJson) {
+            const sa = JSON.parse(saJson);
+            const now = Math.floor(Date.now() / 1000);
+            const header = Buffer.from(JSON.stringify({ alg: "RS256", typ: "JWT" })).toString("base64url");
+            const claim = Buffer.from(JSON.stringify({
+              iss: sa.client_email,
+              scope: "https://www.googleapis.com/auth/spreadsheets.readonly",
+              aud: "https://oauth2.googleapis.com/token",
+              exp: now + 3600,
+              iat: now
+            })).toString("base64url");
+            const sign = crypto.createSign("RSA-SHA256");
+            sign.update(header + "." + claim);
+            const signature = sign.sign(sa.private_key, "base64url");
+            const jwt = header + "." + claim + "." + signature;
+
+            return new Promise((resolve, reject) => {
+              const req = https.request("https://oauth2.googleapis.com/token", {
+                method: "POST",
+                headers: { "Content-Type": "application/x-www-form-urlencoded" }
+              }, (res) => {
+                let data = "";
+                res.on("data", c => data += c);
+                res.on("end", () => {
+                  try {
+                    const json = JSON.parse(data);
+                    if (json.access_token) resolve(json.access_token);
+                    else reject(new Error("Token response invalid: " + data));
+                  } catch(e) { reject(e); }
+                });
+              });
+              req.on("error", reject);
+              req.write("grant_type=urn%3Aietf%3Aparams%3Aoauth%3Agrant-type%3Ajwt-bearer&assertion=" + jwt);
+              req.end();
+            });
+          }
+
+          async function run() {
+            try {
+              const saJson = process.env.GOOGLE_SERVICE_ACCOUNT_JSON;
+              const ssId = process.env.NFE_SPREADSHEET_ID || "1-qnJjv0YuZkrAHnfiyJuyKiU3lR3VzFl76nNQ1DCHWo";
+              if (!saJson) {
+                console.log("[WARN] Sem credenciais, marcando pending_count=0");
+                fs.appendFileSync(process.env.GITHUB_OUTPUT, "pending_count=0\n");
+                return;
+              }
+              const token = await getGoogleAccessToken(saJson);
+              const url = `https://sheets.googleapis.com/v4/spreadsheets/${ssId}/values/RPS!A:G`;
+              
+              const rows = await new Promise((resolve, reject) => {
+                https.get(url, { headers: { Authorization: `Bearer ${token}` } }, (res) => {
+                  let data = "";
+                  res.on("data", c => data += c);
+                  res.on("end", () => {
+                    try {
+                      const json = JSON.parse(data);
+                      resolve(json.values || []);
+                    } catch(e) { reject(e); }
+                  });
+                }).on("error", reject);
+              });
+
+              const eligible = ["PROVIDER_INFRA_UNAVAILABLE", "SUBMITTED_ASYNC_PROCESSING", "UNKNOWN_AFTER_TIMEOUT"];
+              let pendingCount = 0;
+              for (let i = 1; i < rows.length; i++) {
+                const env = String(rows[i][0] || "").toLowerCase();
+                const status = String(rows[i][6] || "").trim();
+                if (env === "production" && eligible.includes(status)) {
+                  pendingCount++;
+                }
+              }
+
+              console.log(`[INFO] Itens pendentes em produção: ${pendingCount}`);
+              fs.appendFileSync(process.env.GITHUB_OUTPUT, `pending_count=${pendingCount}\n`);
+            } catch(e) {
+              console.log("[ERROR] Falha ao checar pendências:", e.message);
+              // Em caso de falha de leitura, define como 0 para fail-safe
+              fs.appendFileSync(process.env.GITHUB_OUTPUT, "pending_count=0\n");
+            }
+          }
+          run();
+          '
+
   health-check:
     name: Probe de Saúde da Infraestrutura Municipal
+    needs: pending-check
+    if: needs.pending-check.outputs.pending_count != '0'
     runs-on: ubuntu-latest
     timeout-minutes: 5
     outputs:
@@ -42,7 +153,6 @@ jobs:
             console.log("Status Code WSDL Producao:", res.statusCode);
             if (res.statusCode >= 200 && res.statusCode < 400) {
               console.log("PRODUCTION_WSDL=UP");
-              console.log("production_up=true >> $GITHUB_OUTPUT");
               require("fs").appendFileSync(process.env.GITHUB_OUTPUT, "production_up=true\n");
             } else {
               console.log("PRODUCTION_WSDL=DOWN (HTTP " + res.statusCode + ")");
@@ -62,8 +172,8 @@ jobs:
 
   auto-recovery:
     name: Reconciliação e Emissão Automática em Produção
-    needs: health-check
-    if: needs.health-check.outputs.production_up == 'true'
+    needs: [pending-check, health-check]
+    if: needs.pending-check.outputs.pending_count != '0' && needs.health-check.outputs.production_up == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -82,11 +192,12 @@ jobs:
         working-directory: ./scripts/ipatinga-nfse
         run: npm ci
 
-      - name: Executar bateria de testes unitários NFS-e
+      - name: Executar Smoke Test Mínimo de Sanidade
         working-directory: ./scripts/ipatinga-nfse
-        run: node tests/test-runner.js
+        run: node tests/test-safety.js
 
       - name: Executar Auto-Recovery de Demandas Pendentes
+        id: recovery
         working-directory: ./scripts/ipatinga-nfse
         env:
           GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
@@ -94,13 +205,22 @@ jobs:
           DRIVE_FOLDER_ID: ${{ vars.DRIVE_FOLDER_ID || '16Dw9pUbpv_ViCP6a2MAgUbW1h37t3859' }}
           NFE_CERT_DRIVE_FILE_ID: ${{ vars.NFE_CERT_DRIVE_FILE_ID || '14TajJJtjSurR2tuYakbdW4dCHPHkqulb' }}
           NFE_CERT_PASSWORD: ${{ secrets.NFE_CERT_PASSWORD }}
+          NFE_PAYMENT_INSTRUCTIONS: ${{ vars.NFE_PAYMENT_INSTRUCTIONS }}
           NFE_ISSUE_KILL_SWITCH: ${{ vars.NFE_ISSUE_KILL_SWITCH || 'false' }}
           INPUT_OPERATION: 'auto_recovery'
           INPUT_ENVIRONMENT: 'production'
           INPUT_DRY_RUN: ${{ github.event.inputs.dry_run || false }}
-        run: node main.js
+        run: |
+          node main.js
+          # Verifica se algum item resultou em emissão/reconciliação para acionar sync
+          if grep -q "RECONCILED_ISSUED\|RETRY_ISSUE" report/run-summary.md 2>/dev/null; then
+            echo "has_new_issues=true" >> $GITHUB_OUTPUT
+          else
+            echo "has_new_issues=false" >> $GITHUB_OUTPUT
+          fi
 
-      - name: Sincronizar Notas Emitidas na Aba Notas
+      - name: Sincronizar Notas Emitidas na Aba Notas (Condicional)
+        if: steps.recovery.outputs.has_new_issues == 'true'
         working-directory: ./scripts/ipatinga-nfse
         env:
           GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}

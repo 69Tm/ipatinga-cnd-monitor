@@ -541,6 +541,9 @@ async function issueNfse({ requestId, itemIndex = 1, certData, dryRun = false },
   // 3. Prepara a demanda (se não for caso já emitido/bloqueado no ledger)
   let prepared;
   if (requestId.startsWith('fixture-homologation') || requestId.startsWith('fixture-controlada')) {
+    if (environment === 'production' && process.env.NFE_ALLOW_CONTROLLED_PRODUCTION_TEST !== 'true') {
+      throw new Error('CONTROLLED_PRODUCTION_TEST_DISABLED: Fixtures controladas em produção exigem NFE_ALLOW_CONTROLLED_PRODUCTION_TEST=true.');
+    }
     prepared = buildControlledCandidate({ requestId, environment });
   } else {
     const [demandasRaw, tomadoresRaw, patternsRaw, notasRaw] = await Promise.all([
@@ -574,6 +577,14 @@ async function issueNfse({ requestId, itemIndex = 1, certData, dryRun = false },
 
   if (!candidate.codigoMunicipioIncidenciaIss) {
     throw new Error('PREPARE_NOT_READY: codigoMunicipioIncidenciaIss indefinido para o tomador/padrão.');
+  }
+
+  if (!candidate.issRetido) {
+    throw new Error('PREPARE_NOT_READY: issRetido indefinido para o padrão/demanda.');
+  }
+
+  if (!candidate.exigibilidadeIss) {
+    throw new Error('PREPARE_NOT_READY: exigibilidadeIss indefinido para o padrão/demanda.');
   }
 
   // 4. Alocação Atômica do ALLOCATED (se ainda não existia)
@@ -610,8 +621,8 @@ async function issueNfse({ requestId, itemIndex = 1, certData, dryRun = false },
   const itemLista = String(candidate.codigoTribNacional || '').split('.').slice(0, 2).join('.');
   const codMunPrestacao = candidate.codigoMunicipioPrestacao;
   const codMunIncidencia = candidate.codigoMunicipioIncidenciaIss;
-  const issRetido = candidate.issRetido || '2';
-  const exigibilidadeIss = candidate.exigibilidadeIss || '1';
+  const issRetido = candidate.issRetido;
+  const exigibilidadeIss = candidate.exigibilidadeIss;
   const nbsTag = candidate.nbs ? `<cNBS>${escapeXml(candidate.nbs.replace(/\D/g, ''))}</cNBS>` : '';
   const cnaeTag = candidate.codigoCnae ? `<CodigoCnae>${escapeXml(candidate.codigoCnae)}</CodigoCnae>` : '';
 

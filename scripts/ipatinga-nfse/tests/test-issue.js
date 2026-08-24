@@ -8,6 +8,7 @@ const {
   reconcileRps,
   issueNfse
 } = require('../issue');
+const { checkPendingEntries } = require('../main');
 const { RPS_STATUS, RECONCILIATION_STATUS } = require('../ledger');
 
 console.log('Running test-issue.js...');
@@ -42,8 +43,8 @@ const mockTomadores = [
   ['20.724.357/0001-20', 'ASSOCIACAO DE CARIDADE NOSSA SENHORA DO CARMO', 'HIC', 'CAPITAO BERNARDO', '257', '', 'CENTRO', '3128006', 'GUANHAES', 'MG', '39740000', 'NFS-e histórica', '2026-08-22', 'HIC', 'HOMOLOGADO']
 ];
 const mockPatterns = [
-  ['ID Padrão', 'Nome Padrão', 'Tomador', 'CNPJ Tomador', 'Categoria', 'Template / Descrição Oficial', 'Cód. Trib. Nacional', 'Cód. Trib. Municipal', 'Local Prestação', 'Cód. Município Prestação', 'Cód. Município Incidência', 'NBS', 'Confiança', 'Status'],
-  ['HIC_PLANTOES_PS_SUS', 'HIC Plantões', 'ASSOCIACAO DE CARIDADE NOSSA SENHORA DO CARMO', '20.724.357/0001-20', 'HIC — Plantões PS SUS', '', '04.03.01', '403', 'Guanhães/MG', '3128006', '3131307', '123011900', 'ALTA', 'VALIDADO']
+  ['ID Padrão', 'Nome Padrão', 'Tomador', 'CNPJ Tomador', 'Categoria', 'Template / Descrição Oficial', 'Cód. Trib. Nacional', 'Cód. Trib. Municipal', 'Local Prestação', 'Cód. Município Prestação', 'Cód. Município Incidência', 'ISS Retido', 'Exigibilidade ISS', 'NBS', 'Confiança', 'Status'],
+  ['HIC_PLANTOES_PS_SUS', 'HIC Plantões', 'ASSOCIACAO DE CARIDADE NOSSA SENHORA DO CARMO', '20.724.357/0001-20', 'HIC — Plantões PS SUS', '', '04.03.01', '403', 'Guanhães/MG', '3128006', '3131307', '2', '1', '123011900', 'ALTA', 'VALIDADO']
 ];
 
 function mockSheetReader(overrides = {}) {
@@ -59,6 +60,8 @@ function mockSheetReader(overrides = {}) {
 }
 
 async function run() {
+  process.env.NFE_ALLOW_CONTROLLED_PRODUCTION_TEST = 'true';
+
   // 1. Testa builder de consulta por RPS com escape e tag correta ConsultarNfseRpsEnvio
   const queryXml = buildConsultarNfsePorRpsEnvio({ rpsNumero: '1001', rpsSerie: 'A', rpsTipo: '1' });
   assert.ok(queryXml.includes('<Numero>1001</Numero>'));
@@ -267,6 +270,38 @@ async function run() {
   assert.strictEqual(rpsStorageRetry[1][3], '101');
   assert.strictEqual(rpsStorageRetry[1][6], RPS_STATUS.ISSUED);
   assert.strictEqual(rpsStorageRetry[1][9], '16');
+
+  // 9. Testa bloqueio de fixture controlada sem a flag NFE_ALLOW_CONTROLLED_PRODUCTION_TEST
+  delete process.env.NFE_ALLOW_CONTROLLED_PRODUCTION_TEST;
+  let threwControlled = false;
+  try {
+    await issueNfse({
+      requestId: 'fixture-controlada-teste-bloqueio',
+      itemIndex: 1,
+      certData,
+      dryRun: false
+    }, {
+      readSheetValues: mockSheetReader({ rps: [] }),
+      createSheetIfNotExists: async () => true
+    });
+  } catch (e) {
+    threwControlled = true;
+    assert.ok(e.message.includes('CONTROLLED_PRODUCTION_TEST_DISABLED'));
+  }
+  assert.strictEqual(threwControlled, true, 'Fixture controlada em producao deve ser barrada sem flag');
+
+  // 10. Testa pending_check (checkPendingEntries)
+  const rpsPendingSample = [
+    ['environment', 'request_id', 'item_index', 'rps_numero', 'rps_serie', 'rps_tipo', 'status'],
+    ['production', 'req-1', '1', '101', 'A', '1', 'ISSUED'],
+    ['production', 'req-2', '1', '102', 'A', '1', 'PROVIDER_INFRA_UNAVAILABLE'],
+    ['homologation', 'req-3', '1', '1001', 'A', '1', 'SUBMITTED_ASYNC_PROCESSING']
+  ];
+  const pendingCheckRes = await checkPendingEntries({
+    readSheetValues: async () => rpsPendingSample
+  });
+  assert.strictEqual(pendingCheckRes.pendingCount, 1, 'Deve identificar exatamente 1 pendencia em producao');
+  assert.strictEqual(pendingCheckRes.pendingEntries[0].requestId, 'req-2');
 
   console.log('✓ test-issue.js PASSED');
 }

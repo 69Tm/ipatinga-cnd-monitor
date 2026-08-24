@@ -2,13 +2,10 @@
 
 const fs = require('fs');
 const path = require('path');
-const { CONFIG, sanitize } = require('./config');
-const { getDriveClient, readSheetValues, updateSheetValues, appendSheetValues, createSheetIfNotExists, getSpreadsheetMetadata } = require('./google');
-const { normalizeCnpj, formatCnpj, parseCompetencia } = require('./validators');
+const { CONFIG } = require('./config');
+const { getDriveClient, readSheetValues, updateSheetValues, appendSheetValues, createSheetIfNotExists } = require('./google');
+const { normalizeCnpj, parseCurrency, parseCompetencia, formatDateBr, formatCurrency } = require('./validators');
 
-/**
- * Catálogo consolidado de padrões fiscais conhecidos e suas regras determinísticas
- */
 const KNOWN_PATTERNS = [
   {
     patternId: 'HIC_PLANTOES_PS_SUS',
@@ -17,7 +14,7 @@ const KNOWN_PATTERNS = [
     cnpjTomador: '20.724.357/0001-20',
     cnpjTomadorClean: '20724357000120',
     categoria: 'HIC — Plantões Médicos PS SUS',
-    template: 'Dr Túlio Athélio Sathler Siman: Referente a Plantões Médicos P.S SUS no Mês {MM/AAAA}- R$ {VALOR}. {BLOCO_BANCARIO_VALIDADO}',
+    template: 'Dr Túlio Athélio Sathler Siman: Referente a Plantões Médicos P.S SUS no Mês {MM/AAAA}- R$ {VALOR}. {BLOCO_BANCARIO}',
     codigoTribNacional: '04.03.01',
     codigoTribMunicipal: '403',
     localPrestacao: 'Guanhães/MG',
@@ -26,7 +23,7 @@ const KNOWN_PATTERNS = [
     issRetido: '2', // 1 = Sim, 2 = Não
     exigibilidadeIss: '1', // 1 = Exigível
     nbs: '123011900',
-    camposFixos: 'Tomador, CNPJ, Código Nacional (04.03.01), Código Municipal (403), Local Prestação (Guanhães/MG), Cód Incidência ISS (3131307), Bloco Bancário Inter validado nos exemplos',
+    camposFixos: 'Tomador, CNPJ, Código Nacional (04.03.01), Código Municipal (403), Local Prestação (Guanhães/MG), Cód Incidência ISS (3131307), Bloco Bancário injetado em runtime',
     camposVariaveis: 'Competência (MM/AAAA), Valor Total (R$)',
     camposNaoHardcodar: 'Alíquota ISS (varia conforme Simples Nacional), Valor',
     confianca: 'ALTA',
@@ -44,7 +41,7 @@ const KNOWN_PATTERNS = [
     cnpjTomador: '20.724.357/0001-20',
     cnpjTomadorClean: '20724357000120',
     categoria: 'HIC — Produção PS SUS',
-    template: 'Dr Túlio Athélio Sathler Siman: Referente a Produção P.S SUS no Mês {MM/AAAA}- R$ {VALOR}. {BLOCO_BANCARIO_VALIDADO}',
+    template: 'Dr Túlio Athélio Sathler Siman: Referente a Produção P.S SUS no Mês {MM/AAAA}- R$ {VALOR}. {BLOCO_BANCARIO}',
     codigoTribNacional: '04.03.01',
     codigoTribMunicipal: '403',
     localPrestacao: 'Guanhães/MG',
@@ -53,7 +50,7 @@ const KNOWN_PATTERNS = [
     issRetido: '2',
     exigibilidadeIss: '1',
     nbs: '123011900',
-    camposFixos: 'Tomador, CNPJ, Código Nacional (04.03.01), Código Municipal (403), Local Prestação (Guanhães/MG), Cód Incidência ISS (3131307), Bloco Bancário Inter validado nos exemplos',
+    camposFixos: 'Tomador, CNPJ, Código Nacional (04.03.01), Código Municipal (403), Local Prestação (Guanhães/MG), Cód Incidência ISS (3131307), Bloco Bancário injetado em runtime',
     camposVariaveis: 'Competência (MM/AAAA), Valor Total (R$)',
     camposNaoHardcodar: 'Alíquota ISS, Valor',
     confianca: 'ALTA',
@@ -139,254 +136,251 @@ const TOMADORES_DEFAULTS = {
 /**
  * Pesquisa no Google Drive todos os documentos e PDFs fiscais relacionados à DEXMED
  */
-async function scanDriveNfseFiles(dependencies = {}) {
-  const drive = (dependencies.getDriveClient || getDriveClient)();
-  const query = "mimeType = 'application/pdf' and (name contains 'NFS' or name contains 'NFE' or name contains 'DANF' or name contains 'nota fiscal') and trashed = false";
+async function scanDriveForFiscalDocs(driveFolderId = null) {
+  const folderId = driveFolderId || CONFIG.DRIVE.FOLDER_ID;
+  const drive = getDriveClient();
+  const foundFiles = [];
 
-  const res = await drive.files.list({
-    q: query,
-    fields: 'files(id, name, createdTime, modifiedTime, webViewLink, size)',
-    spaces: 'drive',
-    pageSize: 100
-  });
+  try {
+    const q = `'${folderId}' in parents and trashed = false`;
+    const res = await drive.files.list({
+      q,
+      fields: 'files(id, name, mimeType, createdTime, size, description)',
+      pageSize: 100
+    });
 
-  return res.data.files || [];
-}
-
-function rowsEqual(left, right) {
-  const normalize = rows => (rows || []).map(row => row.map(value => String(value ?? '').trim()));
-  return JSON.stringify(normalize(left)) === JSON.stringify(normalize(right));
-}
-
-function competenceOrder(value) {
-  const match = String(parseCompetencia(value) || '').match(/^(\d{2})\/(\d{4})$/);
-  return match ? Number(`${match[2]}${match[1]}`) : 0;
-}
-
-function pickField(def, key, priorVal = '') {
-  if (Object.prototype.hasOwnProperty.call(def, key)) {
-    return def[key] ?? '';
+    const files = res.data.files || [];
+    for (const f of files) {
+      const name = String(f.name || '').toLowerCase();
+      if (name.includes('nf') || name.includes('nota') || name.includes('rps') || name.includes('espelho') || name.includes('hic') || name.includes('cisurg')) {
+        foundFiles.push(f);
+      }
+    }
+  } catch (err) {
+    console.log(`[WARN] Erro ao escanear Drive: ${err.message}`);
   }
-  return priorVal ?? '';
+
+  return foundFiles;
 }
 
-function buildTomadoresRows(notasRows, existingRows) {
+function buildTomadoresRows(notasRows = [], existingTomadores = []) {
   const headers = [
-    'CNPJ', 'Razão Social', 'Nome Curto',
-    'Logradouro', 'Número', 'Complemento', 'Bairro', 'Cód. Município', 'Município', 'UF', 'CEP',
-    'E-mail', 'Categorias Conhecidas', 'Status Homologação',
-    'Fonte Endereço', 'Validado Em',
-    'Primeiro Uso', 'Último Uso', 'Qtd NFS-e'
+    'CNPJ',
+    'Razão Social',
+    'Nome Curto',
+    'Logradouro',
+    'Número',
+    'Complemento',
+    'Bairro',
+    'Cód. Município',
+    'Município',
+    'UF',
+    'CEP',
+    'E-mail',
+    'Categorias Conhecidas',
+    'Status Homologação',
+    'Fonte Endereço',
+    'Validado Em',
+    'Primeiro Uso',
+    'Último Uso',
+    'Qtd NFS-e'
   ];
 
-  const existing = new Map();
-  for (const row of (existingRows || []).slice(1)) {
-    const key = normalizeCnpj(row[0]);
-    if (key) existing.set(key, row);
-  }
+  const rows = [headers];
 
-  const grouped = new Map();
-  for (const row of (notasRows || []).slice(1)) {
-    const key = normalizeCnpj(row[5]);
-    if (!key) continue;
-    if (!grouped.has(key)) grouped.set(key, { razao: row[4] || '', competencias: [], categorias: new Set(), total: 0 });
-    const item = grouped.get(key);
-    item.total++;
-    if (row[2]) item.competencias.push(String(row[2]));
-    if (row[6]) item.categorias.add(String(row[6]));
-  }
-
-  for (const pattern of KNOWN_PATTERNS) {
-    const item = grouped.get(pattern.cnpjTomadorClean);
-    if (item) item.categorias.add(pattern.categoria);
-  }
-
-  // Garante tomadores conhecidos mesmo que não tenham notas emitidas ainda
-  for (const key of Object.keys(TOMADORES_DEFAULTS)) {
-    if (!grouped.has(key)) {
-      const def = TOMADORES_DEFAULTS[key];
-      grouped.set(key, { razao: def.razaoSocial, competencias: [], categorias: new Set([def.nomeCurto]), total: 0 });
+  const existingMap = new Map();
+  if (existingTomadores && existingTomadores.length > 1) {
+    for (let i = 1; i < existingTomadores.length; i++) {
+      const row = existingTomadores[i];
+      const clean = normalizeCnpj(row[0]);
+      if (clean) existingMap.set(clean, row);
     }
   }
 
-  const rows = [headers];
-  for (const [key, item] of [...grouped.entries()].sort(([a], [b]) => a.localeCompare(b))) {
-    const prior = existing.get(key) || [];
-    const def = TOMADORES_DEFAULTS[key] || {};
-    const ordered = item.competencias.filter(Boolean).sort((a, b) => competenceOrder(a) - competenceOrder(b));
-    const pattern = KNOWN_PATTERNS.find(candidate => candidate.cnpjTomadorClean === key);
+  for (const [cnpjClean, defaults] of Object.entries(TOMADORES_DEFAULTS)) {
+    const formattedCnpj = cnpjClean.length === 14
+      ? `${cnpjClean.slice(0, 2)}.${cnpjClean.slice(2, 5)}.${cnpjClean.slice(5, 8)}/${cnpjClean.slice(8, 12)}-${cnpjClean.slice(12)}`
+      : cnpjClean;
 
-    const isNewSchemaPrior = prior.length >= 19;
-    const emailPreserved = isNewSchemaPrior ? (prior[11] || def.email || '') : (prior[4] || def.email || '');
+    const exist = existingMap.get(cnpjClean);
+    let row;
 
-    rows.push([
-      pattern?.cnpjTomador || formatCnpj(key),
-      pickField(def, 'razaoSocial', item.razao || pattern?.tomador || prior[1]),
-      pickField(def, 'nomeCurto', prior[2]),
-      pickField(def, 'logradouro', isNewSchemaPrior ? prior[3] : ''),
-      pickField(def, 'numero', isNewSchemaPrior ? prior[4] : ''),
-      pickField(def, 'complemento', isNewSchemaPrior ? prior[5] : ''),
-      pickField(def, 'bairro', isNewSchemaPrior ? prior[6] : ''),
-      pickField(def, 'codigoMunicipio', isNewSchemaPrior ? prior[7] : ''),
-      pickField(def, 'municipio', isNewSchemaPrior ? prior[8] : ''),
-      pickField(def, 'uf', isNewSchemaPrior ? prior[9] : ''),
-      pickField(def, 'cep', isNewSchemaPrior ? prior[10] : ''),
-      emailPreserved,
-      pickField(def, 'categorias', [...item.categorias].sort().join(', ')),
-      pickField(def, 'statusHomologacao', isNewSchemaPrior ? prior[13] : 'HOMOLOGADO'),
-      pickField(def, 'fonteEndereco', isNewSchemaPrior ? prior[14] : 'NFS-e histórica'),
-      pickField(def, 'validadoEm', isNewSchemaPrior ? prior[15] : '2026-08-22'),
-      pickField(def, 'primeiroUso', ordered[0] || (isNewSchemaPrior ? prior[16] : '')),
-      pickField(def, 'ultimoUso', ordered.at(-1) || (isNewSchemaPrior ? prior[17] : '')),
-      def.qtdNfse !== undefined ? def.qtdNfse : (item.total || (isNewSchemaPrior ? Number(prior[18]) : 0))
-    ]);
+    if (exist && exist.length >= 12) {
+      let logradouro = exist[3] || defaults.logradouro;
+      let numero = exist[4] || defaults.numero;
+      let complemento = exist[5] || defaults.complemento;
+      let bairro = exist[6] || defaults.bairro;
+      let codMun = exist[7] || defaults.codigoMunicipio;
+      let mun = exist[8] || defaults.municipio;
+      let uf = exist[9] || defaults.uf;
+      let cep = exist[10] || defaults.cep;
+      let email = exist[11] || defaults.email;
+
+      // Corrige regressão histórica de shift se o complemento contiver string de categoria
+      if (complemento && (complemento.includes('—') || complemento.includes('Plantão') || complemento.includes('Produção'))) {
+        complemento = defaults.complemento || '';
+      }
+
+      row = [
+        formattedCnpj,
+        exist[1] || defaults.razaoSocial,
+        exist[2] || defaults.nomeCurto,
+        logradouro,
+        numero,
+        complemento,
+        bairro,
+        codMun,
+        mun,
+        uf,
+        cep,
+        email,
+        exist[12] || defaults.categorias,
+        exist[13] || defaults.statusHomologacao,
+        exist[14] || defaults.fonteEndereco,
+        exist[15] || defaults.validadoEm,
+        exist[16] || defaults.primeiroUso,
+        exist[17] || defaults.ultimoUso,
+        exist[18] ? parseInt(exist[18], 10) : defaults.qtdNfse
+      ];
+    } else {
+      row = [
+        formattedCnpj,
+        defaults.razaoSocial,
+        defaults.nomeCurto,
+        defaults.logradouro,
+        defaults.numero,
+        defaults.complemento,
+        defaults.bairro,
+        defaults.codigoMunicipio,
+        defaults.municipio,
+        defaults.uf,
+        defaults.cep,
+        defaults.email,
+        defaults.categorias,
+        defaults.statusHomologacao,
+        defaults.fonteEndereco,
+        defaults.validadoEm,
+        defaults.primeiroUso,
+        defaults.ultimoUso,
+        defaults.qtdNfse
+      ];
+    }
+    rows.push(row);
   }
+
   return rows;
 }
 
 function buildPadroesRows() {
-  const rows = [[
-    'ID Padrão', 'Nome Padrão', 'Tomador', 'CNPJ Tomador', 'Categoria', 'Template / Descrição Oficial',
-    'Cód. Trib. Nacional', 'Cód. Trib. Municipal', 'Local Prestação', 'Cód. Município Prestação', 'Cód. Município Incidência ISS',
-    'ISS Retido', 'Exigibilidade ISS', 'NBS', 'Campos Fixos',
-    'Campos Variáveis', 'Campos Não Hardcodar', 'Qtd Exemplos', 'NFS-e Exemplos',
-    'Drive File IDs Exemplos', 'Primeira Competência', 'Última Competência', 'Confiança', 'Status'
-  ]];
+  const headers = [
+    'ID Padrão',
+    'Nome Padrão',
+    'Tomador',
+    'CNPJ Tomador',
+    'Categoria',
+    'Template / Descrição Oficial',
+    'Cód. Trib. Nacional',
+    'Cód. Trib. Municipal',
+    'Local Prestação',
+    'Cód. Município Prestação',
+    'Cód. Município Incidência',
+    'ISS Retido',
+    'Exigibilidade ISS',
+    'NBS',
+    'Campos Fixos',
+    'Campos Variáveis',
+    'Campos a Não Hardcodar',
+    'Confiança',
+    'Status Homologação',
+    'Qtd Exemplos',
+    'NFS-e Exemplo',
+    'Drive File IDs',
+    'Primeira Competência',
+    'Última Competência'
+  ];
+
+  const rows = [headers];
 
   for (const p of KNOWN_PATTERNS) {
     rows.push([
-      p.patternId, p.nome, p.tomador, p.cnpjTomador, p.categoria, p.template,
-      p.codigoTribNacional, p.codigoTribMunicipal, p.localPrestacao, p.codigoIbgePrestacao, p.codigoMunicipioIncidenciaIss,
-      p.issRetido, p.exigibilidadeIss, p.nbs,
-      p.camposFixos, p.camposVariaveis, p.camposNaoHardcodar,
-      String(p.quantidadeExemplos),
-      p.numerosNfseExemplo.join(', '), p.driveFileIdsExemplo.join(', '),
-      p.primeiraCompetencia, p.ultimaCompetencia, p.confianca, p.statusHomologacao
+      p.patternId,
+      p.nome,
+      p.tomador,
+      p.cnpjTomador,
+      p.categoria,
+      p.template,
+      p.codigoTribNacional,
+      p.codigoTribMunicipal,
+      p.localPrestacao,
+      p.codigoIbgePrestacao,
+      p.codigoMunicipioIncidenciaIss,
+      p.issRetido,
+      p.exigibilidadeIss,
+      p.nbs,
+      p.camposFixos,
+      p.camposVariaveis,
+      p.camposNaoHardcodar,
+      p.confianca,
+      p.statusHomologacao,
+      p.quantidadeExemplos,
+      (p.numerosNfseExemplo || []).join(', '),
+      (p.driveFileIdsExemplo || []).join(', '),
+      p.primeiraCompetencia,
+      p.ultimaCompetencia
     ]);
   }
+
   return rows;
 }
 
-function buildLocalPrestacaoRepairs(notasRows) {
-  const verified = new Set(['10', '11', '13', '14', '15']);
-  const repairs = [];
-  for (let index = 1; index < (notasRows || []).length; index++) {
-    const row = notasRows[index];
-    const numero = String(row[0] || '').trim();
-    const local = String(row[11] || '').trim();
-    if (verified.has(numero) && (!local || local === 'IBGE 0')) {
-      repairs.push({ numero, range: `${CONFIG.SHEETS.TABS.NOTAS}!L${index + 1}`, value: 'Guanhães/MG' });
-    }
-  }
-  return repairs;
-}
+async function runHistoricalAnalysis(options = {}, dependencies = {}) {
+  const spreadsheetId = options.spreadsheetId || CONFIG.SHEETS.SPREADSHEET_ID;
+  const dryRun = options.dryRun || false;
+  const read = dependencies.readSheetValues || readSheetValues;
+  const update = dependencies.updateSheetValues || updateSheetValues;
+  const createSheet = dependencies.createSheetIfNotExists || createSheetIfNotExists;
 
-/**
- * Executa a análise histórica completa do Google Drive e consolida os padrões.
- * Escritas são idempotentes e ocorrem somente depois que todas as leituras terminam.
- */
-async function runHistoricalAnalysis({ dryRun = false, environment = 'production' } = {}, dependencies = {}) {
-  console.log('🔍 Executando Análise Histórica de NFS-e no Google Drive...');
-  const startTime = Date.now();
-  const driveFiles = await scanDriveNfseFiles(dependencies);
-  console.log(`  - Total de arquivos PDF candidatos encontrados no Drive: ${driveFiles.length}`);
+  console.log('\n====================================================');
+  console.log('    ANÁLISE HISTÓRICA E MAPEAMENTO DE PADRÕES       ');
+  console.log('====================================================\n');
 
-  const ssId = CONFIG.SHEETS.SPREADSHEET_ID;
-  const readValues = dependencies.readSheetValues || readSheetValues;
-  const updateValues = dependencies.updateSheetValues || updateSheetValues;
-  const appendValues = dependencies.appendSheetValues || appendSheetValues;
-  const ensureSheet = dependencies.createSheetIfNotExists || createSheetIfNotExists;
-
-  if (!dryRun) {
-    await ensureSheet(ssId, CONFIG.SHEETS.TABS.DEMANDAS);
-  }
-
-  const [notasPlanilha, tomadoresAtuais, padroesAtuais, demandasAtuais] = await Promise.all([
-    readValues(ssId, `${CONFIG.SHEETS.TABS.NOTAS}!A:X`),
-    readValues(ssId, `${CONFIG.SHEETS.TABS.TOMADORES}!A:S`),
-    readValues(ssId, `${CONFIG.SHEETS.TABS.PADROES}!A:X`),
-    readValues(ssId, `${CONFIG.SHEETS.TABS.DEMANDAS}!A:G`).catch(() => [])
+  const [notasRaw, tomadoresRaw] = await Promise.all([
+    read(spreadsheetId, `${CONFIG.SHEETS.TABS.NOTAS}!A:X`),
+    read(spreadsheetId, `${CONFIG.SHEETS.TABS.TOMADORES}!A:S`).catch(() => [])
   ]);
-  const tomadoresRows = buildTomadoresRows(notasPlanilha, tomadoresAtuais);
+
+  const driveFiles = await scanDriveForFiscalDocs();
+  console.log(`  ✓ Arquivos fiscais relevantes localizados no Drive: ${driveFiles.length}`);
+
+  const tomadoresRows = buildTomadoresRows(notasRaw, tomadoresRaw);
   const padroesRows = buildPadroesRows();
-  const localRepairs = buildLocalPrestacaoRepairs(notasPlanilha);
-  const tomadoresChanged = !rowsEqual(tomadoresRows, tomadoresAtuais);
-  const padroesChanged = !rowsEqual(padroesRows, (padroesAtuais || []).slice(0, padroesRows.length));
-  const legacyPatternRows = Math.max(0, (padroesAtuais || []).length - padroesRows.length);
-  const plannedWrites = Number(tomadoresChanged) + Number(padroesChanged) + Number(legacyPatternRows > 0) + Number(localRepairs.length > 0);
-  let executedWrites = 0;
 
   if (!dryRun) {
-    if (tomadoresChanged) {
-      await updateValues(ssId, `${CONFIG.SHEETS.TABS.TOMADORES}!A1:S${tomadoresRows.length}`, tomadoresRows);
-      executedWrites++;
-    }
-    if (padroesChanged) {
-      await updateValues(ssId, `${CONFIG.SHEETS.TABS.PADROES}!A1:X${padroesRows.length}`, padroesRows);
-      executedWrites++;
-    }
-    for (const repair of localRepairs) {
-      await updateValues(ssId, repair.range, [[repair.value]]);
-      executedWrites++;
-    }
+    await createSheet(spreadsheetId, CONFIG.SHEETS.TABS.TOMADORES);
+    await update(spreadsheetId, `${CONFIG.SHEETS.TABS.TOMADORES}!A1:S${tomadoresRows.length}`, tomadoresRows);
+    console.log(`  ✓ Aba '${CONFIG.SHEETS.TABS.TOMADORES}' sincronizada com ${tomadoresRows.length - 1} tomadores homologados.`);
 
-    // Se a aba Demandas estiver sem cabeçalho, cria o cabeçalho
-    if (!demandasAtuais || demandasAtuais.length === 0) {
-      await updateValues(ssId, `${CONFIG.SHEETS.TABS.DEMANDAS}!A1:G1`, [[
-        'Message ID', 'Período', 'Notas solicitadas', 'Valores', 'Descrição obrigatória', 'Status', 'NFS-e resultantes'
-      ]]);
-      executedWrites++;
-    }
-
-    // Garante que a linha de demanda sintética para o teste E2E exista na aba Demandas
-    const testRequestId = 'e2e-integration-test-live-1';
-    const demandExists = (demandasAtuais || []).some(row => String(row[0] || '').trim() === testRequestId);
-    if (!demandExists) {
-      const e2eDemandRow = [
-        testRequestId,
-        '08/2026',
-        'HIC — Plantões Médicos PS SUS',
-        '10,00',
-        'TESTE DE INTEGRACAO DRY-RUN — NAO EMITIR',
-        'READY_TO_PREPARE',
-        ''
-      ];
-      await appendValues(ssId, `${CONFIG.SHEETS.TABS.DEMANDAS}!A:G`, [e2eDemandRow]);
-      executedWrites++;
-    }
+    await createSheet(spreadsheetId, CONFIG.SHEETS.TABS.PADROES);
+    await update(spreadsheetId, `${CONFIG.SHEETS.TABS.PADROES}!A1:X${padroesRows.length}`, padroesRows);
+    console.log(`  ✓ Aba '${CONFIG.SHEETS.TABS.PADROES}' sincronizada com ${padroesRows.length - 1} padrões consolidados.`);
+  } else {
+    console.log(`  [DRY-RUN] Nenhuma alteração gravada nas abas Tomadores e Padrões.`);
   }
-
-  // Leitura de conferência após atualização
-  const tomadoresLidos = await readValues(ssId, `${CONFIG.SHEETS.TABS.TOMADORES}!A1:S${tomadoresRows.length}`);
 
   return {
-    operation: 'historical_analysis',
-    status: dryRun ? 'DRY_RUN' : 'SUCCESS',
-    environment,
-    dryRun,
-    timestamp: new Date().toISOString(),
-    durationSec: Number(((Date.now() - startTime) / 1000).toFixed(2)),
-    driveFilesFound: driveFiles.length,
-    knownPatternsCount: KNOWN_PATTERNS.length,
-    tomadoresIdentificados: tomadoresRows.length - 1,
-    plannedWrites,
-    executedWrites,
-    tomadoresChanged,
-    padroesChanged,
-    localRepairsCount: localRepairs.length,
-    readBackTomadoresA1S3: tomadoresLidos.slice(0, 3),
-    errors: [],
-    warnings: []
+    status: 'SUCCESS',
+    tomadoresHomologados: tomadoresRows.length - 1,
+    padroesIdentificados: padroesRows.length - 1,
+    driveDocsFound: driveFiles.length,
+    dryRun
   };
 }
 
 module.exports = {
   KNOWN_PATTERNS,
   TOMADORES_DEFAULTS,
-  scanDriveNfseFiles,
   buildTomadoresRows,
   buildPadroesRows,
-  buildLocalPrestacaoRepairs,
-  runHistoricalAnalysis,
-  rowsEqual
+  scanDriveForFiscalDocs,
+  runHistoricalAnalysis
 };

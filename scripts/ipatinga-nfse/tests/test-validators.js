@@ -41,10 +41,13 @@ assert.strictEqual(parseAliquot(0.02), 2);
 assert.strictEqual(formatAliquot(2.291), '2,291%');
 assert.strictEqual(formatAliquot(2.0), '2,00%');
 
-// 4. Dates & Competência
+// 4. Dates & Competência Normalization (MM/AAAA)
 assert.strictEqual(formatDateBr('2026-06-15T10:30:00'), '15/06/2026');
 assert.strictEqual(formatDateIso('15/06/2026'), '2026-06-15');
-assert.strictEqual(parseCompetencia('2026-06-01'), '06/2026');
-assert.strictEqual(parseCompetencia('07/2026'), '07/2026');
+assert.strictEqual(parseCompetencia('2026-08-01'), '08/2026');
+assert.strictEqual(parseCompetencia('01/08/2026'), '08/2026');
+assert.strictEqual(parseCompetencia('2026-08'), '08/2026');
+assert.strictEqual(parseCompetencia('08/2026'), '08/2026');
+assert.strictEqual(parseCompetencia('2026-06-15T10:30:00Z'), '06/2026');
 
 console.log('✓ test-validators.js PASSED');

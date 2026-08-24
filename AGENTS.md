@@ -1,30 +1,41 @@
 # Invariantes de Segurança e Operação Fiscal (NFS-e DEXMED)
 
 - **Filosofia Operacional:** Supervised Automation — dados suficientes + padrão conhecido + validações técnicas OK → emitir sob supervisão humana.
+- **Marco Validado de Produção (Baseline Congelada):**
+  - `PRODUCTION_ISSUE = VALIDATED`
+  - `PRODUCTION_RECONCILIATION = VALIDATED`
+  - `PRODUCTION_SYNC = VALIDATED`
+  - `INFRA_RECOVERY = VALIDATED`
+  - `EXACTLY_ONCE = VALIDATED`
+  - `PRODUCTION_FISCAL_ENGINE = FROZEN_VALIDATED`
+  - *A NFS-e 16 (RPS 101, Chave `RBBWD2VM`) encerrou a fase de testes e validação de emissão real em produção. Nenhuma nova nota fiscal de teste será emitida.*
+  - *Proibido alterar componentes fiscais essenciais (XMLDSig, XSD, SOAP, RPS Ledger, Reconciliação) sem testes e justificativas estritas.*
 - **Política Permanente de Emissão em Produção:**
   - `PRODUCTION_ISSUE_POLICY = ENABLED`
   - `SUPERVISION_MODE = ACTIVE`
-  - `EXPLICIT_PRODUCTION_TEST = ALLOWED`
   - `USER_RECONFIRMATION_PER_NOTE = NOT_REQUIRED`
   - `HOMOLOGATION_FALLBACK_WHEN_PRODUCTION_REQUESTED = FORBIDDEN`
-- **Auto-Recovery Periódico & Resiliência:**
+- **Gate de Fixture Controlada em Produção:**
+  - `NFE_ALLOW_CONTROLLED_PRODUCTION_TEST = false` (default).
+  - Em produção normal, `request_id` deve obrigatoriamente existir na aba `Demandas` e passar pelo fluxo completo `prepareDemand()` -> `Tomadores` -> `Padrões`.
+  - Fixtures controladas em produção sem flag explícita disparam erro imediato `CONTROLLED_PRODUCTION_TEST_DISABLED`.
+- **Injeção Central de Dados Bancários / Pagamento:**
+  - Zero dados bancários, contas ou chaves PIX hardcoded no código-fonte.
+  - O template de padrões utiliza estritamente o placeholder `{BLOCO_BANCARIO}`, sendo populado em runtime a partir da variável `NFE_PAYMENT_INSTRUCTIONS`.
+- **Eliminação de Fallbacks Fiscais Silenciosos:**
+  - Campos fiscais obrigatórios (`issRetido`, `exigibilidadeIss`, `codigoMunicipioPrestacao`, `codigoMunicipioIncidenciaIss`, `nbs`) devem estar explícitos nos padrões ou tomadores. Ausência resulta em `PREPARE_NOT_READY` / `REVISAO_MANUAL`.
+- **Auto-Recovery Periódico & Eficiência de Custos:**
   - `AUTO_RECOVERY = ENABLED` (Workflow dedicado `.github/workflows/ipatinga-nfse-recovery.yml` com trigger `schedule: cron '*/15 * * * *'`).
-  - **Eficiência de CI:** O job inicial de probe é leve (execução de poucos segundos via Node.js nativo sem instalação de pacotes pesados). O job fiscal completo só é engatilhado quando `PRODUCTION_WSDL = UP`.
+  - **Pipeline Otimizado:** `pending_check` (leitura REST leve de `RPS!A:G` via JWT sem npm/apt) -> Se 0 pendências: STOP imediato -> Se > 0: `health_check` WSDL -> Se WSDL UP: recovery completo -> Sync condicional apenas se houver notas novas emitidas/reconciliadas.
   - **Controle de Concorrência:** Operações mutáveis compartilham o grupo de concorrência `concurrency: group: nfse-production-mutation` com `cancel-in-progress: false`.
 - **Classificação de Falhas de Infraestrutura do Provedor:**
   - Erros como HTTP 500 com SOAP Fault WSDL, WSDL indisponível, falhas DNS, timeout de upstream, servidor municipal indisponível ou 502/503/504 são classificados estritamente como **`PROVIDER_INFRA_UNAVAILABLE`** (e **NUNCA** como `FAILED_SAFE`).
   - `FAILED_SAFE` fica reservado exclusivamente para inconsistências fiscais/cadastrais reais não reconciliáveis ou limite de tentativas excedido.
-- **Máquina de Estados de Recuperação Automática:**
-  - `ALLOCATED` → `SUBMITTING` → `PROVIDER_INFRA_UNAVAILABLE` → `RECONCILING` → `RPS_NOT_FOUND_CONFIRMED` → `SUBMITTING` → `ISSUED`
-  - (ou, se já tiver sido processada pelo provedor na tentativa anterior): `PROVIDER_INFRA_UNAVAILABLE` → `RECONCILING` → `ISSUED`
-  - Falha temporária da prefeitura **nunca** invalida o RPS alocado nem obriga o usuário a reiniciar o processo manualmente. O mesmo `request_id` e número de RPS são preservados para retentativa segura.
-- **Probe de Saúde em Produção e Homologação (`provider_health`):**
-  - Operação leve e não destrutiva que afere periodicamente o status real dos WSDLs de produção e homologação e executa consulta SOAP read-only.
 - **Validação Estrita de TLS:** Chamadas SOAP HTTPS utilizam estritamente `rejectUnauthorized: true`. Falhas de certificado TLS do servidor interrompem o workflow (fail-closed).
 - **Tratamento de Resposta do Provedor:** 
-  - Erros determinísticos (como EL78, EL244) → classificar como `REJECTED_CORRECTABLE`, corrigir e prosseguir somente após reconciliação via RPS confirmar `RPS_NOT_FOUND_CONFIRMED`.
-  - Aceitação assíncrona ADN (`"Solicitação recebida! Aguarde a confirmação..."`) → classificar como `SUBMITTED_ASYNC_PROCESSING` e aguardar reconciliação via `reconcile_rps`.
-  - Falha ambígua / timeout → classificar como `UNKNOWN_AFTER_TIMEOUT` e reconciliar via `reconcile_rps` sem nova emissão automática.
+  - Erros determinísticos (como EL78, EL244) -> classificar como `REJECTED_CORRECTABLE`, corrigir e prosseguir somente após reconciliação via RPS confirmar `RPS_NOT_FOUND_CONFIRMED`.
+  - Aceitação assíncrona ADN (`"Solicitação recebida! Aguarde a confirmação..."`) -> classificar como `SUBMITTED_ASYNC_PROCESSING` e aguardar reconciliação via `reconcile_rps`.
+  - Falha ambígua / timeout -> classificar como `UNKNOWN_AFTER_TIMEOUT` e reconciliar via `reconcile_rps` sem nova emissão automática.
 - **Ciclo de Tentativas (Attempt Count):** Máximo de 5 tentativas de correção por item/demanda.
 - **Reconciliação Explícita (`reconcile_rps`):** Operação dedicada para consultar e sincronizar o status definitivo de notas pendentes no ADN ou após timeout sem invocar `GerarNfse`.
 - **Produção Supervisionada:** Emissão em produção tecnicamente habilitada sob supervisão do usuário, com kill switch operacional de emergência (`NFE_ISSUE_KILL_SWITCH=true`).
@@ -34,5 +45,4 @@
 - **Fail-Closed Técnico:** Validação estrita W3C XSD Schema 2.04 e assinatura XMLDSig C14N com verificação nativa `xmlsec1`.
 - **Idempotência e Ledger:** Alocação atômica de RPS antes do envio; consulta prévia por RPS para garantir entrega exactly-once (`ALREADY_ISSUED`).
 - **Google Sheets:** Preservar a integridade das abas estruturadas (`Notas`, `Demandas`, `Tomadores`, `Padrões de Emissão`, `RPS`).
-- **Sem Dados Hardcoded Silenciosos:** Município de prestação e município de incidência do ISS são campos distintos e registrados explicitamente na aba Padrões de Emissão (`3131307` para Ipatinga).
 - **Segurança de Segredos & Logs Sanitizados:** Nunca expor tokens, senhas, chaves privadas, certificados ou payloads XML brutos nos logs ou relatórios.

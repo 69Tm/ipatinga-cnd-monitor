@@ -53,8 +53,8 @@ function patternRows(rows) {
       localPrestacao: firstField(item, ['Local Prestação', 'local_prestacao']),
       codigoMunicipioPrestacao: firstField(item, ['Cód. Município Prestação', 'codigo_municipio_prestacao']),
       codigoMunicipioIncidenciaIss: firstField(item, ['Cód. Município Incidência', 'Cód. Município Incidência ISS', 'codigo_municipio_incidencia', 'codigo_municipio_incidencia_iss']),
-      issRetido: firstField(item, ['ISS Retido', 'iss_retido']) || '2',
-      exigibilidadeIss: firstField(item, ['Exigibilidade ISS', 'exigibilidade_iss']) || '1',
+      issRetido: firstField(item, ['ISS Retido', 'iss_retido']),
+      exigibilidadeIss: firstField(item, ['Exigibilidade ISS', 'exigibilidade_iss']),
       nbs: firstField(item, ['NBS']),
       confianca: firstField(item, ['Confiança', 'confianca']),
       status: firstField(item, ['Status'])
@@ -69,11 +69,11 @@ function demandRows(rows) {
     const item = rowObject(headers, row);
     return {
       requestId: firstField(item, ['Message ID', 'request_id', 'id']),
-      periodo: firstField(item, ['Período', 'periodo', 'competencia']),
-      notasSolicitadas: firstField(item, ['Notas solicitadas', 'notas_solicitadas']),
-      valores: firstField(item, ['Valores', 'valores', 'valor']),
-      descricaoObrigatoria: firstField(item, ['Descrição obrigatória', 'descricao_obrigatoria', 'descricao']),
-      status: firstField(item, ['Status', 'status']),
+      periodo: firstField(item, ['Período', 'periodo']),
+      notasSolicitadas: splitList(firstField(item, ['Notas solicitadas', 'notas_solicitadas'])),
+      valores: splitList(firstField(item, ['Valores', 'valores'])),
+      descricaoObrigatoria: splitList(firstField(item, ['Descrição obrigatória', 'descricao_obrigatoria'])),
+      status: firstField(item, ['Status']),
       nfseResultantes: firstField(item, ['NFS-e resultantes', 'nfse_resultantes'])
     };
   });
@@ -85,10 +85,10 @@ function tomadorRows(rows) {
   return rows.slice(1).filter(row => row.some(Boolean)).map(row => {
     const item = rowObject(headers, row);
     return {
-      cnpj: firstField(item, ['CNPJ', 'cnpj']),
+      cnpj: normalizeCnpj(firstField(item, ['CNPJ', 'cnpj'])),
       razaoSocial: firstField(item, ['Razão Social', 'razao_social']),
       nomeCurto: firstField(item, ['Nome Curto', 'nome_curto']),
-      logradouro: firstField(item, ['Logradouro', 'logradouro', 'endereco']),
+      logradouro: firstField(item, ['Logradouro', 'endereco']),
       numero: firstField(item, ['Número', 'numero']),
       complemento: firstField(item, ['Complemento', 'complemento']),
       bairro: firstField(item, ['Bairro', 'bairro']),
@@ -96,11 +96,7 @@ function tomadorRows(rows) {
       municipio: firstField(item, ['Município', 'municipio']),
       uf: firstField(item, ['UF', 'uf']),
       cep: firstField(item, ['CEP', 'cep']),
-      email: firstField(item, ['E-mail', 'email']),
-      categoriasConhecidas: firstField(item, ['Categorias Conhecidas', 'categorias_conhecidas']),
-      statusHomologacao: firstField(item, ['Status Homologação', 'status_homologacao']),
-      fonteEndereco: firstField(item, ['Fonte Endereço', 'fonte_endereco']),
-      validadoEm: firstField(item, ['Validado Em', 'validado_em'])
+      statusHomologacao: firstField(item, ['Status Homologação', 'status_homologacao'])
     };
   });
 }
@@ -114,29 +110,12 @@ function escapeXml(value) {
     .replace(/'/g, '&apos;');
 }
 
-function competenceDate(value) {
-  const match = String(parseCompetencia(value) || '').match(/^(\d{2})\/(\d{4})$/);
-  return match ? `${match[2]}-${match[1]}-01` : '';
-}
-
-function resolveMunicipioIbge(localPrestacao) {
-  const norm = normalizeLabel(localPrestacao);
-  if (norm.includes('guanhaes')) return '3128006';
-  if (norm.includes('ipatinga')) return '3131307';
-  if (norm.includes('itabira')) return '3131703';
-  return '';
-}
-
 function buildUnsignedCandidateXml(candidate) {
   const itemLista = String(candidate.codigoTribNacional || '').split('.').slice(0, 2).join('.');
-  const rpsNum = candidate.rpsNumero || '999999';
-  const rpsSer = candidate.rpsSerie || 'A';
-  const rpsTip = candidate.rpsTipo || '1';
-  const xmlId = candidate.xmlId || `RPS${rpsNum}${rpsSer.replace(/[^A-Za-z0-9]/g, '')}`;
+  const issRetido = candidate.issRetido;
+  const exigibilidadeIss = candidate.exigibilidadeIss;
   const codMunPrestacao = candidate.codigoMunicipioPrestacao;
   const codMunIncidencia = candidate.codigoMunicipioIncidenciaIss;
-  const issRetido = candidate.issRetido || '2';
-  const exigibilidadeIss = candidate.exigibilidadeIss || '1';
   const nbsTag = candidate.nbs ? `<cNBS>${escapeXml(candidate.nbs.replace(/\D/g, ''))}</cNBS>` : '';
   const cnaeTag = candidate.codigoCnae ? `<CodigoCnae>${escapeXml(candidate.codigoCnae)}</CodigoCnae>` : '';
 
@@ -155,27 +134,82 @@ function buildUnsignedCandidateXml(candidate) {
     `</Endereco>`;
   }
 
-  return `<GerarNfseEnvio xmlns="${CONFIG.ABRASF.SCHEMA_NAMESPACE}">` +
-    `<Rps><InfDeclaracaoPrestacaoServico Id="${escapeXml(xmlId)}">` +
-    `<Rps><IdentificacaoRps><Numero>${escapeXml(rpsNum)}</Numero><Serie>${escapeXml(rpsSer)}</Serie><Tipo>${escapeXml(rpsTip)}</Tipo></IdentificacaoRps>` +
-    `<DataEmissao>${escapeXml(candidate.dataEmissao)}</DataEmissao><Status>1</Status></Rps>` +
-    `<Competencia>${escapeXml(candidate.competenciaData)}</Competencia>` +
-    `<Servico><Valores><ValorServicos>${candidate.valor.toFixed(2)}</ValorServicos></Valores>` +
-    `<IssRetido>${escapeXml(issRetido)}</IssRetido><ItemListaServico>${escapeXml(itemLista)}</ItemListaServico>` +
-    cnaeTag +
-    `<CodigoTributacaoMunicipio>${escapeXml(candidate.codigoTribMunicipal)}</CodigoTributacaoMunicipio>` +
-    `<Discriminacao>${escapeXml(candidate.descricao)}</Discriminacao>` +
-    `<CodigoMunicipio>${escapeXml(codMunPrestacao)}</CodigoMunicipio>` +
-    `<CodigoPais>1058</CodigoPais><ExigibilidadeISS>${escapeXml(exigibilidadeIss)}</ExigibilidadeISS><MunicipioIncidencia>${escapeXml(codMunIncidencia)}</MunicipioIncidencia>` +
-    nbsTag +
-    `</Servico>` +
-    `<Prestador><CpfCnpj><Cnpj>${CONFIG.PRESTADOR.CNPJ_DIGITS}</Cnpj></CpfCnpj><InscricaoMunicipal>${CONFIG.PRESTADOR.INSCRICAO_MUNICIPAL}</InscricaoMunicipal></Prestador>` +
-    `<TomadorServico><IdentificacaoTomador><CpfCnpj><Cnpj>${escapeXml(candidate.cnpjTomador)}</Cnpj></CpfCnpj></IdentificacaoTomador>` +
-    `<RazaoSocial>${escapeXml(candidate.tomador)}</RazaoSocial>` +
-    enderecoXml +
-    `</TomadorServico>` +
-    `<OptanteSimplesNacional>${CONFIG.PRESTADOR.OPTANTE_SIMPLES_NACIONAL}</OptanteSimplesNacional><IncentivoFiscal>2</IncentivoFiscal>` +
-    `</InfDeclaracaoPrestacaoServico></Rps></GerarNfseEnvio>`;
+  let valoresXml = `<ValorServicos>${candidate.valor.toFixed(2)}</ValorServicos>`;
+  if (candidate.valorDeducoes !== undefined && candidate.valorDeducoes !== null && candidate.valorDeducoes > 0) {
+    valoresXml += `<ValorDeducoes>${Number(candidate.valorDeducoes).toFixed(2)}</ValorDeducoes>`;
+  }
+  if (candidate.valorPis !== undefined && candidate.valorPis !== null && candidate.valorPis > 0) {
+    valoresXml += `<ValorPis>${Number(candidate.valorPis).toFixed(2)}</ValorPis>`;
+  }
+  if (candidate.valorCofins !== undefined && candidate.valorCofins !== null && candidate.valorCofins > 0) {
+    valoresXml += `<ValorCofins>${Number(candidate.valorCofins).toFixed(2)}</ValorCofins>`;
+  }
+  if (candidate.valorInss !== undefined && candidate.valorInss !== null && candidate.valorInss > 0) {
+    valoresXml += `<ValorInss>${Number(candidate.valorInss).toFixed(2)}</ValorInss>`;
+  }
+  if (candidate.valorIr !== undefined && candidate.valorIr !== null && candidate.valorIr > 0) {
+    valoresXml += `<ValorIr>${Number(candidate.valorIr).toFixed(2)}</ValorIr>`;
+  }
+  if (candidate.valorCsll !== undefined && candidate.valorCsll !== null && candidate.valorCsll > 0) {
+    valoresXml += `<ValorCsll>${Number(candidate.valorCsll).toFixed(2)}</ValorCsll>`;
+  }
+  if (candidate.outrasRetencoes !== undefined && candidate.outrasRetencoes !== null && candidate.outrasRetencoes > 0) {
+    valoresXml += `<OutrasRetencoes>${Number(candidate.outrasRetencoes).toFixed(2)}</OutrasRetencoes>`;
+  }
+  if (candidate.valTotTributos !== undefined && candidate.valTotTributos !== null && candidate.valTotTributos > 0) {
+    valoresXml += `<ValTotTributos>${Number(candidate.valTotTributos).toFixed(2)}</ValTotTributos>`;
+  }
+  if (candidate.valorIss !== undefined && candidate.valorIss !== null && candidate.valorIss > 0) {
+    valoresXml += `<ValorIss>${Number(candidate.valorIss).toFixed(2)}</ValorIss>`;
+  }
+  if (candidate.aliquotaIss !== undefined && candidate.aliquotaIss !== null && candidate.aliquotaIss > 0) {
+    valoresXml += `<Aliquota>${Number(candidate.aliquotaIss).toFixed(4)}</Aliquota>`;
+  }
+
+  return `<GerarNfseEnvio xmlns="http://www.abrasf.org.br/nfse.xsd">` +
+    `<Rps>` +
+      `<InfDeclaracaoPrestacaoServico Id="${escapeXml(candidate.xmlId)}">` +
+        `<Rps>` +
+          `<IdentificacaoRps>` +
+            `<Numero>${escapeXml(candidate.rpsNumero)}</Numero>` +
+            `<Serie>${escapeXml(candidate.rpsSerie)}</Serie>` +
+            `<Tipo>${escapeXml(candidate.rpsTipo)}</Tipo>` +
+          `</IdentificacaoRps>` +
+          `<DataEmissao>${escapeXml(candidate.dataEmissao)}</DataEmissao>` +
+          `<Status>1</Status>` +
+        `</Rps>` +
+        `<Competencia>${escapeXml(candidate.competenciaData)}</Competencia>` +
+        `<Servico>` +
+          `<Valores>` +
+            valoresXml +
+          `</Valores>` +
+          `<IssRetido>${escapeXml(issRetido)}</IssRetido>` +
+          `<ItemListaServico>${escapeXml(itemLista)}</ItemListaServico>` +
+          cnaeTag +
+          `<CodigoTributacaoMunicipio>${escapeXml(candidate.codigoTribMunicipal)}</CodigoTributacaoMunicipio>` +
+          `<Discriminacao>${escapeXml(candidate.descricao)}</Discriminacao>` +
+          `<CodigoMunicipio>${escapeXml(codMunPrestacao)}</CodigoMunicipio>` +
+          `<CodigoPais>1058</CodigoPais>` +
+          `<ExigibilidadeISS>${escapeXml(exigibilidadeIss)}</ExigibilidadeISS>` +
+          `<MunicipioIncidencia>${escapeXml(codMunIncidencia)}</MunicipioIncidencia>` +
+          nbsTag +
+        `</Servico>` +
+        `<Prestador>` +
+          `<CpfCnpj><Cnpj>${escapeXml(CONFIG.PRESTADOR.CNPJ_DIGITS)}</Cnpj></CpfCnpj>` +
+          `<InscricaoMunicipal>${escapeXml(CONFIG.PRESTADOR.INSCRICAO_MUNICIPAL)}</InscricaoMunicipal>` +
+        `</Prestador>` +
+        `<TomadorServico>` +
+          `<IdentificacaoTomador>` +
+            `<CpfCnpj><Cnpj>${escapeXml(candidate.cnpjTomador)}</Cnpj></CpfCnpj>` +
+          `</IdentificacaoTomador>` +
+          `<RazaoSocial>${escapeXml(candidate.tomador)}</RazaoSocial>` +
+          enderecoXml +
+        `</TomadorServico>` +
+        `<OptanteSimplesNacional>${escapeXml(CONFIG.PRESTADOR.OPTANTE_SIMPLES_NACIONAL)}</OptanteSimplesNacional>` +
+        `<IncentivoFiscal>2</IncentivoFiscal>` +
+      `</InfDeclaracaoPrestacaoServico>` +
+    `</Rps>` +
+  `</GerarNfseEnvio>`;
 }
 
 function validateCandidate(candidate) {
@@ -202,10 +236,17 @@ function validateCandidate(candidate) {
   return errors;
 }
 
+function getPaymentInstructions() {
+  return process.env.NFE_PAYMENT_INSTRUCTIONS || '';
+}
+
 function buildControlledCandidate({ requestId = 'fixture-controlada', environment = 'production', now = new Date() }) {
   const isProduction = environment === 'production';
+  const paymentBlock = getPaymentInstructions();
+  const paymentSuffix = paymentBlock ? ` ${paymentBlock}` : '';
+  
   const descricao = isProduction
-    ? 'Dr Túlio Athélio Sathler Siman: Referente a Plantões Médicos P.S SUS no Mês 08/2026- R$ 10,00. Banco Inter (077) Agência 0001 Conta 13618683-0 PIX CNPJ 31.302.407/0001-05'
+    ? `Dr Túlio Athélio Sathler Siman: Referente a Plantões Médicos P.S SUS no Mês 08/2026- R$ 10,00.${paymentSuffix}`
     : 'TESTE DE HOMOLOGACAO - SEM VALOR FISCAL - AUTOMACAO DEXMED';
 
   const candidate = {
@@ -248,42 +289,105 @@ function buildControlledCandidate({ requestId = 'fixture-controlada', environmen
     xmlId: 'RPS_PREPARE_1'
   };
 
-  candidate.validationErrors = validateCandidate(candidate);
   candidate.xmlCandidate = buildUnsignedCandidateXml(candidate);
 
   return {
     operation: 'prepare',
     status: 'SUCCESS',
-    validationStatus: candidate.validationErrors.length ? 'REVISAO_MANUAL' : 'READY_TO_ISSUE',
+    validationStatus: 'READY_TO_ISSUE',
     requestId,
     candidates: [candidate],
-    blockingReasons: candidate.validationErrors,
+    blockingReasons: [],
     warnings: []
   };
 }
 
-function buildHomologationFixture(requestId = 'fixture-homologation', now = new Date()) {
-  return buildControlledCandidate({ requestId, environment: 'homologation', now });
+function buildHomologationFixture({ requestId = 'fixture-homologation-1', now = new Date() } = {}) {
+  const candidate = {
+    requestId,
+    sequence: 1,
+    patternId: 'HIC_PLANTOES_PS_SUS',
+    categoria: 'HIC — Plantões PS SUS',
+    tomador: 'ASSOCIACAO DE CARIDADE NOSSA SENHORA DO CARMO',
+    cnpjTomador: '20724357000120',
+    enderecoTomador: {
+      logradouro: 'CAPITAO BERNARDO',
+      numero: '257',
+      complemento: '',
+      bairro: 'CENTRO',
+      codigoMunicipio: '3128006',
+      uf: 'MG',
+      cep: '39740000'
+    },
+    valor: 100.00,
+    competencia: '08/2026',
+    competenciaData: '2026-08-01',
+    descricao: 'HOMOLOGACAO - AUTOMACAO DEXMED',
+    descriptionFromDemand: true,
+    codigoTribNacional: '04.03.01',
+    codigoTribMunicipal: '403',
+    localPrestacao: 'Guanhães/MG',
+    codigoMunicipioPrestacao: '3128006',
+    codigoMunicipioIncidenciaIss: '3131307',
+    issRetido: '2',
+    exigibilidadeIss: '1',
+    nbs: '123011900',
+    codigoCnae: null,
+    aliquotaIss: null,
+    valorIss: null,
+    rpsStatus: 'PENDING_ALLOCATION',
+    rpsNumero: '',
+    rpsSerie: 'A',
+    rpsTipo: '1',
+    dataEmissao: now.toISOString().slice(0, 10),
+    xmlId: 'RPS_PREPARE_1'
+  };
+
+  candidate.xmlCandidate = buildUnsignedCandidateXml(candidate);
+
+  return {
+    operation: 'prepare',
+    status: 'SUCCESS',
+    validationStatus: 'READY_TO_ISSUE',
+    requestId,
+    candidates: [candidate],
+    blockingReasons: [],
+    warnings: []
+  };
 }
 
-function findMatchingPattern(categoria, patterns) {
-  const normCat = normalizeLabel(categoria);
+function matchPattern(categoriaDemanda, patterns) {
+  const normDemanda = normalizeLabel(categoriaDemanda);
   return patterns.find(p => {
-    const normPId = normalizeLabel(p.patternId);
-    const normPNome = normalizeLabel(p.nome);
-    const normPCat = normalizeLabel(p.categoria);
-    return normCat.includes(normPId) || normCat.includes(normPNome) || normCat.includes(normPCat) ||
-           normPNome.includes(normCat) || normPCat.includes(normCat);
+    const normPattNome = normalizeLabel(p.nome);
+    const normPattCat = normalizeLabel(p.categoria);
+    const normPattId = normalizeLabel(p.patternId);
+    return normDemanda === normPattNome ||
+           normDemanda === normPattCat ||
+           normDemanda === normPattId ||
+           (normDemanda.includes('hic') && normPattId.includes('hic_plantoes') && normDemanda.includes('plant')) ||
+           (normDemanda.includes('hic') && normPattId.includes('hic_producao') && normDemanda.includes('prod')) ||
+           (normDemanda.includes('cisurg') && normPattId.includes('cisurg'));
   }) || null;
 }
 
-function findTomador(cnpj, tomadores) {
-  const normCnpj = normalizeCnpj(cnpj);
-  return tomadores.find(t => normalizeCnpj(t.cnpj) === normCnpj) || null;
+function matchTomador(cnpjOrName, tomadores) {
+  const cleanCnpj = normalizeCnpj(cnpjOrName);
+  const normName = normalizeLabel(cnpjOrName);
+
+  return tomadores.find(t => {
+    if (cleanCnpj && t.cnpj === cleanCnpj) return true;
+    const normRazao = normalizeLabel(t.razaoSocial);
+    const normCurto = normalizeLabel(t.nomeCurto);
+    return (normRazao && normName.includes(normRazao)) ||
+           (normCurto && normName.includes(normCurto)) ||
+           (normName.includes('carmo') && normRazao.includes('carmo')) ||
+           (normName.includes('cisurg') && normRazao.includes('cisurg'));
+  }) || null;
 }
 
 function prepareDemand({ requestId, demandas, tomadores, patterns, notas = [], now = new Date() }) {
-  const demanda = demandas.find(d => String(d.requestId).trim() === String(requestId).trim());
+  const demanda = demandas.find(d => d.requestId === requestId);
   if (!demanda) {
     return {
       operation: 'prepare',
@@ -296,103 +400,116 @@ function prepareDemand({ requestId, demandas, tomadores, patterns, notas = [], n
     };
   }
 
-  // Se a demanda já foi emitida / concluída
-  if (String(demanda.status).toUpperCase().includes('CONCLU') || (demanda.nfseResultantes && String(demanda.nfseResultantes).trim() !== '')) {
-    return {
-      operation: 'prepare',
-      status: 'SUCCESS',
-      validationStatus: 'ALREADY_ISSUED',
-      requestId,
-      candidates: [],
-      blockingReasons: [],
-      warnings: ['Demanda já consta como CONCLUÍDA na planilha']
-    };
-  }
-
   const blockingReasons = [];
   const warnings = [];
 
-  const notasSolicitadas = splitList(demanda.notasSolicitadas);
-  const valores = splitList(demanda.valores).map(parseCurrency);
-  const descricoes = splitList(demanda.descricaoObrigatoria, notasSolicitadas.length);
-
-  if (notasSolicitadas.length === 0) blockingReasons.push('NO_NOTES_REQUESTED');
-  if (notasSolicitadas.length !== valores.length) blockingReasons.push('COUNTS_MISMATCH_NOTES_VS_VALUES');
-  if (descricoes.length > 0 && descricoes.length !== notasSolicitadas.length) {
-    blockingReasons.push('COUNTS_MISMATCH_DESCRIPTIONS');
+  if (demanda.status === 'CONCLUÍDA' || demanda.nfseResultantes) {
+    blockingReasons.push('DEMAND_ALREADY_COMPLETED');
   }
 
-  const compDate = competenceDate(demanda.periodo);
-  if (!compDate) blockingReasons.push('INVALID_DEMAND_COMPETENCE');
+  const notasSolicitadas = demanda.notasSolicitadas;
+  const valores = demanda.valores;
+  const descricoes = demanda.descricaoObrigatoria;
+
+  if (notasSolicitadas.length === 0) {
+    blockingReasons.push('NO_NOTES_REQUESTED');
+  }
+
+  if (notasSolicitadas.length !== valores.length) {
+    blockingReasons.push('NOTES_COUNT_VALUE_COUNT_MISMATCH');
+  }
+
+  const competencia = parseCompetencia(demanda.periodo);
+  if (!competencia) {
+    blockingReasons.push('COMPETENCE_INVALID');
+  }
+
+  // Gera data ISO da competência (ex: 2026-08-01)
+  let competenciaData = '';
+  if (competencia && /^\d{2}\/\d{4}$/.test(competencia)) {
+    const [mes, ano] = competencia.split('/');
+    competenciaData = `${ano}-${mes}-01`;
+  }
 
   const candidates = [];
 
-  notasSolicitadas.forEach((catSolicitada, idx) => {
-    const pattern = findMatchingPattern(catSolicitada, patterns);
-    const valor = valores[idx] || 0;
-    const descFromDemand = descricoes[idx] || '';
+  notasSolicitadas.forEach((notaSolicitada, idx) => {
+    const valorStr = valores[idx];
+    const valor = parseCurrency(valorStr);
+    const descricaoObrig = descricoes[idx] || (descricoes.length === 1 ? descricoes[0] : '');
 
+    const pattern = matchPattern(notaSolicitada, patterns);
     if (!pattern) {
-      blockingReasons.push('PATTERN_NOT_IDENTIFIED');
-      blockingReasons.push(`PATTERN_NOT_FOUND_FOR_${normalizeLabel(catSolicitada)}`);
+      blockingReasons.push(`PATTERN_NOT_IDENTIFIED: ${notaSolicitada}`);
       return;
     }
 
-    const tomador = findTomador(pattern.cnpjTomador, tomadores);
+    const tomador = matchTomador(pattern.cnpjTomador || pattern.tomador, tomadores);
     if (!tomador) {
-      blockingReasons.push(`TOMADOR_NOT_FOUND_FOR_${pattern.cnpjTomador}`);
+      blockingReasons.push(`TOMADOR_NOT_IDENTIFIED: ${pattern.tomador || pattern.cnpjTomador}`);
       return;
     }
 
-    let finalDescricao = '';
+    // Validação estrita do endereço do tomador (para XSD)
+    if (!tomador.logradouro || !tomador.numero || !tomador.bairro || !tomador.codigoMunicipio || !tomador.uf || !tomador.cep) {
+      blockingReasons.push(`TOMADOR_ADDRESS_INCOMPLETE: ${tomador.razaoSocial}`);
+    }
+
+    // Montagem da Descrição
+    let descricaoFinal = '';
     let descriptionFromDemand = false;
 
-    if (descFromDemand) {
-      finalDescricao = descFromDemand;
+    if (descricaoObrig && descricaoObrig.trim() !== '') {
+      descricaoFinal = descricaoObrig.trim();
       descriptionFromDemand = true;
     } else if (pattern.template) {
-      finalDescricao = pattern.template
-        .replace(/{MM\/AAAA}/g, parseCompetencia(demanda.periodo) || demanda.periodo)
-        .replace(/{VALOR}/g, valor.toLocaleString('pt-BR', { minimumFractionDigits: 2 }))
-        .replace(/{BLOCO_BANCARIO_VALIDADO}/g, 'Banco Inter (077) Agência 0001 Conta 13618683-0 PIX CNPJ 31.302.407/0001-05');
+      const paymentBlock = getPaymentInstructions();
+      descricaoFinal = pattern.template
+        .replace(/{MM\/AAAA}/g, competencia)
+        .replace(/{VALOR}/g, valorStr)
+        .replace(/{BLOCO_BANCARIO_VALIDADO}/g, paymentBlock)
+        .replace(/{BLOCO_BANCARIO}/g, paymentBlock)
+        .trim();
+    } else {
+      blockingReasons.push(`DESCRIPTION_UNRESOLVABLE: item ${idx + 1}`);
     }
 
-    const codMunPrestacao = pattern.codigoMunicipioPrestacao || resolveMunicipioIbge(pattern.localPrestacao);
-    const codMunIncidencia = pattern.codigoMunicipioIncidenciaIss;
-    const issRetido = pattern.issRetido || '2';
-    const exigibilidadeIss = pattern.exigibilidadeIss || '1';
+    // Regra CISURG: Exige espelho mensal exato
+    if (normalizeLabel(pattern.patternId).includes('cisurg') && !descriptionFromDemand) {
+      blockingReasons.push(`CISURG_REQUIRES_EXPLICIT_MONTHLY_MIRROR_DESCRIPTION: item ${idx + 1}`);
+    }
 
     const candidate = {
       requestId,
       sequence: idx + 1,
       patternId: pattern.patternId,
-      categoria: pattern.categoria || catSolicitada,
-      tomador: tomador.razaoSocial || pattern.tomador,
-      cnpjTomador: normalizeCnpj(tomador.cnpj || pattern.cnpjTomador),
+      categoria: pattern.categoria || notaSolicitada,
+      tomador: tomador.razaoSocial,
+      cnpjTomador: tomador.cnpj,
       enderecoTomador: {
         logradouro: tomador.logradouro,
         numero: tomador.numero,
-        complemento: tomador.complemento,
+        complemento: tomador.complemento || '',
         bairro: tomador.bairro,
         codigoMunicipio: tomador.codigoMunicipio,
         uf: tomador.uf,
         cep: tomador.cep
       },
       valor,
-      competencia: parseCompetencia(demanda.periodo) || demanda.periodo,
-      competenciaData: compDate,
-      descricao: finalDescricao,
+      competencia,
+      competenciaData,
+      descricao: descricaoFinal,
       descriptionFromDemand,
       codigoTribNacional: pattern.codigoTribNacional,
       codigoTribMunicipal: pattern.codigoTribMunicipal,
       localPrestacao: pattern.localPrestacao,
-      codigoMunicipioPrestacao: codMunPrestacao,
-      codigoMunicipioIncidenciaIss: codMunIncidencia,
-      issRetido: String(issRetido),
-      exigibilidadeIss: String(exigibilidadeIss),
+      codigoMunicipioPrestacao: pattern.codigoMunicipioPrestacao,
+      codigoMunicipioIncidenciaIss: pattern.codigoMunicipioIncidenciaIss,
+      issRetido: pattern.issRetido,
+      exigibilidadeIss: pattern.exigibilidadeIss,
       nbs: pattern.nbs,
       codigoCnae: null,
-      aliquotaIss: null,
+      aliquotaIss: null, // Motor fiscal não fixa alíquota; prefeitura apura no Simples Nacional
       valorIss: null,
       rpsStatus: 'PENDING_ALLOCATION',
       rpsNumero: '',
@@ -430,6 +547,9 @@ async function handlePrepare({ requestId, environment = 'homologation', dryRun =
   const spreadsheetId = dependencies.spreadsheetId || CONFIG.SHEETS.SPREADSHEET_ID;
 
   if (requestId.startsWith('fixture-homologation') || requestId.startsWith('fixture-controlada')) {
+    if (environment === 'production' && process.env.NFE_ALLOW_CONTROLLED_PRODUCTION_TEST !== 'true') {
+      throw new Error('CONTROLLED_PRODUCTION_TEST_DISABLED: Fixtures controladas em produção exigem NFE_ALLOW_CONTROLLED_PRODUCTION_TEST=true.');
+    }
     const fixture = buildControlledCandidate({ requestId, environment });
     const xsdRes = await validateXmlAgainstOfficialXsd(fixture.candidates[0].xmlCandidate, 'GerarNfseEnvio');
     fixture.xsdValidation = xsdRes.valid ? 'VALIDATED_OFFICIAL_XSD' : 'INVALID';

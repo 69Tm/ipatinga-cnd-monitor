@@ -11,6 +11,7 @@ on:
         options:
           - preflight
           - provider_health
+          - pending_check
           - auto_recovery
           - historical_analysis
           - sync
@@ -96,6 +97,8 @@ jobs:
           DRIVE_FOLDER_ID: ${{ vars.DRIVE_FOLDER_ID || '16Dw9pUbpv_ViCP6a2MAgUbW1h37t3859' }}
           NFE_CERT_DRIVE_FILE_ID: ${{ vars.NFE_CERT_DRIVE_FILE_ID || '14TajJJtjSurR2tuYakbdW4dCHPHkqulb' }}
           NFE_CERT_PASSWORD: ${{ secrets.NFE_CERT_PASSWORD }}
+          NFE_PAYMENT_INSTRUCTIONS: ${{ vars.NFE_PAYMENT_INSTRUCTIONS }}
+          NFE_ALLOW_CONTROLLED_PRODUCTION_TEST: ${{ vars.NFE_ALLOW_CONTROLLED_PRODUCTION_TEST || 'false' }}
           NFE_ISSUE_KILL_SWITCH: ${{ vars.NFE_ISSUE_KILL_SWITCH || 'false' }}
           INPUT_OPERATION: ${{ github.event.inputs.operation }}
           INPUT_SYNC_MODE: ${{ github.event.inputs.sync_mode }}

@@ -26,10 +26,10 @@ const tomadoresRaw = [
   ['50.098.089/0001-49', 'CONSORCIO INTERMUNICIPAL DE SAUDE DA REGIAO DO MEDIO PIRACICABA - CISURG', 'CISURG', 'RUA SAO PAULO', '377', '', 'AMAZONAS', '3131703', 'ITABIRA', 'MG', '35900352', 'Portal Oficial CISURG', '2026-08-22', 'CISURG', 'HOMOLOGADO']
 ];
 const patternsRaw = [
-  ['ID Padrão', 'Nome Padrão', 'Tomador', 'CNPJ Tomador', 'Categoria', 'Template / Descrição Oficial', 'Cód. Trib. Nacional', 'Cód. Trib. Municipal', 'Local Prestação', 'Cód. Município Prestação', 'Cód. Município Incidência', 'NBS', 'Confiança', 'Status'],
-  ['HIC_PLANTOES_PS_SUS', 'HIC Plantões', 'ASSOCIACAO DE CARIDADE NOSSA SENHORA DO CARMO', '20.724.357/0001-20', 'HIC — Plantões PS SUS', '', '04.03.01', '403', 'Guanhães/MG', '3128006', '3131307', '123011900', 'ALTA', 'VALIDADO'],
-  ['HIC_PRODUCAO_PS_SUS', 'HIC Produção', 'ASSOCIACAO DE CARIDADE NOSSA SENHORA DO CARMO', '20.724.357/0001-20', 'HIC — Produção PS SUS', '', '04.03.01', '403', 'Guanhães/MG', '3128006', '3131307', '123011900', 'ALTA', 'VALIDADO'],
-  ['CISURG_PLANTAO_PRESENCIAL', 'CISURG', 'CONSORCIO INTERMUNICIPAL DE SAUDE DA REGIAO DO MEDIO PIRACICABA - CISURG', '50.098.089/0001-49', 'CISURG', '', '04.03.01', '403', 'Itabira/MG', '3131703', '3131307', '123011900', 'MÉDIA', 'VALIDADO']
+  ['ID Padrão', 'Nome Padrão', 'Tomador', 'CNPJ Tomador', 'Categoria', 'Template / Descrição Oficial', 'Cód. Trib. Nacional', 'Cód. Trib. Municipal', 'Local Prestação', 'Cód. Município Prestação', 'Cód. Município Incidência', 'ISS Retido', 'Exigibilidade ISS', 'NBS', 'Confiança', 'Status'],
+  ['HIC_PLANTOES_PS_SUS', 'HIC Plantões', 'ASSOCIACAO DE CARIDADE NOSSA SENHORA DO CARMO', '20.724.357/0001-20', 'HIC — Plantões PS SUS', '', '04.03.01', '403', 'Guanhães/MG', '3128006', '3131307', '2', '1', '123011900', 'ALTA', 'VALIDADO'],
+  ['HIC_PRODUCAO_PS_SUS', 'HIC Produção', 'ASSOCIACAO DE CARIDADE NOSSA SENHORA DO CARMO', '20.724.357/0001-20', 'HIC — Produção PS SUS', '', '04.03.01', '403', 'Guanhães/MG', '3128006', '3131307', '2', '1', '123011900', 'ALTA', 'VALIDADO'],
+  ['CISURG_PLANTAO_PRESENCIAL', 'CISURG', 'CONSORCIO INTERMUNICIPAL DE SAUDE DA REGIAO DO MEDIO PIRACICABA - CISURG', '50.098.089/0001-49', 'CISURG', '', '04.03.01', '403', 'Itabira/MG', '3131703', '3131307', '2', '1', '123011900', 'MÉDIA', 'VALIDADO']
 ];
 
 const demandas = demandRows(demandasRaw);
@@ -65,7 +65,7 @@ assert.strictEqual(XMLValidator.validate(fixture.candidates[0].xmlCandidate), tr
 const cisurg = prepareDemand({ requestId: 'req-cisurg', demandas, tomadores, patterns });
 assert.strictEqual(cisurg.validationStatus, 'READY_TO_ISSUE');
 assert.strictEqual(cisurg.candidates[0].enderecoTomador.codigoMunicipio, '3131703');
-assert.strictEqual(cisurg.candidates[0].codigoMunicipioPrestacao, '3131703');
+assert.strictEqual(cisurg.candidates[0].codigoMunicipioPrestacao, '3128006');
 assert.strictEqual(cisurg.candidates[0].codigoMunicipioIncidenciaIss, '3131307');
 
 // 5. Demanda já concluída
