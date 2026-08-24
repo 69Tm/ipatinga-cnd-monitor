@@ -95,7 +95,8 @@ async function run() {
     dryRun: true
   }, {
     readSheetValues: mockSheetReader(),
-    createSheetIfNotExists: async () => true
+    createSheetIfNotExists: async () => true,
+    updateSheetValues: async () => {}
   });
 
   assert.strictEqual(dryResult.status, 'DRY_RUN_SUCCESS');
@@ -282,7 +283,8 @@ async function run() {
       dryRun: false
     }, {
       readSheetValues: mockSheetReader({ rps: [] }),
-      createSheetIfNotExists: async () => true
+      createSheetIfNotExists: async () => true,
+      updateSheetValues: async () => {}
     });
   } catch (e) {
     threwControlled = true;
