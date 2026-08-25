@@ -71,3 +71,15 @@
 - **CISURG_ATTACHMENT_BRANCH**: `PENDING_FAIL_CLOSED`
 - **E2E_ANTI_SPOOFING**: `VALIDATED`
 - **WRITE_BACK_DRY_RUN = IMPLEMENTED_PENDING_E2E
+
+## Regra Operacional Permanente — Notificação no Windows ao Concluir Qualquer Task
+- **TASK_COMPLETION_NOTIFICATION**: `MANDATORY`
+- **Fluxo Obrigatório de Encerramento:** `EXECUTE` → `TEST` → `VALIDATE` → `REPORT` → `WINDOWS NOTIFICATION`.
+- **Estados Canônicos:** `SUCCESS`, `BLOCKED`, `FAILED`.
+- **Implementação:** `scripts/notify-antigravity.ps1` acionado localmente via PowerShell.
+- **Comportamento por Status:**
+  - **SUCCESS:** Título `✅ ANTIGRAVITY — TASK CONCLUÍDA`, som audível nativo, Windows Toast notification, banner terminal.
+  - **BLOCKED:** Título `⚠️ ANTIGRAVITY — AÇÃO NECESSÁRIA`, som de lembrete, descrição clara da ação humana requerida.
+  - **FAILED:** Título `❌ ANTIGRAVITY — TASK FALHOU`, som de alerta, erro sanitizado em 1 linha (sem expor segredos/tokens).
+- **Sem Dependências Externas / Sem Bark:** A notificação é puramente nativa do Windows (WinRT Toast / NotifyIcon) e nunca envia push externo.
+- **Tolerância a Falhas:** Falha na emissão de notificação visual/sonora degrada graciosamente para banner no terminal sem alterar o resultado técnico da task.
