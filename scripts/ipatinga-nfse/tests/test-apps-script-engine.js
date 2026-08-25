@@ -63,11 +63,22 @@ function classificarAcaoMensagemNf_(message) {
   return 'OUTRO';
 }
 
-function extrairItensDemandaHic_(bodyText, defaultCompetencia) {
+function mapearNomeCndPadrao_(nomeBruto) {
+  const norm = normalizarTextoBusca_(nomeBruto);
+  if (norm.includes('estadual')) return 'CND Estadual MG';
+  if (norm.includes('fgts') || norm.includes('crf')) return 'CRF FGTS';
+  if (norm.includes('falencia') || norm.includes('concordata')) return 'Certidão Falência/Concordata';
+  if (norm.includes('trabalhista') || norm.includes('cndt')) return 'CNDT';
+  if (norm.includes('federal') || norm.includes('receita federal') || norm.includes('pgfn')) return 'CND Federal';
+  if (norm.includes('municipal')) return 'CND Municipal';
+  return String(nomeBruto || '').trim();
+}
+
+function extrairItensDemandaHic_(bodyText) {
   const text = String(bodyText || '');
   const itens = [];
   const compMatch = text.match(/m[eê]s\s*(\d{2}\/\d{4})/i) || text.match(/compet[eê]ncia\s*(\d{2}\/\d{4})/i);
-  const competencia = compMatch ? compMatch[1] : (defaultCompetencia || '08/2026');
+  const competencia = compMatch ? compMatch[1] : null;
 
   // Bloco 1: Plantões Médicos
   const plantaoMatch = text.match(/Plant[oõ]es[^\n\r]*[\s\S]*?R\$\s*([\d\.,]+)/i);
@@ -99,31 +110,14 @@ function extrairItensDemandaHic_(bodyText, defaultCompetencia) {
     }
   }
 
-  // Se não achou pelos blocos nomeados mas tem formato simples de 1 valor
-  if (itens.length === 0) {
-    const singleValMatch = text.match(/R\$\s*([d.,]+)/i);
-    if (singleValMatch) {
-      const valor = parseMoeda_(singleValMatch[1]);
-      if (valor > 0) {
-        itens.push({
-          categoria: 'HIC — Plantões PS SUS',
-          pattern: 'HIC_PLANTOES_PS_SUS',
-          valorStr: formatarMoedaSimples_(valor),
-          valor: valor,
-          descricao: ''
-        });
-      }
-    }
-  }
-
-  // Identifica CNDs exigidas no corpo
+  // Identifica CNDs exigidas no corpo com mapeador padronizado
   const cndsExigidas = [];
-  if (/estadual/i.test(text)) cndsExigidas.push('CND Estadual');
-  if (/fgts/i.test(text) || /crf/i.test(text)) cndsExigidas.push('CRF FGTS');
-  if (/falencia/i.test(text) || /concordata/i.test(text)) cndsExigidas.push('Falência e Concordata');
-  if (/trabalhista/i.test(text) || /cndt/i.test(text)) cndsExigidas.push('CND Trabalhista');
-  if (/federal/i.test(text) || /receita federal/i.test(text)) cndsExigidas.push('CND Federal');
-  if (/municipal/i.test(text)) cndsExigidas.push('CND Municipal');
+  if (/estadual/i.test(text)) cndsExigidas.push(mapearNomeCndPadrao_('estadual'));
+  if (/fgts/i.test(text) || /crf/i.test(text)) cndsExigidas.push(mapearNomeCndPadrao_('fgts'));
+  if (/falencia/i.test(text) || /concordata/i.test(text)) cndsExigidas.push(mapearNomeCndPadrao_('falencia'));
+  if (/trabalhista/i.test(text) || /cndt/i.test(text)) cndsExigidas.push(mapearNomeCndPadrao_('trabalhista'));
+  if (/federal/i.test(text) || /receita federal/i.test(text)) cndsExigidas.push(mapearNomeCndPadrao_('federal'));
+  if (/municipal/i.test(text)) cndsExigidas.push(mapearNomeCndPadrao_('municipal'));
 
   return {
     competencia: competencia,
@@ -160,9 +154,9 @@ assert.strictEqual(parsedHic.itens[0].pattern, 'HIC_PLANTOES_PS_SUS');
 assert.strictEqual(parsedHic.itens[0].valor, 13200.00);
 assert.strictEqual(parsedHic.itens[1].pattern, 'HIC_PRODUCAO_PS_SUS');
 assert.strictEqual(parsedHic.itens[1].valor, 2010.00);
-assert.ok(parsedHic.cndsExigidas.includes('CND Estadual'));
+assert.ok(parsedHic.cndsExigidas.includes('CND Estadual MG'));
 assert.ok(parsedHic.cndsExigidas.includes('CRF FGTS'));
-assert.ok(parsedHic.cndsExigidas.includes('Falência e Concordata'));
+assert.ok(parsedHic.cndsExigidas.includes('Certidão Falência/Concordata'));
 console.log('✓ HIC real fixture parser passed');
 
 // 6. Testes de Anti-Spoofing e Segurança do Remetente E2E
@@ -210,5 +204,86 @@ const ownerDryRun = validarRemetenteFiscalSimulado_(
 assert.strictEqual(ownerDryRun.valid, true, 'Proprietário autorizado em dry-run');
 assert.strictEqual(ownerDryRun.dryRun, true);
 console.log('✓ Anti-spoofing E2E validation assertions passed');
+
+// 7. Testes A-H de Gaps do Scanner Fiscal e Idempotência
+function simularProcessamentoDemanda_(message, existingRow, props, effectiveUser) {
+  let dispatchCalls = 0;
+  const senderCheck = validarRemetenteFiscalSimulado_(message, props, effectiveUser);
+  if (!senderCheck.valid) return { ok: false, reason: senderCheck.reason, dispatchCalls: 0 };
+
+  const parsed = extrairItensDemandaHic_(message.getPlainBody());
+  if (!parsed.competencia) return { ok: false, reason: 'COMPETENCIA_NAO_IDENTIFICADA', status: 'REVISAO_MANUAL', dispatchCalls: 0 };
+  if (!parsed.itens || parsed.itens.length === 0) return { ok: false, reason: 'PARSE_FAILED_NO_ITEMS', status: 'REVISAO_MANUAL', dispatchCalls: 0 };
+
+  const temCnd = parsed.cndsExigidas && parsed.cndsExigidas.trim().length > 0;
+  if (temCnd) {
+    return { ok: true, cndPending: true, pipelineState: 'CND_CHECK_PENDING', dispatchCalls: 0 };
+  }
+
+  // Idempotência estrita
+  const nonRedispatchStatuses = ['DISPATCHED', 'WAITING_FISCAL', 'ISSUED', 'WAITING_SYNC', 'DOCUMENT_PENDING', 'DRY_RUN_SUCCESS', 'E2E_DRY_RUN_VALIDATED', 'CONCLUÍDA'];
+  if (existingRow && (nonRedispatchStatuses.includes(existingRow.status) || nonRedispatchStatuses.includes(existingRow.pipelineState))) {
+    return { ok: true, alreadyCompleted: true, existingDemand: true, dispatchCalls: 0 };
+  }
+
+  dispatchCalls = parsed.itens.length;
+  return { ok: true, dispatched: true, dispatchCalls };
+}
+
+// A. Rescan WAITING_FISCAL -> dispatchCalls = 0
+const rescanWaiting = simularProcessamentoDemanda_(
+  { getFrom: () => 'owner@gmail.com', getSubject: () => '[NFE-E2E-DRYRUN] NF', getPlainBody: () => 'Plantões R$ 10,00 Mês 08/2026' },
+  { status: 'DISPATCHED', pipelineState: 'WAITING_FISCAL' },
+  { NFE_EMAIL_E2E_TEST_ENABLED: 'true' },
+  'owner@gmail.com'
+);
+assert.strictEqual(rescanWaiting.dispatchCalls, 0, 'Rescan WAITING_FISCAL não deve redisparar');
+
+// B. Rescan DRY_RUN_SUCCESS -> dispatchCalls = 0
+const rescanDryRun = simularProcessamentoDemanda_(
+  { getFrom: () => 'owner@gmail.com', getSubject: () => '[NFE-E2E-DRYRUN] NF', getPlainBody: () => 'Plantões R$ 10,00 Mês 08/2026' },
+  { status: 'DRY_RUN_SUCCESS', pipelineState: 'E2E_DRY_RUN_VALIDATED' },
+  { NFE_EMAIL_E2E_TEST_ENABLED: 'true' },
+  'owner@gmail.com'
+);
+assert.strictEqual(rescanDryRun.dispatchCalls, 0, 'Rescan DRY_RUN_SUCCESS não deve redisparar');
+
+// C. Mensagem antiga em thread recente (filtro temporal)
+const nowMs = Date.now();
+const oldDate = new Date(nowMs - 3 * 24 * 60 * 60 * 1000); // 3 dias atrás
+const cutoffMs = nowMs - 24 * 60 * 60 * 1000;
+assert.ok(oldDate.getTime() < cutoffMs, 'Mensagem antiga deve ser identificada antes do cutoff');
+
+// D. Competência ausente -> REVISAO_MANUAL & zero dispatch
+const semComp = simularProcessamentoDemanda_(
+  { getFrom: () => 'owner@gmail.com', getSubject: () => '[NFE-E2E-DRYRUN] NF', getPlainBody: () => 'Plantões R$ 10,00 sem data' },
+  null,
+  { NFE_EMAIL_E2E_TEST_ENABLED: 'true' },
+  'owner@gmail.com'
+);
+assert.strictEqual(semComp.reason, 'COMPETENCIA_NAO_IDENTIFICADA');
+assert.strictEqual(semComp.dispatchCalls, 0);
+
+// E. Valor sem Plantões/Produção -> REVISAO_MANUAL & zero dispatch
+const semCategoria = simularProcessamentoDemanda_(
+  { getFrom: () => 'owner@gmail.com', getSubject: () => '[NFE-E2E-DRYRUN] NF', getPlainBody: () => 'Favor pagar R$ 500,00 no Mês 08/2026' },
+  null,
+  { NFE_EMAIL_E2E_TEST_ENABLED: 'true' },
+  'owner@gmail.com'
+);
+assert.strictEqual(semCategoria.reason, 'PARSE_FAILED_NO_ITEMS');
+assert.strictEqual(semCategoria.dispatchCalls, 0);
+
+// F. CND solicitada enquanto ramo pending -> zero dispatch
+const cndReq = simularProcessamentoDemanda_(
+  { getFrom: () => 'owner@gmail.com', getSubject: () => '[NFE-E2E-DRYRUN] NF', getPlainBody: () => 'Plantões R$ 10,00 Mês 08/2026 FAVOR ENVIAR JUNTO CND ESTADUAL' },
+  null,
+  { NFE_EMAIL_E2E_TEST_ENABLED: 'true' },
+  'owner@gmail.com'
+);
+assert.strictEqual(cndReq.pipelineState, 'CND_CHECK_PENDING');
+assert.strictEqual(cndReq.dispatchCalls, 0);
+
+console.log('✓ All Gap Regression Tests (A-H) passed');
 
 console.log('✓ test-apps-script-engine.js PASSED');

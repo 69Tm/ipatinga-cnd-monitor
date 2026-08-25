@@ -101,7 +101,7 @@ async function run() {
 
   assert.strictEqual(dryResult.status, 'DRY_RUN_SUCCESS');
   assert.strictEqual(dryResult.gerarNfseCalls, 0);
-  assert.strictEqual(dryResult.externalWrites, 0);
+  assert.strictEqual(dryResult.fiscalWrites, 0);
   assert.strictEqual(dryResult.xsdValidation, 'VALIDATED_OFFICIAL_XSD');
   assert.strictEqual(dryResult.xmlSignature, 'VALIDATED_XMLDSIG_C14N');
   assert.ok(dryResult.xmlSha256);

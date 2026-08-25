@@ -56,3 +56,18 @@
 - **Idempotência e Ledger:** Alocação atômica de RPS antes do envio; consulta prévia por RPS para garantir entrega exactly-once (`ALREADY_ISSUED`).
 - **Google Sheets:** Preservar a integridade das abas estruturadas (`Notas`, `Demandas`, `Tomadores`, `Padrões de Emissão`, `RPS`).
 - **Segurança de Segredos & Logs Sanitizados:** Nunca expor tokens, senhas, chaves privadas, certificados ou payloads XML brutos nos logs ou relatórios.
+
+### Status Operacional e Pipeline Gmail
+- **PRODUCTION_ISSUE**: `VALIDATED` (NFS-e 16 emitida e validada)
+- **PRODUCTION_RECONCILIATION**: `VALIDATED`
+- **PRODUCTION_SYNC**: `VALIDATED`
+- **INFRA_RECOVERY**: `VALIDATED`
+- **EXACTLY_ONCE**: `VALIDATED`
+- **PRODUCTION_FISCAL_ENGINE**: `FROZEN_VALIDATED`
+- **GMAIL_OPERATIONAL_PIPELINE**: `CONFIGURED_ALIGNED`
+- **APPS_SCRIPT_SYNTAX**: `VALIDATED`
+- **FISCAL_GMAIL_SCANNER**: `INDEPENDENT_VALIDATED`
+- **CND_AUTOMATION_BRANCH**: `PENDING_FAIL_CLOSED`
+- **CISURG_ATTACHMENT_BRANCH**: `PENDING_FAIL_CLOSED`
+- **E2E_ANTI_SPOOFING**: `VALIDATED`
+- **WRITE_BACK_DRY_RUN**: `VALIDATED`

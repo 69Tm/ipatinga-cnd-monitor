@@ -18,7 +18,7 @@
  ***************************************************************/
 
 const SYSTEM = Object.freeze({
-  VERSION: '3.5.2', // exibida também no rodapé da interface
+  VERSION: '3.5.3', // exibida também no rodapé da interface
   WEB_APP_URL: 'https://script.google.com/macros/s/AKfycbyZs74VJ-2AKWyB6TWPtfol5Z64Vq9dHXD3dp8ZoHd5y8xsc4AsQCa0RNCEK7RMVtg0/exec',
   CONFIG_KEY: 'BARK_MANAGER_CONFIG_V2',
   RULES_KEY: 'BARK_MANAGER_RULES_V2',
@@ -4003,33 +4003,44 @@ function processarSolicitacoesFiscaisGmail_() {
   const testProdEnabled = props.getProperty('NFE_EMAIL_E2E_PRODUCTION_ENABLED') === 'true';
   const ownEmail = obterEmailEfetivo_().toLowerCase();
 
+  const nowMs = Date.now();
+  const cutoffInstitutionalMs = nowMs - (48 * 60 * 60 * 1000); // 48h
+  const cutoffE2eMs = nowMs - (24 * 60 * 60 * 1000);           // 24h
+
   const queries = [
-    'from:servicosmedicos@hic.org.br newer_than:2d',
-    'from:hic.org.br "nota fiscal" newer_than:2d',
-    'from:adm@cisurgmp.mg.gov.br newer_than:2d',
-    'from:cisurgmp.mg.gov.br "nota fiscal" newer_than:2d'
+    { query: 'from:servicosmedicos@hic.org.br newer_than:2d', cutoff: cutoffInstitutionalMs, isE2e: false },
+    { query: 'from:hic.org.br "nota fiscal" newer_than:2d', cutoff: cutoffInstitutionalMs, isE2e: false },
+    { query: 'from:adm@cisurgmp.mg.gov.br newer_than:2d', cutoff: cutoffInstitutionalMs, isE2e: false },
+    { query: 'from:cisurgmp.mg.gov.br "nota fiscal" newer_than:2d', cutoff: cutoffInstitutionalMs, isE2e: false }
   ];
 
   if (testDryRunEnabled && ownEmail) {
-    queries.push('from:' + ownEmail + ' subject:"[NFE-E2E-DRYRUN]" newer_than:1d');
+    queries.push({ query: 'from:' + ownEmail + ' subject:"[NFE-E2E-DRYRUN]" newer_than:1d', cutoff: cutoffE2eMs, isE2e: true });
   }
 
   if (testProdEnabled && ownEmail) {
-    queries.push('from:' + ownEmail + ' subject:"[NFE-E2E-PROD]" newer_than:1d');
+    queries.push({ query: 'from:' + ownEmail + ' subject:"[NFE-E2E-PROD]" newer_than:1d', cutoff: cutoffE2eMs, isE2e: true });
   }
 
   let totalDispatched = 0;
   const processedMessageIds = new Set();
 
-  queries.forEach(q => {
+  queries.forEach(qItem => {
     try {
-      const threads = GmailApp.search(q, 0, 15);
+      const threads = GmailApp.search(qItem.query, 0, 15);
       threads.forEach(thread => {
         const messages = thread.getMessages();
         messages.forEach(message => {
           const messageId = message.getId();
           if (processedMessageIds.has(messageId)) return;
           processedMessageIds.add(messageId);
+
+          // Filtro temporal individual por mensagem (evita mensagens antigas em threads recentes)
+          const msgDate = message.getDate();
+          if (msgDate && msgDate.getTime() < qItem.cutoff) {
+            console.log('[FISCAL-SCANNER] Ignorando mensagem antiga no thread: ' + messageId + ' (' + msgDate.toISOString() + ')');
+            return;
+          }
 
           const res = processarSolicitacaoNfOperacional_({ message: message });
           if (res && res.dispatched) {
@@ -4038,7 +4049,7 @@ function processarSolicitacoesFiscaisGmail_() {
         });
       });
     } catch (eSearch) {
-      console.log('[WARN] Erro na busca fiscal query "' + q + '": ' + eSearch.message);
+      console.log('[WARN] Erro na busca fiscal query "' + qItem.query + '": ' + eSearch.message);
     }
   });
 
@@ -4112,11 +4123,22 @@ function validarRemetenteFiscal_(message) {
   return { valid: true, isE2eTest: false, dryRun: false, tomador: tomadorNome, reason: 'AUTHENTICATED_SENDER' };
 }
 
-function extrairItensDemandaHic_(bodyText, defaultCompetencia) {
+function mapearNomeCndPadrao_(nomeBruto) {
+  const norm = normalizarTextoBusca_(nomeBruto);
+  if (norm.includes('estadual')) return 'CND Estadual MG';
+  if (norm.includes('fgts') || norm.includes('crf')) return 'CRF FGTS';
+  if (norm.includes('falencia') || norm.includes('concordata')) return 'Certidão Falência/Concordata';
+  if (norm.includes('trabalhista') || norm.includes('cndt')) return 'CNDT';
+  if (norm.includes('federal') || norm.includes('receita federal') || norm.includes('pgfn')) return 'CND Federal';
+  if (norm.includes('municipal')) return 'CND Municipal';
+  return String(nomeBruto || '').trim();
+}
+
+function extrairItensDemandaHic_(bodyText) {
   const text = String(bodyText || '');
   const itens = [];
   const compMatch = text.match(/m[eê]s\s*(\d{2}\/\d{4})/i) || text.match(/compet[eê]ncia\s*(\d{2}\/\d{4})/i);
-  const competencia = compMatch ? compMatch[1] : (defaultCompetencia || '08/2026');
+  const competencia = compMatch ? compMatch[1] : null;
 
   // Bloco 1: Plantões Médicos
   const plantaoMatch = text.match(/Plant[oõ]es[^\n\r]*[\s\S]*?R\$\s*([\d\.,]+)/i);
@@ -4148,31 +4170,14 @@ function extrairItensDemandaHic_(bodyText, defaultCompetencia) {
     }
   }
 
-  // Se não achou pelos blocos nomeados mas tem formato simples de 1 valor
-  if (itens.length === 0) {
-    const singleValMatch = text.match(/R\$\s*([\d\.,]+)/i);
-    if (singleValMatch) {
-      const valor = parseMoeda_(singleValMatch[1]);
-      if (valor > 0) {
-        itens.push({
-          categoria: 'HIC — Plantões PS SUS',
-          pattern: 'HIC_PLANTOES_PS_SUS',
-          valorStr: formatarMoedaSimples_(valor),
-          valor: valor,
-          descricao: ''
-        });
-      }
-    }
-  }
-
-  // Identifica CNDs exigidas no corpo
+  // Identifica CNDs exigidas no corpo com mapeador padronizado
   const cndsExigidas = [];
-  if (/estadual/i.test(text)) cndsExigidas.push('CND Estadual');
-  if (/fgts/i.test(text) || /crf/i.test(text)) cndsExigidas.push('CRF FGTS');
-  if (/falencia/i.test(text) || /concordata/i.test(text)) cndsExigidas.push('Falência e Concordata');
-  if (/trabalhista/i.test(text) || /cndt/i.test(text)) cndsExigidas.push('CND Trabalhista');
-  if (/federal/i.test(text) || /receita federal/i.test(text)) cndsExigidas.push('CND Federal');
-  if (/municipal/i.test(text)) cndsExigidas.push('CND Municipal');
+  if (/estadual/i.test(text)) cndsExigidas.push(mapearNomeCndPadrao_('estadual'));
+  if (/fgts/i.test(text) || /crf/i.test(text)) cndsExigidas.push(mapearNomeCndPadrao_('fgts'));
+  if (/falencia/i.test(text) || /concordata/i.test(text)) cndsExigidas.push(mapearNomeCndPadrao_('falencia'));
+  if (/trabalhista/i.test(text) || /cndt/i.test(text)) cndsExigidas.push(mapearNomeCndPadrao_('trabalhista'));
+  if (/federal/i.test(text) || /receita federal/i.test(text)) cndsExigidas.push(mapearNomeCndPadrao_('federal'));
+  if (/municipal/i.test(text)) cndsExigidas.push(mapearNomeCndPadrao_('municipal'));
 
   return {
     competencia: competencia,
@@ -4213,7 +4218,13 @@ function registrarDemandaNaPlanilha_(args) {
   const data = sheet.getDataRange().getValues();
   for (let i = 1; i < data.length; i++) {
     if (String(data[i][2] || '').trim() === args.messageId) {
-      return { rowIndex: i + 1, alreadyExists: true, currentStatus: data[i][8] };
+      return {
+        rowIndex: i + 1,
+        alreadyExists: true,
+        currentStatus: String(data[i][8] || '').trim(),
+        pipelineState: String(data[i][12] || '').trim(),
+        observacoes: String(data[i][11] || '').trim()
+      };
     }
   }
 
@@ -4238,7 +4249,7 @@ function registrarDemandaNaPlanilha_(args) {
   ];
 
   sheet.appendRow(row);
-  return { rowIndex: sheet.getLastRow(), alreadyExists: false, currentStatus: args.status };
+  return { rowIndex: sheet.getLastRow(), alreadyExists: false, currentStatus: args.status, pipelineState: args.estadoPipeline };
 }
 
 function processarSolicitacaoNfOperacional_(candidate) {
@@ -4291,8 +4302,55 @@ function processarSolicitacaoNfOperacional_(candidate) {
     parsed = extrairItensDemandaHic_(body);
   }
 
+  // Fail-closed: se competência não foi identificada no texto
+  if (!parsed.competencia) {
+    garantirSchemaDemandas_();
+    registrarDemandaNaPlanilha_({
+      messageId: messageId,
+      origem: message.getFrom() || '',
+      status: 'REVISAO_MANUAL',
+      linkGmail: 'https://mail.google.com/mail/u/0/#inbox/' + messageId,
+      observacoes: 'COMPETENCIA_NAO_IDENTIFICADA',
+      estadoPipeline: 'REVISAO_MANUAL',
+      ambiente: 'production'
+    });
+    return { ok: false, reason: 'COMPETENCIA_NAO_IDENTIFICADA' };
+  }
+
+  // Fail-closed: se não identificou semanticamente itens válidos (Plantões ou Produção)
   if (!parsed.itens || parsed.itens.length === 0) {
+    garantirSchemaDemandas_();
+    registrarDemandaNaPlanilha_({
+      messageId: messageId,
+      origem: message.getFrom() || '',
+      status: 'REVISAO_MANUAL',
+      linkGmail: 'https://mail.google.com/mail/u/0/#inbox/' + messageId,
+      observacoes: 'SEM_ITENS_IDENTIFICADOS',
+      estadoPipeline: 'REVISAO_MANUAL',
+      ambiente: 'production'
+    });
     return { ok: false, reason: 'PARSE_FAILED_NO_ITEMS' };
+  }
+
+  // Fail-closed para CNDs solicitadas enquanto ramo de renovação automática estiver pendente
+  const temCndSolicitada = parsed.cndsExigidas && parsed.cndsExigidas.trim().length > 0;
+  if (temCndSolicitada) {
+    garantirSchemaDemandas_();
+    registrarDemandaNaPlanilha_({
+      messageId: messageId,
+      origem: message.getFrom() || '',
+      periodo: parsed.competencia,
+      notasSolicitadas: parsed.itens.map(it => it.categoria).join('; '),
+      valores: parsed.itens.map(it => it.valorStr).join('; '),
+      cndsExigidas: parsed.cndsExigidas,
+      status: 'PENDENTE',
+      linkGmail: 'https://mail.google.com/mail/u/0/#inbox/' + messageId,
+      observacoes: 'CND_CHECK_PENDING',
+      estadoPipeline: 'CND_CHECK_PENDING',
+      ambiente: 'production'
+    });
+    console.log('[FISCAL] Demanda com CND pendente de verificação (fail-closed). Zero dispatch.');
+    return { ok: true, cndPending: true, dispatched: false, reason: 'CND_CHECK_PENDING' };
   }
 
   const notasSolicitadas = parsed.itens.map(it => it.categoria).join('; ');
@@ -4307,7 +4365,7 @@ function processarSolicitacaoNfOperacional_(candidate) {
     periodo: parsed.competencia,
     notasSolicitadas: notasSolicitadas,
     valores: valores,
-    cndsExigidas: parsed.cndsExigidas || '',
+    cndsExigidas: '',
     descricaoObrigatoria: descricoes,
     status: 'PENDENTE',
     linkGmail: 'https://mail.google.com/mail/u/0/#inbox/' + messageId,
@@ -4316,30 +4374,50 @@ function processarSolicitacaoNfOperacional_(candidate) {
     ambiente: env
   });
 
-  if (reg.alreadyExists && (reg.currentStatus === 'CONCLUÍDA' || reg.currentStatus === 'ISSUED' || reg.currentStatus === 'DRY_RUN_SUCCESS')) {
-    return { ok: true, alreadyCompleted: true, messageId: messageId };
+  // Idempotência estrita: se já existir e estiver em processamento ou finalizada, ZERO novo dispatch
+  const nonRedispatchStatuses = ['DISPATCHED', 'WAITING_FISCAL', 'ISSUED', 'WAITING_SYNC', 'DOCUMENT_PENDING', 'DRY_RUN_SUCCESS', 'E2E_DRY_RUN_VALIDATED', 'CONCLUÍDA'];
+  if (reg.alreadyExists && (nonRedispatchStatuses.includes(reg.currentStatus) || nonRedispatchStatuses.includes(reg.pipelineState))) {
+    return { ok: true, alreadyCompleted: true, existingDemand: true, messageId: messageId, dispatched: false };
   }
 
-  // 5. Dispatch GitHub Actions com tratamento de erro
+  // 5. Determina quais item_index precisam ser despachados (suporte a PARTIAL_DISPATCH)
   const totalItems = parsed.itens.length;
+  let dispatchedIndices = [];
+  if (reg.alreadyExists && reg.pipelineState === 'PARTIAL_DISPATCH' && reg.observacoes) {
+    const m = reg.observacoes.match(/DISPATCHED_ITEMS:[(.*?)]/);
+    if (m) {
+      dispatchedIndices = m[1].split(',').map(s => s.trim()).filter(Boolean);
+    }
+  }
+
   let dispatchesSuccess = 0;
+  let newlyDispatched = [];
   let lastDispatchError = '';
 
   for (let idx = 1; idx <= totalItems; idx++) {
+    const idxStr = String(idx);
+    if (dispatchedIndices.includes(idxStr)) {
+      dispatchesSuccess++;
+      continue; // Item já despachado anteriormente
+    }
+
     try {
       dispararWorkflowGitHubNfse_({
         operation: 'issue',
         environment: 'production',
         request_id: messageId,
-        item_index: String(idx),
+        item_index: idxStr,
         dry_run: senderCheck.dryRun
       });
       dispatchesSuccess++;
+      newlyDispatched.push(idxStr);
     } catch (err) {
       lastDispatchError = err.message;
-      console.log('[ERROR] Dispatch item ' + idx + ' falhou: ' + err.message);
+      console.log('[ERROR] Dispatch item ' + idxStr + ' falhou: ' + err.message);
     }
   }
+
+  const allDispatched = [...dispatchedIndices, ...newlyDispatched];
 
   // 6. Atualiza estado da demanda
   const ss = abrirPlanilhaNfse_();
@@ -4348,11 +4426,13 @@ function processarSolicitacaoNfOperacional_(candidate) {
   if (sheet && reg.rowIndex) {
     if (dispatchesSuccess === totalItems) {
       sheet.getRange(reg.rowIndex, 9).setValue('DISPATCHED');
+      sheet.getRange(reg.rowIndex, 12).setValue(senderCheck.isE2eTest ? 'E2E_TEST_ISOLATED' : 'DISPATCHED_ITEMS:[' + allDispatched.join(',') + ']');
       sheet.getRange(reg.rowIndex, 13).setValue('WAITING_FISCAL');
       sheet.getRange(reg.rowIndex, 14).setValue(new Date().toISOString());
       sheet.getRange(reg.rowIndex, 15).setValue('');
     } else if (dispatchesSuccess > 0) {
       sheet.getRange(reg.rowIndex, 9).setValue('PARTIAL_DISPATCH');
+      sheet.getRange(reg.rowIndex, 12).setValue('DISPATCHED_ITEMS:[' + allDispatched.join(',') + ']');
       sheet.getRange(reg.rowIndex, 13).setValue('PARTIAL_DISPATCH');
       sheet.getRange(reg.rowIndex, 14).setValue(new Date().toISOString());
       sheet.getRange(reg.rowIndex, 15).setValue(limitarTexto_(lastDispatchError, 300));
@@ -4367,7 +4447,7 @@ function processarSolicitacaoNfOperacional_(candidate) {
   return {
     ok: dispatchesSuccess > 0,
     messageId: messageId,
-    dispatched: dispatchesSuccess > 0,
+    dispatched: newlyDispatched.length > 0,
     itemsCount: totalItems,
     dryRun: senderCheck.dryRun
   };
@@ -4399,7 +4479,7 @@ function continuarDemandasNfPendentes_() {
     const notasSol = String(row[4] || '').split(';').filter(Boolean);
     const totalRequired = Math.max(notasSol.length, 1);
 
-    if (!reqId || status === 'CONCLUÍDA' || status === 'DRY_RUN_SUCCESS' || pipelineState === 'DRAFT_CREATED') continue;
+    if (!reqId || status === 'CONCLUÍDA' || status === 'DRY_RUN_SUCCESS' || pipelineState === 'DRAFT_CREATED' || pipelineState === 'LEGACY_TEST_INVALID') continue;
 
     // Busca RPS emitidos correspondentes ao request_id
     const matchingRps = [];
@@ -4436,10 +4516,9 @@ function continuarDemandasNfPendentes_() {
       });
 
       if (allInNotas) {
-        sheetDemandas.getRange(rowNum, 13).setValue('SYNCED'); // Col M
-        sheetDemandas.getRange(rowNum, 13).setValue('DOCUMENT_PENDING');
+        sheetDemandas.getRange(rowNum, 13).setValue('DOCUMENT_PENDING'); // Col M
       } else {
-        sheetDemandas.getRange(rowNum, 13).setValue('WAITING_SYNC');
+        sheetDemandas.getRange(rowNum, 13).setValue('WAITING_SYNC'); // Col M
       }
       count++;
     }
@@ -4512,7 +4591,7 @@ function diagnosticoIntegracaoNfse() {
 
   const diag = {
     SYSTEM_VERSION: SYSTEM.VERSION,
-    NFSE_INTEGRATION_VERSION: '3.5.2',
+    NFSE_INTEGRATION_VERSION: '3.5.3',
     CND_SPREADSHEET_ID: SYSTEM.CND_CONTROL_SPREADSHEET_ID,
     CND_SPREADSHEET_TITLE: cndTitle,
     CND_ERROR: cndError || null,

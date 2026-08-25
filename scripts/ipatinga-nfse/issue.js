@@ -752,6 +752,7 @@ async function issueNfse({ requestId, itemIndex = 1, certData, dryRun = false },
       }
     }
 
+    const hadSheetWrite = !!(candidate && candidate.rowIndex);
     return {
       status: 'DRY_RUN_SUCCESS',
       environment,
@@ -764,7 +765,8 @@ async function issueNfse({ requestId, itemIndex = 1, certData, dryRun = false },
       xsdValidation: 'VALIDATED_OFFICIAL_XSD',
       xmlSignature: 'VALIDATED_XMLDSIG_C14N',
       gerarNfseCalls: 0,
-      externalWrites: 0
+      fiscalWrites: 0,
+      sheetWritebacks: hadSheetWrite ? 1 : 0
     };
   }
 
