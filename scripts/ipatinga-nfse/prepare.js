@@ -542,6 +542,7 @@ function prepareDemand({ requestId, demandas, tomadores, patterns, notas = [], n
 
     const candidate = {
       requestId,
+      rowIndex: demanda.rowIndex || null,
       sequence: idx + 1,
       patternId: pattern.patternId,
       categoria: pattern.categoria || notaSolicitada,

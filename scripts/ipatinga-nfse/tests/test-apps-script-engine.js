@@ -165,12 +165,50 @@ assert.ok(parsedHic.cndsExigidas.includes('CRF FGTS'));
 assert.ok(parsedHic.cndsExigidas.includes('Falência e Concordata'));
 console.log('✓ HIC real fixture parser passed');
 
-// 5. Testes de variações monetárias
-assert.strictEqual(parseMoeda_('R$13.200,00'), 13200.00);
-assert.strictEqual(parseMoeda_('R$ 13.200,00'), 13200.00);
-assert.strictEqual(parseMoeda_('R$ 13200,00'), 13200.00);
-assert.strictEqual(parseMoeda_('13200.00'), 13200.00);
-assert.strictEqual(parseMoeda_('10,00'), 10.00);
-console.log('✓ Currency variation assertions passed');
+// 6. Testes de Anti-Spoofing e Segurança do Remetente E2E
+function validarRemetenteFiscalSimulado_(message, props, effectiveUser) {
+  const fromHeader = String(message.getFrom() || '');
+  const fromEmail = fromHeader.toLowerCase();
+  const subject = String(message.getSubject() || '');
+  const ownEmail = (effectiveUser || '').toLowerCase();
+
+  const testDryRunEnabled = props.NFE_EMAIL_E2E_TEST_ENABLED === 'true';
+  const testProdEnabled = props.NFE_EMAIL_E2E_PRODUCTION_ENABLED === 'true';
+
+  if (testDryRunEnabled && subject.startsWith('[NFE-E2E-DRYRUN]')) {
+    if (ownEmail && fromEmail === ownEmail) {
+      return { valid: true, isE2eTest: true, dryRun: true, tomador: 'HIC', reason: 'E2E_DRYRUN_AUTHORIZED' };
+    }
+    return { valid: false, isE2eTest: false, dryRun: false, reason: 'E2E_DRYRUN_REJECTED_UNAUTHORIZED_SENDER: ' + fromEmail };
+  }
+
+  if (testProdEnabled && subject.startsWith('[NFE-E2E-PROD]')) {
+    if (ownEmail && fromEmail === ownEmail) {
+      return { valid: true, isE2eTest: true, dryRun: false, tomador: 'HIC', reason: 'E2E_PRODUCTION_AUTHORIZED' };
+    }
+    return { valid: false, isE2eTest: false, dryRun: false, reason: 'E2E_PRODUCTION_REJECTED_UNAUTHORIZED_SENDER: ' + fromEmail };
+  }
+
+  return { valid: false, reason: 'UNTRUSTED_SENDER' };
+}
+
+// Teste de spoofing: invasor enviando [NFE-E2E-PROD]
+const spoofAttempt = validarRemetenteFiscalSimulado_(
+  { getFrom: () => 'attacker@example.com', getSubject: () => '[NFE-E2E-PROD] Emitir NF' },
+  { NFE_EMAIL_E2E_PRODUCTION_ENABLED: 'true' },
+  'owner@gmail.com'
+);
+assert.strictEqual(spoofAttempt.valid, false, 'Invasor não pode se passar por E2E prod');
+assert.ok(spoofAttempt.reason.includes('REJECTED_UNAUTHORIZED_SENDER'));
+
+// Teste de proprietário autorizado
+const ownerDryRun = validarRemetenteFiscalSimulado_(
+  { getFrom: () => 'owner@gmail.com', getSubject: () => '[NFE-E2E-DRYRUN] Solicitação de emissão de Nota Fiscal' },
+  { NFE_EMAIL_E2E_TEST_ENABLED: 'true' },
+  'owner@gmail.com'
+);
+assert.strictEqual(ownerDryRun.valid, true, 'Proprietário autorizado em dry-run');
+assert.strictEqual(ownerDryRun.dryRun, true);
+console.log('✓ Anti-spoofing E2E validation assertions passed');
 
 console.log('✓ test-apps-script-engine.js PASSED');

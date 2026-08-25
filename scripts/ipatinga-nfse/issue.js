@@ -739,6 +739,19 @@ async function issueNfse({ requestId, itemIndex = 1, certData, dryRun = false },
   const xmlSha256 = crypto.createHash('sha256').update(signedXml).digest('hex');
 
   if (dryRun) {
+    if (candidate && candidate.rowIndex) {
+      try {
+        const update = dependencies.updateSheetValues || updateSheetValues;
+        const nowIso = new Date().toISOString();
+        // Atualiza Col I (Status = DRY_RUN_SUCCESS), Col M (Estado pipeline = E2E_DRY_RUN_VALIDATED), Col N (Timestamp), Col O (Erro = '')
+        await update(spreadsheetId, `${CONFIG.SHEETS.TABS.DEMANDAS}!I${candidate.rowIndex}:O${candidate.rowIndex}`, [
+          ['DRY_RUN_SUCCESS', '', '', '', 'E2E_DRY_RUN_VALIDATED', nowIso, '']
+        ]);
+      } catch (errWriteBack) {
+        console.log(`[WARN] Falha ao gravar write-back de dry-run na aba Demandas: ${errWriteBack.message}`);
+      }
+    }
+
     return {
       status: 'DRY_RUN_SUCCESS',
       environment,
