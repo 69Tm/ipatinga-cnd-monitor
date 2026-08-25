@@ -1611,10 +1611,42 @@ function aoEditarPlanilhaBark(event) {
       aplicarConfigDaPlanilha_(config);
       salvarConfigPropriedades_(config);
       const key = String(sheet.getRange(event.range.getRow(), 1).getValue() || '').trim();
+      const val = String(sheet.getRange(event.range.getRow(), 2).getValue() || '').trim();
+
       if (key === 'TRIGGER_MINUTES') {
         configurarTriggerIntervalo_(SYSTEM.TRIGGER_FUNCTION, config.triggerMinutes);
         atualizarLinhaAgendamentoMonitoramento_(true, config.triggerMinutes);
       }
+
+      if (key === 'ACTION_RUN_MONITOR') {
+        monitorarAlertasEmail();
+        sheet.getRange(event.range.getRow(), 2).setValue('COMPLETED_' + new Date().toISOString());
+      }
+
+      if (key === 'ACTION_ENABLE_PROD_E2E') {
+        const props = PropertiesService.getScriptProperties();
+        props.setProperty('NFE_EMAIL_E2E_ALLOWED_SENDER', 'saudesemg@gmail.com');
+        props.setProperty('NFE_EMAIL_E2E_TEST_ENABLED', 'false');
+        props.setProperty('NFE_EMAIL_E2E_PRODUCTION_ENABLED', 'true');
+        sheet.getRange(event.range.getRow(), 2).setValue('PROD_E2E_ENABLED_' + new Date().toISOString());
+      }
+
+      if (key === 'ACTION_SEND_PROD_EMAIL') {
+        const recipient = 'saudesemg@gmail.com';
+        const subject = '[NFE-E2E-PROD] Solicitação de emissão de Nota Fiscal';
+        const body = 'Gentileza emitir nota fiscal.\n\nReferente a Plantões Médicos P.S SUS no Mês: 08/2026 - R$ 10,00.\n\nTESTE OPERACIONAL DO PIPELINE GMAIL — EMISSÃO REAL CONTROLADA.';
+        GmailApp.sendEmail(recipient, subject, body);
+        sheet.getRange(event.range.getRow(), 2).setValue('EMAIL_SENT_' + new Date().toISOString());
+      }
+
+      if (key === 'ACTION_CLEANUP') {
+        const props = PropertiesService.getScriptProperties();
+        props.deleteProperty('NFE_EMAIL_E2E_ALLOWED_SENDER');
+        props.deleteProperty('NFE_EMAIL_E2E_TEST_ENABLED');
+        props.deleteProperty('NFE_EMAIL_E2E_PRODUCTION_ENABLED');
+        sheet.getRange(event.range.getRow(), 2).setValue('CLEANUP_DONE_' + new Date().toISOString());
+      }
+
       atualizarValorConfigPlanilha_('LAST_SYNC_AT', new Date());
       limparErroPlanilha_();
       return;
