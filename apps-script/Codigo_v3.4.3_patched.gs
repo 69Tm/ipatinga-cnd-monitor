@@ -500,13 +500,13 @@ function doGet(e) {
     let result = {};
     try {
       if (action === 'diag') {
-        result = obterConfigPropriedades_();
+        result = diagnosticoIntegracaoNfse();
       } else if (action === 'enableProdE2E') {
         const props = PropertiesService.getScriptProperties();
         props.setProperty('NFE_EMAIL_E2E_ALLOWED_SENDER', 'saudesemg@gmail.com');
         props.setProperty('NFE_EMAIL_E2E_TEST_ENABLED', 'false');
         props.setProperty('NFE_EMAIL_E2E_PRODUCTION_ENABLED', 'true');
-        result = { ok: true, diag: obterConfigPropriedades_() };
+        result = { ok: true, diag: diagnosticoIntegracaoNfse() };
       } else if (action === 'sendProdEmail') {
         const recipient = obterEmailEfetivo_() || 'saudesemg@gmail.com';
         const subject = '[NFE-E2E-PROD] Solicitação de emissão de Nota Fiscal';
@@ -541,7 +541,7 @@ function doGet(e) {
         props.deleteProperty('NFE_EMAIL_E2E_ALLOWED_SENDER');
         props.deleteProperty('NFE_EMAIL_E2E_TEST_ENABLED');
         props.deleteProperty('NFE_EMAIL_E2E_PRODUCTION_ENABLED');
-        result = { ok: true, diag: obterConfigPropriedades_() };
+        result = { ok: true, diag: diagnosticoIntegracaoNfse() };
       } else {
         result = { error: 'Unknown action: ' + action };
       }
@@ -4776,7 +4776,7 @@ function getRawMessageById_(msgId) {
 }
 
 
-  function obterConfigPropriedades_() {
+function diagnosticoIntegracaoNfse() {
   garantirSchemaDemandas_();
   const props = PropertiesService.getScriptProperties();
   let cndTitle = '';
