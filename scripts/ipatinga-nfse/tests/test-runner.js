@@ -24,6 +24,7 @@ async function run() {
     await require('./test-report');
     await require('./test-prepare');
     await require('./test-issue');
+    await require('./test-apps-script-engine');
     console.log('\n🎉 TODOS OS TESTES PASSARAM COM SUCESSO! ✅\n');
   } catch (err) {
     console.error('\n❌ FALHA NOS TESTES:', err);

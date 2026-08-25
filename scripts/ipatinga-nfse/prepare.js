@@ -33,24 +33,46 @@ function getPaymentInstructions() {
 function demandRows(rawRows) {
   if (!rawRows || rawRows.length <= 1) return [];
   const rows = [];
+  const headers = (rawRows[0] || []).map(h => String(h || '').trim().toLowerCase());
+  
+  // Mapeamento dinâmico de cabeçalhos por nome ou índice padrão
+  const getIdx = (colName, fallbackIdx) => {
+    const idx = headers.findIndex(h => h.includes(colName.toLowerCase()));
+    return idx >= 0 ? idx : fallbackIdx;
+  };
+
+  const idxReqId = headers.includes('message id') ? getIdx('message id', 2) : 0;
+  const idxPeriodo = getIdx('período', idxReqId === 2 ? 3 : 1);
+  const idxNotasSol = getIdx('notas solicitadas', idxReqId === 2 ? 4 : 2);
+  const idxValores = getIdx('valores', idxReqId === 2 ? 5 : 3);
+  const idxDescricao = getIdx('descrição obrigatória', idxReqId === 2 ? 7 : 4);
+  const idxStatus = getIdx('status', idxReqId === 2 ? 8 : 5);
+  const idxNfse = getIdx('nfs-e resultantes', idxReqId === 2 ? 9 : 6);
+  const idxDataProc = getIdx('data demanda', idxReqId === 2 ? 0 : 7);
+
   for (let i = 1; i < rawRows.length; i++) {
     const r = rawRows[i];
-    const requestId = String(r[0] || '').trim();
+    const requestId = String(r[idxReqId] || '').trim();
     if (!requestId) continue;
+
+    // Ignora linha de teste legado corrompida
+    if (requestId === 'e2e-integration-test-live-1') {
+      continue;
+    }
 
     rows.push({
       rowIndex: i + 1,
       requestId,
-      periodo: String(r[1] || '').trim(),
-      notasSolicitadasRaw: String(r[2] || '').trim(),
-      notasSolicitadas: String(r[2] || '').split(';').map(s => s.trim()).filter(Boolean),
-      valoresRaw: String(r[3] || '').trim(),
-      valores: String(r[3] || '').split(';').map(s => s.trim()).filter(Boolean),
-      descricaoObrigatoriaRaw: String(r[4] || '').trim(),
-      descricaoObrigatoria: String(r[4] || '').split('||').map(s => s.trim()).filter(Boolean),
-      status: String(r[5] || '').trim(),
-      nfseResultantes: String(r[6] || '').trim(),
-      dataProcessamento: String(r[7] || '').trim()
+      periodo: String(r[idxPeriodo] || '').trim(),
+      notasSolicitadasRaw: String(r[idxNotasSol] || '').trim(),
+      notasSolicitadas: String(r[idxNotasSol] || '').split(';').map(s => s.trim()).filter(Boolean),
+      valoresRaw: String(r[idxValores] || '').trim(),
+      valores: String(r[idxValores] || '').split(';').map(s => s.trim()).filter(Boolean),
+      descricaoObrigatoriaRaw: String(r[idxDescricao] || '').trim(),
+      descricaoObrigatoria: String(r[idxDescricao] || '').split('||').map(s => s.trim()).filter(Boolean),
+      status: String(r[idxStatus] || '').trim(),
+      nfseResultantes: String(r[idxNfse] || '').trim(),
+      dataProcessamento: String(r[idxDataProc] || '').trim()
     });
   }
   return rows;
