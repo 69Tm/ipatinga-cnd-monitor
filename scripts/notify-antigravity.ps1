@@ -10,11 +10,34 @@ param (
   [string]$Message,
 
   [Parameter(Mandatory=$false)]
-  [string]$Summary
+  [string]$Summary,
+
+  [Parameter(Mandatory=$false)]
+  [string]$TaskId
 )
 
 $ErrorActionPreference = 'SilentlyContinue'
 
+# 1. Deduplicacao estrita: 1 notificacao por tarefa de alto nivel
+$id = $TaskId
+if (-not $id -or $id.Trim().Length -eq 0) {
+  $id = $Task.Trim().ToLower() -replace '[^a-z0-9]', '_'
+}
+
+$stateDir = [System.IO.Path]::Combine($env:TEMP, 'antigravity_notify')
+if (-not (Test-Path $stateDir)) {
+  New-Item -ItemType Directory -Path $stateDir -Force | Out-Null
+}
+
+$lockFile = [System.IO.Path]::Combine($stateDir, "$id.notified")
+if (Test-Path $lockFile) {
+  # Ja notificado para esta task de alto nivel - SILENCIO TOTAL
+  exit 0
+}
+
+Set-Content -Path $lockFile -Value (Get-Date -Format 'o') -Force
+
+# 2. Mensagem e Titulo
 $msgText = $Message
 if (-not $msgText -or $msgText.Trim().Length -eq 0) {
   $msgText = $Summary
@@ -26,39 +49,15 @@ if (-not $msgText -or $msgText.Trim().Length -eq 0) {
 }
 
 $title = ''
-$toastAudio = 'ms-winsoundevent:Notification.Default'
-$freqs = @(1000, 1500)
-$beepDuration = 120
-
 if ($Status -eq 'SUCCESS') {
   $title = [char]0x2705 + ' ANTIGRAVITY - TASK CONCLUIDA'
-  $toastAudio = 'ms-winsoundevent:Notification.Default'
-  $freqs = @(1000, 1400, 1800)
-  $beepDuration = 120
 } elseif ($Status -eq 'BLOCKED') {
   $title = [char]0x26A0 + ' ANTIGRAVITY - ACAO NECESSARIA'
-  $toastAudio = 'ms-winsoundevent:Notification.Reminder'
-  $freqs = @(700, 700, 700)
-  $beepDuration = 200
 } else {
   $title = [char]0x274C + ' ANTIGRAVITY - TASK FALHOU'
-  $toastAudio = 'ms-winsoundevent:Notification.Default'
-  $freqs = @(400, 300, 200)
-  $beepDuration = 300
 }
 
-# 1. Alerta Sonoro do Windows
-try {
-  foreach ($f in $freqs) {
-    [System.Console]::Beep($f, $beepDuration)
-    Start-Sleep -Milliseconds 40
-  }
-} catch {
-  [System.Media.SystemSounds]::Asterisk.Play()
-}
-
-# 2. Notificacao Toast Nativa do Windows 10/11 (WinRT / Windows.UI.Notifications)
-$toastSent = $false
+# 3. Toast 100% Silencioso (audio silent="true", ZERO Beep, ZERO SystemSounds)
 try {
   [Windows.UI.Notifications.ToastNotificationManager, Windows.UI.Notifications, ContentType = WindowsRuntime] | Out-Null
   [Windows.Data.Xml.Dom.XmlDocument, Windows.Data.Xml.Dom.XmlDocument, ContentType = WindowsRuntime] | Out-Null
@@ -68,7 +67,7 @@ try {
   $escapedMsg = [System.Security.SecurityElement]::Escape($msgText)
 
   $template = @"
-<toast duration="long">
+<toast duration="short">
     <visual>
         <binding template="ToastGeneric">
             <text>$escapedTitle</text>
@@ -76,33 +75,20 @@ try {
             <text>$escapedMsg</text>
         </binding>
     </visual>
-    <audio src="$toastAudio" />
+    <audio silent="true" />
 </toast>
 "@
 
   $xml = New-Object Windows.Data.Xml.Dom.XmlDocument
   $xml.LoadXml($template)
   $toast = New-Object Windows.UI.Notifications.ToastNotification $xml
-  $appId = '{1AC14E77-02E7-4E5D-B744-2EB1AE5198B7}WindowsPowerShell1.0powershell.exe'
+  $appId = '{1AC14E77-02E7-4E5D-B744-2EB1AE5198B7}\WindowsPowerShell\v1.0\powershell.exe'
   [Windows.UI.Notifications.ToastNotificationManager]::CreateToastNotifier($appId).Show($toast)
-  $toastSent = $true
 } catch {
-  # Fallback para Windows Forms NotifyIcon
-  try {
-    Add-Type -AssemblyName System.Windows.Forms
-    $notify = New-Object System.Windows.Forms.NotifyIcon
-    $notify.Icon = [System.Drawing.SystemIcons]::Information
-    $notify.BalloonTipTitle = $title
-    $notify.BalloonTipText = "$Task`n$msgText"
-    $notify.Visible = $true
-    $notify.ShowBalloonTip(8000)
-    Start-Sleep -Milliseconds 200
-    $notify.Dispose()
-    $toastSent = $true
-  } catch {}
+  # Fallback silencioso sem som
 }
 
-# 3. Banner Terminal
+# 4. Banner Terminal
 Write-Host ""
 Write-Host "============================================================" -ForegroundColor Cyan
 if ($Status -eq 'SUCCESS') {

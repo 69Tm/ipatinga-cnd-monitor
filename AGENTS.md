@@ -71,15 +71,19 @@
 - **CISURG_ATTACHMENT_BRANCH**: `PENDING_FAIL_CLOSED`
 - **E2E_ANTI_SPOOFING**: `VALIDATED`
 - **WRITE_BACK_DRY_RUN = IMPLEMENTED_PENDING_E2E
-
-## Regra Operacional Permanente — Notificação no Windows ao Concluir Qualquer Task
-- **TASK_COMPLETION_NOTIFICATION**: `MANDATORY`
-- **Fluxo Obrigatório de Encerramento:** `EXECUTE` → `TEST` → `VALIDATE` → `REPORT` → `WINDOWS NOTIFICATION`.
-- **Estados Canônicos:** `SUCCESS`, `BLOCKED`, `FAILED`.
-- **Implementação:** `scripts/notify-antigravity.ps1` acionado localmente via PowerShell.
-- **Comportamento por Status:**
-  - **SUCCESS:** Título `✅ ANTIGRAVITY — TASK CONCLUÍDA`, som audível nativo, Windows Toast notification, banner terminal.
-  - **BLOCKED:** Título `⚠️ ANTIGRAVITY — AÇÃO NECESSÁRIA`, som de lembrete, descrição clara da ação humana requerida.
-  - **FAILED:** Título `❌ ANTIGRAVITY — TASK FALHOU`, som de alerta, erro sanitizado em 1 linha (sem expor segredos/tokens).
-- **Sem Dependências Externas / Sem Bark:** A notificação é puramente nativa do Windows (WinRT Toast / NotifyIcon) e nunca envia push externo.
-- **Tolerância a Falhas:** Falha na emissão de notificação visual/sonora degrada graciosamente para banner no terminal sem alterar o resultado técnico da task.
+## Regra Operacional Permanente — Notificação no Windows ao Concluir Task do Usuário
+- **TASK_COMPLETION_NOTIFICATION**:
+  - **Tipo:** Windows Toast visual e nativa.
+  - **Áudio:** 100% SILENCIOSO (`audio silent="true"`, ZERO Beeps, ZERO SystemSounds).
+  - **Frequência / Deduplicação:** `EXACTLY ONCE` por tarefa de alto nível do usuário (protegida por task ID / lock file).
+  - **Escopo:** Exclusivamente no encerramento da resposta final da tarefa solicitada pelo usuário.
+  - **Proibições Estritas:**
+    - NUNCA notificar em subtasks, passos internos, comandos shell, git commits/pushes, execuções de testes, workflows ou chamadas de ferramentas.
+    - ZERO loops de som, ZERO timers de áudio, ZERO processos residentes / background watchers.
+    - Subagentes e rotinas auxiliares permanecem em SILÊNCIO TOTAL.
+  - **Origem:** Somente o orquestrador principal dispara a toast final.
+  - **Implementação:** `scripts/notify-antigravity.ps1` acionado de forma pontual (event-driven).
+  - **Estados Canônicos:**
+    - `SUCCESS`: Título `✅ ANTIGRAVITY — TASK CONCLUÍDA`, Mensagem `<nome> Concluída com sucesso.`
+    - `BLOCKED`: Título `⚠️ ANTIGRAVITY — AÇÃO NECESSÁRIA`, Mensagem `<nome> <ação requerida>`
+    - `FAILED`: Título `❌ ANTIGRAVITY — TASK FALHOU`, Mensagem `<nome> <erro sanitizado>`
