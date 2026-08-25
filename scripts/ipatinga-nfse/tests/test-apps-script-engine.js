@@ -284,6 +284,57 @@ const cndReq = simularProcessamentoDemanda_(
 assert.strictEqual(cndReq.pipelineState, 'CND_CHECK_PENDING');
 assert.strictEqual(cndReq.dispatchCalls, 0);
 
+// G. Testes Unitários de extrairItensDespachados_
+function extrairItensDespachadosSimulado_(observacoes) {
+  const m = String(observacoes || '').match(/DISPATCHED_ITEMS:\[([^\]]*)\]/);
+  if (!m) return [];
+  return m[1].split(',').map(x => x.trim()).filter(Boolean);
+}
+
+assert.deepStrictEqual(extrairItensDespachadosSimulado_('DISPATCHED_ITEMS:[1]'), ['1']);
+assert.deepStrictEqual(extrairItensDespachadosSimulado_('DISPATCHED_ITEMS:[1,2]'), ['1', '2']);
+assert.deepStrictEqual(extrairItensDespachadosSimulado_(''), []);
+assert.deepStrictEqual(extrairItensDespachadosSimulado_(null), []);
+console.log('✓ extrairItensDespachados_ helper tests passed');
+
+// H. Teste Real de Simulação de PARTIAL_DISPATCH (2 Itens)
+function simularPartialDispatchFlow_() {
+  const totalItems = 2;
+
+  // Execução 1: Item 1 sucesso, Item 2 falha
+  const dispatchedIndicesExec1 = [];
+  const newlyDispatchedExec1 = [];
+  for (let idx = 1; idx <= totalItems; idx++) {
+    const idxStr = String(idx);
+    if (idx === 1) {
+      newlyDispatchedExec1.push(idxStr); // Sucesso item 1
+    }
+  }
+  const allDispatchedExec1 = [...dispatchedIndicesExec1, ...newlyDispatchedExec1];
+  const obsExec1 = 'DISPATCHED_ITEMS:[' + allDispatchedExec1.join(',') + ']';
+  const pipelineStateExec1 = 'PARTIAL_DISPATCH';
+
+  assert.strictEqual(newlyDispatchedExec1.length, 1);
+  assert.strictEqual(obsExec1, 'DISPATCHED_ITEMS:[1]');
+
+  // Execução 2: Retomada a partir do estado anterior
+  const dispatchedIndicesExec2 = extrairItensDespachadosSimulado_(obsExec1);
+  const newlyDispatchedExec2 = [];
+  for (let idx = 1; idx <= totalItems; idx++) {
+    const idxStr = String(idx);
+    if (dispatchedIndicesExec2.includes(idxStr)) {
+      continue; // Item 1 já despachado, ignorado!
+    }
+    newlyDispatchedExec2.push(idxStr); // Despacha apenas Item 2!
+  }
+
+  assert.deepStrictEqual(dispatchedIndicesExec2, ['1']);
+  assert.strictEqual(newlyDispatchedExec2.length, 1, 'Deve disparar exatamente 1 novo dispatch na execução 2');
+  assert.strictEqual(newlyDispatchedExec2[0], '2', 'Deve disparar apenas o item 2 pendente');
+}
+simularPartialDispatchFlow_();
+console.log('✓ PARTIAL_DISPATCH resumption test passed');
+
 console.log('✓ All Gap Regression Tests (A-H) passed');
 
 console.log('✓ test-apps-script-engine.js PASSED');

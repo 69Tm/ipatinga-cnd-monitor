@@ -4380,14 +4380,17 @@ function processarSolicitacaoNfOperacional_(candidate) {
     return { ok: true, alreadyCompleted: true, existingDemand: true, messageId: messageId, dispatched: false };
   }
 
+function extrairItensDespachados_(observacoes) {
+  const m = String(observacoes || '').match(/DISPATCHED_ITEMS:\[([^\]]*)\]/);
+  if (!m) return [];
+  return m[1].split(',').map(x => x.trim()).filter(Boolean);
+}
+
   // 5. Determina quais item_index precisam ser despachados (suporte a PARTIAL_DISPATCH)
   const totalItems = parsed.itens.length;
   let dispatchedIndices = [];
   if (reg.alreadyExists && reg.pipelineState === 'PARTIAL_DISPATCH' && reg.observacoes) {
-    const m = reg.observacoes.match(/DISPATCHED_ITEMS:[(.*?)]/);
-    if (m) {
-      dispatchedIndices = m[1].split(',').map(s => s.trim()).filter(Boolean);
-    }
+    dispatchedIndices = extrairItensDespachados_(reg.observacoes);
   }
 
   let dispatchesSuccess = 0;

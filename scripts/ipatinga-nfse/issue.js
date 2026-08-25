@@ -739,6 +739,7 @@ async function issueNfse({ requestId, itemIndex = 1, certData, dryRun = false },
   const xmlSha256 = crypto.createHash('sha256').update(signedXml).digest('hex');
 
   if (dryRun) {
+    let sheetWritebacks = 0;
     if (candidate && candidate.rowIndex) {
       try {
         const update = dependencies.updateSheetValues || updateSheetValues;
@@ -747,12 +748,12 @@ async function issueNfse({ requestId, itemIndex = 1, certData, dryRun = false },
         await update(spreadsheetId, `${CONFIG.SHEETS.TABS.DEMANDAS}!I${candidate.rowIndex}:O${candidate.rowIndex}`, [
           ['DRY_RUN_SUCCESS', '', '', '', 'E2E_DRY_RUN_VALIDATED', nowIso, '']
         ]);
+        sheetWritebacks = 1;
       } catch (errWriteBack) {
-        console.log(`[WARN] Falha ao gravar write-back de dry-run na aba Demandas: ${errWriteBack.message}`);
+        throw new Error('DRY_RUN_WRITEBACK_FAILED: ' + sanitize(errWriteBack.message));
       }
     }
 
-    const hadSheetWrite = !!(candidate && candidate.rowIndex);
     return {
       status: 'DRY_RUN_SUCCESS',
       environment,
@@ -766,7 +767,7 @@ async function issueNfse({ requestId, itemIndex = 1, certData, dryRun = false },
       xmlSignature: 'VALIDATED_XMLDSIG_C14N',
       gerarNfseCalls: 0,
       fiscalWrites: 0,
-      sheetWritebacks: hadSheetWrite ? 1 : 0
+      sheetWritebacks
     };
   }
 

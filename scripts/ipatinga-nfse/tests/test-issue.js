@@ -102,9 +102,24 @@ async function run() {
   assert.strictEqual(dryResult.status, 'DRY_RUN_SUCCESS');
   assert.strictEqual(dryResult.gerarNfseCalls, 0);
   assert.strictEqual(dryResult.fiscalWrites, 0);
+  assert.strictEqual(dryResult.sheetWritebacks, 1);
   assert.strictEqual(dryResult.xsdValidation, 'VALIDATED_OFFICIAL_XSD');
   assert.strictEqual(dryResult.xmlSignature, 'VALIDATED_XMLDSIG_C14N');
   assert.ok(dryResult.xmlSha256);
+
+  // 3b. Testa que falha no write-back do dry-run rejeita com DRY_RUN_WRITEBACK_FAILED
+  await assert.rejects(async () => {
+    await issueNfse({
+      requestId: 'req-test-homolog',
+      itemIndex: 1,
+      certData,
+      dryRun: true
+    }, {
+      readSheetValues: mockSheetReader(),
+      createSheetIfNotExists: async () => true,
+      updateSheetValues: async () => { throw new Error('API_QUOTA_EXCEEDED'); }
+    });
+  }, /DRY_RUN_WRITEBACK_FAILED/, 'Dry-run deve falhar se o write-back na planilha falhar');
 
   // 4. Testa reconcileRps diretamente
   const mockRpsStorage = [
