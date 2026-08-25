@@ -4199,8 +4199,8 @@ function processarSolicitacoesFiscaisGmail_() {
     queries.push({ query: 'subject:"[NFE-E2E-DRYRUN]" newer_than:1d', cutoff: cutoffE2eMs, isE2e: true });
   }
 
-  if (testProdEnabled && ownEmail) {
-    queries.push({ query: 'from:' + ownEmail + ' subject:"[NFE-E2E-PROD]" newer_than:1d', cutoff: cutoffE2eMs, isE2e: true });
+  if (testProdEnabled) {
+    queries.push({ query: 'subject:"[NFE-E2E-PROD]" newer_than:1d', cutoff: cutoffE2eMs, isE2e: true });
   }
 
   let totalDispatched = 0;
