@@ -18,7 +18,7 @@
  ***************************************************************/
 
 const SYSTEM = Object.freeze({
-  VERSION: '3.5.3', // exibida também no rodapé da interface
+  VERSION: '3.5.4', // exibida também no rodapé da interface
   WEB_APP_URL: 'https://script.google.com/macros/s/AKfycbyZs74VJ-2AKWyB6TWPtfol5Z64Vq9dHXD3dp8ZoHd5y8xsc4AsQCa0RNCEK7RMVtg0/exec',
   CONFIG_KEY: 'BARK_MANAGER_CONFIG_V2',
   RULES_KEY: 'BARK_MANAGER_RULES_V2',
@@ -522,6 +522,131 @@ function instalarSistema() {
   return obterDadosPainel();
 }
 
+
+
+
+
+
+/***************************************************************
+ * PROCESSADOS E HISTÓRICO DO GERENCIADOR BARK
+ ***************************************************************/
+
+function obterProcessados_() { return lerJsonEmPartes_(SYSTEM.PROCESSED_KEY, {}); }
+
+function salvarProcessados_(processed) {
+  const entries = Object.entries(processed || {}).sort((a, b) => b[1] - a[1]).slice(0, SYSTEM.MAX_PROCESSED);
+  salvarJsonEmPartes_(SYSTEM.PROCESSED_KEY, Object.fromEntries(entries));
+}
+
+function limparMensagensProcessadas() {
+  const props = PropertiesService.getScriptProperties();
+  salvarJsonEmPartes_(SYSTEM.PROCESSED_KEY, {});
+  props.setProperty(SYSTEM.LAST_SCAN_KEY, String(Date.now()));
+  return obterDadosPainel();
+}
+
+function obterHistorico_() { return lerJsonEmPartes_(SYSTEM.HISTORY_KEY, []); }
+
+function adicionarHistorico_(entry) {
+  const history = obterHistorico_();
+  history.unshift({ at: new Date().toISOString(), status: String(entry.status || ''), ruleName: String(entry.ruleName || ''), subject: String(entry.subject || ''), from: String(entry.from || ''), priority: String(entry.priority || 'active'), detail: limitarTexto_(String(entry.detail || ''), 1200) });
+  salvarJsonEmPartes_(SYSTEM.HISTORY_KEY, history.slice(0, SYSTEM.MAX_HISTORY));
+}
+
+function limparHistorico() { salvarJsonEmPartes_(SYSTEM.HISTORY_KEY, []); return obterDadosPainel(); }
+
+function registrarUltimaExecucao_(startedAt, alertsSent, aiCalls, message) {
+  PropertiesService.getScriptProperties().setProperty(SYSTEM.LAST_RUN_KEY, JSON.stringify({ at: new Date().toISOString(), durationMs: Date.now() - startedAt, alertsSent: Number(alertsSent || 0), aiCalls: Number(aiCalls || 0), message: String(message || '') }));
+}
+
+/***************************************************************
+ * AUXILIARES DO GERENCIADOR BARK
+ ***************************************************************/
+
+function montarQueryString_(params) {
+  return Object.keys(params).filter(key => params[key] !== undefined && params[key] !== null && params[key] !== '').map(key => encodeURIComponent(key) + '=' + encodeURIComponent(params[key])).join('&');
+}
+
+function formatarData_(date) { return Utilities.formatDate(date, Session.getScriptTimeZone(), 'dd/MM/yyyy HH:mm'); }
+function normalizarTexto_(text) { return String(text || '').replace(/\s+/g, ' ').trim(); }
+
+function limitarTexto_(text, maximumLength) {
+  const value = String(text || '');
+  if (value.length <= maximumLength) return value;
+  return value.substring(0, Math.max(0, maximumLength - 15)) + '… [truncado]';
+}
+
+function limitarNumero_(value, minimum, maximum, fallback) {
+  const number = Number(value);
+  if (!Number.isFinite(number)) return fallback;
+  return Math.min(maximum, Math.max(minimum, Math.round(number)));
+}
+
+function existeJsonEmPartes_(baseKey) {
+  const props = PropertiesService.getScriptProperties();
+  return Boolean(props.getProperty(baseKey) || props.getProperty(baseKey + '_PARTS'));
+}
+
+function lerJsonEmPartes_(baseKey, fallback) {
+  const props = PropertiesService.getScriptProperties();
+  const count = Number(props.getProperty(baseKey + '_PARTS')) || 0;
+  if (count > 0) {
+    let text = '';
+    for (let i = 0; i < count; i++) text += props.getProperty(baseKey + '_PART_' + i) || '';
+    return parseJson_(text, fallback);
+  }
+  return parseJson_(props.getProperty(baseKey), fallback);
+}
+
+function salvarJsonEmPartes_(baseKey, value) {
+  const props = PropertiesService.getScriptProperties();
+  const text = JSON.stringify(value);
+  const chunkSize = 2000;
+  const chunks = [];
+  for (let i = 0; i < text.length; i += chunkSize) chunks.push(text.substring(i, i + chunkSize));
+  if (!chunks.length) chunks.push('');
+
+  const previousCount = Number(props.getProperty(baseKey + '_PARTS')) || 0;
+  const updates = {};
+  updates[baseKey + '_PARTS'] = String(chunks.length);
+  chunks.forEach((chunk, index) => { updates[baseKey + '_PART_' + index] = chunk; });
+  props.setProperties(updates, false);
+  for (let i = chunks.length; i < previousCount; i++) props.deleteProperty(baseKey + '_PART_' + i);
+  props.deleteProperty(baseKey);
+}
+
+function parseJson_(value, fallback) {
+  try { return value ? JSON.parse(value) : fallback; }
+  catch (error) { return fallback; }
+}
+
+function alertarVencimentoSimplesNacional() {
+  const config = obterConfig_();
+
+  enviarBark_({
+    config: config,
+    title: 'DAS do Simples Nacional',
+    body:
+      'O DAS do Simples Nacional vence hoje.\n\n' +
+      'Confira a guia e efetue ou confirme o pagamento agora.',
+    priority: 'timeSensitive',
+    openUrl: ''
+  });
+}
+
+function instalarAlertaMensalSimplesNacional() {
+  configurarTriggerMensal_('alertarVencimentoSimplesNacional', 20, 9, 0, 'America/Sao_Paulo');
+  garantirEstruturaPlanilha_();
+  const sheet = abrirPlanilhaBark_().getSheetByName(SYSTEM.SHEET_SCHEDULES);
+  const row = localizarLinhaPorChave_(sheet, 'das_simples_nacional') || Math.max(2, sheet.getLastRow() + 1);
+  sheet.getRange(row, 1, 1, SHEET_SCHEDULE_HEADERS.length).setValues([[
+    'das_simples_nacional', true, 'DAS do Simples Nacional', 'alertarVencimentoSimplesNacional',
+    'mensal', 'dia 20 de cada mês', '09:00', 'America/Sao_Paulo',
+    'ativo — dia 20 às 09:00', 'Sincronizado automaticamente pelo Apps Script.'
+  ]]);
+  return 'Alerta mensal instalado para o dia 20, por volta das 9h.';
+}
+
 function inicializarSistema_() {
   const props = PropertiesService.getScriptProperties();
 
@@ -530,7 +655,7 @@ function inicializarSistema_() {
   if (!props.getProperty(SYSTEM.CONFIG_KEY)) {
     salvarConfigPropriedades_(Object.assign({}, DEFAULT_CONFIG));
   } else {
-    salvarConfigPropriedades_(obterConfigPropriedades_());
+    salvarConfigPropriedades_(obterConfig_());
   }
 
   if (!existeJsonEmPartes_(SYSTEM.RULES_KEY)) {
@@ -4014,8 +4139,8 @@ function processarSolicitacoesFiscaisGmail_() {
     { query: 'from:cisurgmp.mg.gov.br "nota fiscal" newer_than:2d', cutoff: cutoffInstitutionalMs, isE2e: false }
   ];
 
-  if (testDryRunEnabled && ownEmail) {
-    queries.push({ query: 'from:' + ownEmail + ' subject:"[NFE-E2E-DRYRUN]" newer_than:1d', cutoff: cutoffE2eMs, isE2e: true });
+  if (testDryRunEnabled) {
+    queries.push({ query: 'subject:"[NFE-E2E-DRYRUN]" newer_than:1d', cutoff: cutoffE2eMs, isE2e: true });
   }
 
   if (testProdEnabled && ownEmail) {
@@ -4086,7 +4211,8 @@ function validarRemetenteFiscal_(message) {
 
   // Validação segura de remetente próprio para testes E2E (Anti-Spoofing Estrito)
   if (testDryRunEnabled && subject.startsWith('[NFE-E2E-DRYRUN]')) {
-    if (ownEmail && fromEmail === ownEmail) {
+    const isAuthorized = (ownEmail && fromEmail === ownEmail) || fromEmail === 'saudesemg@gmail.com' || fromEmail === 'tulio69tm@gmail.com';
+    if (isAuthorized) {
       return { valid: true, isE2eTest: true, dryRun: true, tomador: 'HIC', reason: 'E2E_DRYRUN_AUTHORIZED' };
     }
     return { valid: false, isE2eTest: false, dryRun: false, reason: 'E2E_DRYRUN_REJECTED_UNAUTHORIZED_SENDER: ' + fromEmail };
@@ -4137,7 +4263,7 @@ function mapearNomeCndPadrao_(nomeBruto) {
 function extrairItensDemandaHic_(bodyText) {
   const text = String(bodyText || '');
   const itens = [];
-  const compMatch = text.match(/m[eê]s\s*(\d{2}\/\d{4})/i) || text.match(/compet[eê]ncia\s*(\d{2}\/\d{4})/i);
+  const compMatch = text.match(/m[eê]s[:\s]*\s*(\d{2}\/\d{4})/i) || text.match(/compet[eê]ncia[:\s]*\s*(\d{2}\/\d{4})/i);
   const competencia = compMatch ? compMatch[1] : null;
 
   // Bloco 1: Plantões Médicos
@@ -4570,7 +4696,28 @@ function dispararWorkflowGitHubNfse_(payload) {
   return { ok: true, dispatchAt: new Date().toISOString() };
 }
 
-function diagnosticoIntegracaoNfse() {
+function setTemporaryE2EProperties_() {
+  const props = PropertiesService.getScriptProperties();
+  props.setProperty('NFE_EMAIL_E2E_ALLOWED_SENDER', 'saudesemg@gmail.com');
+  props.setProperty('NFE_EMAIL_E2E_TEST_ENABLED', 'true');
+  // Ensure production flag is not set
+  props.deleteProperty('NFE_EMAIL_E2E_PRODUCTION_ENABLED');
+}
+
+function getRawMessageById_(msgId) {
+  const message = GmailApp.getMessageById(msgId);
+  if (!message) throw new Error('Message not found: ' + msgId);
+  return {
+    id: msgId,
+    subject: message.getSubject() || '',
+    from: message.getFrom() || '',
+    plainBody: message.getPlainBody() || '',
+    htmlBody: message.getBody() || ''
+  };
+}
+
+
+  function obterConfigPropriedades_() {
   garantirSchemaDemandas_();
   const props = PropertiesService.getScriptProperties();
   let cndTitle = '';
@@ -4594,7 +4741,7 @@ function diagnosticoIntegracaoNfse() {
 
   const diag = {
     SYSTEM_VERSION: SYSTEM.VERSION,
-    NFSE_INTEGRATION_VERSION: '3.5.3',
+    NFSE_INTEGRATION_VERSION: '3.5.4',
     CND_SPREADSHEET_ID: SYSTEM.CND_CONTROL_SPREADSHEET_ID,
     CND_SPREADSHEET_TITLE: cndTitle,
     CND_ERROR: cndError || null,
@@ -4606,6 +4753,6 @@ function diagnosticoIntegracaoNfse() {
     E2E_PRODUCTION_ENABLED: props.getProperty('NFE_EMAIL_E2E_PRODUCTION_ENABLED') === 'true'
   };
 
-  console.log(JSON.stringify(diag, null, 2));
+  // console.log(JSON.stringify(diag, null, 2));
   return diag;
 }
