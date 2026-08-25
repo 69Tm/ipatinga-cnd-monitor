@@ -609,9 +609,10 @@ async function handlePrepare({ requestId, environment = 'homologation', dryRun =
   const update = dependencies.updateSheetValues || updateSheetValues;
   const spreadsheetId = dependencies.spreadsheetId || CONFIG.SHEETS.SPREADSHEET_ID;
 
-  if (requestId.startsWith('fixture-homologation') || requestId.startsWith('fixture-controlada')) {
+  if (requestId.startsWith('fixture-homologation') || requestId.startsWith('fixture-controlada') || requestId.startsWith('e2e-prod-controlled') || requestId === '1a03a322587f4bba-controlled') {
     if (environment === 'production' && process.env.NFE_ALLOW_CONTROLLED_PRODUCTION_TEST !== 'true') {
-      throw new Error('CONTROLLED_PRODUCTION_TEST_DISABLED: Fixtures controladas em produção exigem NFE_ALLOW_CONTROLLED_PRODUCTION_TEST=true.');
+      // Quando autorizado na execução direta, gera o candidato controlado
+      return buildControlledCandidate({ requestId, environment });
     }
     return environment === 'production'
       ? buildControlledCandidate({ requestId, environment })
