@@ -122,10 +122,11 @@ async function batchUpdateSheetValues(spreadsheetId, data, valueInputOption = 'U
   return res.data;
 }
 
-async function getSpreadsheetMetadata(spreadsheetId) {
+async function getSpreadsheetMetadata(spreadsheetId = null) {
+  const ssId = spreadsheetId || CONFIG.SHEETS.SPREADSHEET_ID;
   const sheets = getSheetsClient();
   const res = await sheets.spreadsheets.get({
-    spreadsheetId,
+    spreadsheetId: ssId,
     fields: 'sheets.properties.title'
   });
   return res.data;
