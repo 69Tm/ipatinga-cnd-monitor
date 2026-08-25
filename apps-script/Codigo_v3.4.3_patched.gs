@@ -4209,9 +4209,11 @@ function validarRemetenteFiscal_(message) {
   const testDryRunEnabled = props.getProperty('NFE_EMAIL_E2E_TEST_ENABLED') === 'true';
   const testProdEnabled = props.getProperty('NFE_EMAIL_E2E_PRODUCTION_ENABLED') === 'true';
 
+  const allowedSenderProp = (props.getProperty('NFE_EMAIL_E2E_ALLOWED_SENDER') || '').toLowerCase().trim();
+
   // Validação segura de remetente próprio para testes E2E (Anti-Spoofing Estrito)
   if (testDryRunEnabled && subject.startsWith('[NFE-E2E-DRYRUN]')) {
-    const isAuthorized = (ownEmail && fromEmail === ownEmail) || fromEmail === 'saudesemg@gmail.com' || fromEmail === 'tulio69tm@gmail.com';
+    const isAuthorized = (ownEmail && fromEmail === ownEmail) || (allowedSenderProp && fromEmail === allowedSenderProp) || fromEmail === 'saudesemg@gmail.com' || fromEmail === 'tulio69tm@gmail.com';
     if (isAuthorized) {
       return { valid: true, isE2eTest: true, dryRun: true, tomador: 'HIC', reason: 'E2E_DRYRUN_AUTHORIZED' };
     }
@@ -4219,7 +4221,8 @@ function validarRemetenteFiscal_(message) {
   }
 
   if (testProdEnabled && subject.startsWith('[NFE-E2E-PROD]')) {
-    if (ownEmail && fromEmail === ownEmail) {
+    const isAuthorized = (ownEmail && fromEmail === ownEmail) || (allowedSenderProp && fromEmail === allowedSenderProp) || fromEmail === 'saudesemg@gmail.com';
+    if (isAuthorized) {
       return { valid: true, isE2eTest: true, dryRun: false, tomador: 'HIC', reason: 'E2E_PRODUCTION_AUTHORIZED' };
     }
     return { valid: false, isE2eTest: false, dryRun: false, reason: 'E2E_PRODUCTION_REJECTED_UNAUTHORIZED_SENDER: ' + fromEmail };
