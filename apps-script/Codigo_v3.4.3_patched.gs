@@ -4741,7 +4741,7 @@ function dispararWorkflowGitHubNfse_(payload) {
         environment: String(payload.environment || 'production'),
         request_id: String(payload.request_id || ''),
         item_index: String(payload.item_index || '1'),
-        dry_run: String(payload.dry_run === true || payload.dry_run === 'true')
+        dry_run: Boolean(payload.dry_run === true || payload.dry_run === 'true')
       }
     }),
     muteHttpExceptions: true
