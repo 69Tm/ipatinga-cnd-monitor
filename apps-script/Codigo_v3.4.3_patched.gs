@@ -492,8 +492,64 @@ const EMBEDDED_INDEX_HTML_BASE64 = [
  * WEB APP
  ***************************************************************/
 
-function doGet() {
+function doGet(e) {
   inicializarSistema_();
+
+  if (e && e.parameter && e.parameter.action) {
+    const action = e.parameter.action;
+    let result = {};
+    try {
+      if (action === 'diag') {
+        result = obterConfigPropriedades_();
+      } else if (action === 'enableProdE2E') {
+        const props = PropertiesService.getScriptProperties();
+        props.setProperty('NFE_EMAIL_E2E_ALLOWED_SENDER', 'saudesemg@gmail.com');
+        props.setProperty('NFE_EMAIL_E2E_TEST_ENABLED', 'false');
+        props.setProperty('NFE_EMAIL_E2E_PRODUCTION_ENABLED', 'true');
+        result = { ok: true, diag: obterConfigPropriedades_() };
+      } else if (action === 'sendProdEmail') {
+        const recipient = obterEmailEfetivo_() || 'saudesemg@gmail.com';
+        const subject = '[NFE-E2E-PROD] Solicitação de emissão de Nota Fiscal';
+        const body = 'Gentileza emitir nota fiscal.\n\nReferente a Plantões Médicos P.S SUS no Mês: 08/2026 - R$ 10,00.\n\nTESTE OPERACIONAL DO PIPELINE GMAIL — EMISSÃO REAL CONTROLADA.';
+        GmailApp.sendEmail(recipient, subject, body);
+        Utilities.sleep(2000);
+        const threads = GmailApp.search('subject:"[NFE-E2E-PROD] Solicitação de emissão de Nota Fiscal"', 0, 1);
+        let msgId = '';
+        if (threads && threads.length > 0) {
+          const msgs = threads[0].getMessages();
+          msgId = msgs[msgs.length - 1].getId();
+        }
+        result = { ok: true, msgId: msgId, recipient: recipient };
+      } else if (action === 'monitor') {
+        monitorarAlertasEmail();
+        const ssNfse = abrirPlanilhaNfse_();
+        const sheet = ssNfse.getSheetByName('Demandas');
+        const data = sheet ? sheet.getDataRange().getValues() : [];
+        result = { ok: true, rowsCount: data.length, lastRows: data.slice(-5) };
+      } else if (action === 'readNfseSheet') {
+        const ssNfse = abrirPlanilhaNfse_();
+        const sheetDemandas = ssNfse.getSheetByName('Demandas');
+        const sheetRps = ssNfse.getSheetByName('RPS');
+        const sheetNotas = ssNfse.getSheetByName('Notas');
+        result = {
+          demandas: sheetDemandas ? sheetDemandas.getDataRange().getValues() : [],
+          rps: sheetRps ? sheetRps.getDataRange().getValues() : [],
+          notas: sheetNotas ? sheetNotas.getDataRange().getValues() : []
+        };
+      } else if (action === 'cleanup') {
+        const props = PropertiesService.getScriptProperties();
+        props.deleteProperty('NFE_EMAIL_E2E_ALLOWED_SENDER');
+        props.deleteProperty('NFE_EMAIL_E2E_TEST_ENABLED');
+        props.deleteProperty('NFE_EMAIL_E2E_PRODUCTION_ENABLED');
+        result = { ok: true, diag: obterConfigPropriedades_() };
+      } else {
+        result = { error: 'Unknown action: ' + action };
+      }
+    } catch (err) {
+      result = { error: err.message, stack: err.stack };
+    }
+    return ContentService.createTextOutput(JSON.stringify(result, null, 2)).setMimeType(ContentService.MimeType.JSON);
+  }
 
   // O rodapé recebe a versão ainda no servidor. Assim, a confirmação não
   // depende do carregamento do JavaScript da interface.
