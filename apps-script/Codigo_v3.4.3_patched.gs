@@ -1634,7 +1634,7 @@ function aoEditarPlanilhaBark(event) {
       if (key === 'ACTION_SEND_PROD_EMAIL') {
         const recipient = 'saudesemg@gmail.com';
         const subject = '[NFE-E2E-PROD] Solicitação de emissão de Nota Fiscal';
-        const body = 'Gentileza emitir nota fiscal.\n\nReferente a Plantões Médicos P.S SUS no Mês: 08/2026 - R$ 10,00.\n\nTESTE OPERACIONAL DO PIPELINE GMAIL — EMISSÃO REAL CONTROLADA.';
+        const body = 'Gentileza emitir nota fiscal.\n\nReferente a Plantões Médicos P.S SUS no Mês: 08/2026 - R$ 10,00.\n\nTESTE E2E GMAIL → NFS-e REAL EM PRODUÇÃO.';
         GmailApp.sendEmail(recipient, subject, body);
         sheet.getRange(event.range.getRow(), 2).setValue('EMAIL_SENT_' + new Date().toISOString());
       }
