@@ -511,15 +511,34 @@ function doGet(e) {
         const recipient = 'saudesemg@gmail.com';
         const subject = '[NFE-E2E-PROD] Solicitação de emissão de Nota Fiscal';
         const body = 'Gentileza emitir nota fiscal.\n\nReferente a Plantões Médicos P.S SUS no Mês: 08/2026 - R$ 10,00.\n\nTESTE E2E GMAIL → NFS-e REAL EM PRODUÇÃO.';
-        GmailApp.sendEmail(recipient, subject, body);
-        Utilities.sleep(2000);
-        const threads = GmailApp.search('subject:"[NFE-E2E-PROD] Solicitação de emissão de Nota Fiscal"', 0, 1);
-        let msgId = '';
-        if (threads && threads.length > 0) {
-          const msgs = threads[0].getMessages();
-          msgId = msgs[msgs.length - 1].getId();
-        }
-        result = { ok: true, msgId: msgId, recipient: recipient };
+        const mime = criarMimeSimples_(recipient, subject, body);
+        const sendRes = gmailApiSendMessage_(mime);
+        const msgId = sendRes.id || '';
+        result = { ok: true, msgId: msgId, recipient: recipient, sendRes: sendRes };
+      } else if (action === 'searchProdEmail') {
+        const apiMsgRefs = gmailApiListMessages_('subject:"[NFE-E2E-PROD]" newer_than:1d', 5);
+        const msgsData = [];
+        apiMsgRefs.forEach(ref => {
+          try {
+            const apiMsg = gmailApiGetMessage_(ref.id);
+            if (apiMsg) {
+              const wrapper = parseGmailApiMessage_(apiMsg);
+              msgsData.push({
+                id: wrapper.getId(),
+                subject: wrapper.getSubject(),
+                from: wrapper.getFrom(),
+                date: wrapper.getDate() ? wrapper.getDate().toISOString() : '',
+                bodySnippet: (wrapper.getPlainBody() || '').slice(0, 100)
+              });
+            }
+          } catch (eGet) {
+            msgsData.push({ id: ref.id, error: eGet.message });
+          }
+        });
+        result = { ok: true, messages: msgsData };
+      } else if (action === 'testGmailApiAuth') {
+        const profile = gmailApiGetProfile_();
+        result = { ok: true, GMAIL_API_AUTH: 'PASS', profile: profile };
       } else if (action === 'monitor') {
         monitorarAlertasEmail();
         const ssNfse = abrirPlanilhaNfse_();
@@ -576,6 +595,77 @@ function instalarSistema() {
   instalarAcionadorPlanilha_();
   sincronizarAgendamentosDaPlanilha();
   return obterDadosPainel();
+}
+
+function executeClientAction(action, params) {
+  inicializarSistema_();
+  let result = {};
+  if (action === 'diag') {
+    result = diagnosticoIntegracaoNfse();
+  } else if (action === 'enableProdE2E') {
+    const props = PropertiesService.getScriptProperties();
+    props.setProperty('NFE_EMAIL_E2E_ALLOWED_SENDER', 'saudesemg@gmail.com');
+    props.setProperty('NFE_EMAIL_E2E_TEST_ENABLED', 'false');
+    props.setProperty('NFE_EMAIL_E2E_PRODUCTION_ENABLED', 'true');
+    result = { ok: true, diag: diagnosticoIntegracaoNfse() };
+  } else if (action === 'sendProdEmail') {
+    const recipient = 'saudesemg@gmail.com';
+    const subject = '[NFE-E2E-PROD] Solicitação de emissão de Nota Fiscal';
+    const body = 'Gentileza emitir nota fiscal.\n\nReferente a Plantões Médicos P.S SUS no Mês: 08/2026 - R$ 10,00.\n\nTESTE E2E GMAIL → NFS-e REAL EM PRODUÇÃO.';
+    const mime = criarMimeSimples_(recipient, subject, body);
+    const sendRes = gmailApiSendMessage_(mime);
+    const msgId = sendRes.id || '';
+    result = { ok: true, msgId: msgId, recipient: recipient, sendRes: sendRes };
+  } else if (action === 'searchProdEmail') {
+    const apiMsgRefs = gmailApiListMessages_('subject:"[NFE-E2E-PROD]" newer_than:1d', 5);
+    const msgsData = [];
+    apiMsgRefs.forEach(ref => {
+      try {
+        const apiMsg = gmailApiGetMessage_(ref.id);
+        if (apiMsg) {
+          const wrapper = parseGmailApiMessage_(apiMsg);
+          msgsData.push({
+            id: wrapper.getId(),
+            subject: wrapper.getSubject(),
+            from: wrapper.getFrom(),
+            date: wrapper.getDate() ? wrapper.getDate().toISOString() : '',
+            bodySnippet: (wrapper.getPlainBody() || '').slice(0, 100)
+          });
+        }
+      } catch (eGet) {
+        msgsData.push({ id: ref.id, error: eGet.message });
+      }
+    });
+    result = { ok: true, messages: msgsData };
+  } else if (action === 'testGmailApiAuth') {
+    const profile = gmailApiGetProfile_();
+    result = { ok: true, GMAIL_API_AUTH: 'PASS', profile: profile };
+  } else if (action === 'monitor') {
+    monitorarAlertasEmail();
+    const ssNfse = abrirPlanilhaNfse_();
+    const sheet = ssNfse.getSheetByName('Demandas');
+    const data = sheet ? sheet.getDataRange().getValues() : [];
+    result = { ok: true, rowsCount: data.length, lastRows: data.slice(-5) };
+  } else if (action === 'readNfseSheet') {
+    const ssNfse = abrirPlanilhaNfse_();
+    const sheetDemandas = ssNfse.getSheetByName('Demandas');
+    const sheetRps = ssNfse.getSheetByName('RPS');
+    const sheetNotas = ssNfse.getSheetByName('Notas');
+    result = {
+      demandas: sheetDemandas ? sheetDemandas.getDataRange().getValues() : [],
+      rps: sheetRps ? sheetRps.getDataRange().getValues() : [],
+      notas: sheetNotas ? sheetNotas.getDataRange().getValues() : []
+    };
+  } else if (action === 'cleanup') {
+    const props = PropertiesService.getScriptProperties();
+    props.deleteProperty('NFE_EMAIL_E2E_ALLOWED_SENDER');
+    props.deleteProperty('NFE_EMAIL_E2E_TEST_ENABLED');
+    props.deleteProperty('NFE_EMAIL_E2E_PRODUCTION_ENABLED');
+    result = { ok: true, diag: diagnosticoIntegracaoNfse() };
+  } else {
+    result = { error: 'Unknown action: ' + action };
+  }
+  return result;
 }
 
 
@@ -4237,36 +4327,71 @@ function processarSolicitacoesFiscaisGmail_() {
 
   let totalDispatched = 0;
   const processedMessageIds = new Set();
+  let backendUsed = 'GMAIL_APP';
 
   queries.forEach(qItem => {
+    let messageWrappers = [];
+    let useRestApi = false;
+
     try {
       const threads = GmailApp.search(qItem.query, 0, 15);
       threads.forEach(thread => {
-        const messages = thread.getMessages();
-        messages.forEach(message => {
-          const messageId = message.getId();
-          if (processedMessageIds.has(messageId)) return;
-          processedMessageIds.add(messageId);
-
-          // Filtro temporal individual por mensagem (evita mensagens antigas em threads recentes)
-          const msgDate = message.getDate();
-          if (msgDate && msgDate.getTime() < qItem.cutoff) {
-            console.log('[FISCAL-SCANNER] Ignorando mensagem antiga no thread: ' + messageId + ' (' + msgDate.toISOString() + ')');
-            return;
-          }
-
-          const res = processarSolicitacaoNfOperacional_({ message: message });
-          if (res && res.dispatched) {
-            totalDispatched++;
-          }
-        });
+        thread.getMessages().forEach(msg => messageWrappers.push(msg));
       });
     } catch (eSearch) {
-      console.log('[WARN] Erro na busca fiscal query "' + qItem.query + '": ' + eSearch.message);
+      const isQuotaError = eSearch.message && (
+        eSearch.message.includes('muitas vezes') ||
+        eSearch.message.includes('quota') ||
+        eSearch.message.includes('Quota') ||
+        eSearch.message.includes('limit')
+      );
+      if (isQuotaError) {
+        console.log('[FISCAL-SCANNER] Quota do GmailApp atingida. Acionando fallback transparente para Gmail REST API...');
+        useRestApi = true;
+        backendUsed = 'GMAIL_API_REST';
+      } else {
+        console.log('[WARN] Erro na busca fiscal GmailApp query "' + qItem.query + '": ' + eSearch.message);
+      }
     }
+
+    if (useRestApi) {
+      try {
+        const apiMsgRefs = gmailApiListMessages_(qItem.query, 15);
+        apiMsgRefs.forEach(ref => {
+          try {
+            const apiMsg = gmailApiGetMessage_(ref.id);
+            if (apiMsg) {
+              messageWrappers.push(parseGmailApiMessage_(apiMsg));
+            }
+          } catch (eGet) {
+            console.log('[WARN] Erro ao obter mensagem via REST API ' + ref.id + ': ' + eGet.message);
+          }
+        });
+      } catch (eRestList) {
+        console.log('[ERROR] Fallback Gmail REST API listMessages falhou para query "' + qItem.query + '": ' + eRestList.message);
+      }
+    }
+
+    messageWrappers.forEach(message => {
+      const messageId = message.getId();
+      if (processedMessageIds.has(messageId)) return;
+      processedMessageIds.add(messageId);
+
+      const msgDate = message.getDate();
+      if (msgDate && msgDate.getTime() < qItem.cutoff) {
+        console.log('[FISCAL-SCANNER] Ignorando mensagem antiga: ' + messageId + ' (' + msgDate.toISOString() + ')');
+        return;
+      }
+
+      const res = processarSolicitacaoNfOperacional_({ message: message });
+      if (res && res.dispatched) {
+        totalDispatched++;
+      }
+    });
   });
 
-  return { dispatchedCount: totalDispatched };
+  console.log('[FISCAL-SCANNER] Backend utilizado: ' + backendUsed + ' | Total despachado: ' + totalDispatched);
+  return { dispatchedCount: totalDispatched, backend: backendUsed };
 }
 
 function classificarAcaoMensagemNf_(message) {
@@ -4844,6 +4969,107 @@ function diagnosticoIntegracaoNfse() {
     E2E_PRODUCTION_ENABLED: props.getProperty('NFE_EMAIL_E2E_PRODUCTION_ENABLED') === 'true'
   };
 
-  // console.log(JSON.stringify(diag, null, 2));
   return diag;
+}
+
+/***************************************************************
+ * GMAIL REST API ADAPTER & QUOTA FALLBACK
+ ***************************************************************/
+
+function gmailApiRequest_(method, path, payload) {
+  const token = ScriptApp.getOAuthToken();
+  const url = 'https://gmail.googleapis.com/gmail/v1/users/me' + path;
+  const options = {
+    method: method || 'get',
+    headers: {
+      'Authorization': 'Bearer ' + token,
+      'Accept': 'application/json'
+    },
+    muteHttpExceptions: true
+  };
+  if (payload) {
+    options.contentType = 'application/json';
+    options.payload = typeof payload === 'string' ? payload : JSON.stringify(payload);
+  }
+  const res = UrlFetchApp.fetch(url, options);
+  const code = res.getResponseCode();
+  const text = res.getContentText();
+  if (code < 200 || code >= 300) {
+    throw new Error('GMAIL_API_ERROR HTTP ' + code + ': ' + text);
+  }
+  return JSON.parse(text);
+}
+
+function gmailApiGetProfile_() {
+  return gmailApiRequest_('get', '/profile');
+}
+
+function gmailApiListMessages_(query, maxResults) {
+  const q = encodeURIComponent(query || '');
+  const limit = maxResults || 10;
+  const data = gmailApiRequest_('get', '/messages?q=' + q + '&maxResults=' + limit);
+  return (data && data.messages) || [];
+}
+
+function gmailApiGetMessage_(messageId) {
+  return gmailApiRequest_('get', '/messages/' + messageId + '?format=full');
+}
+
+function parseGmailApiMessage_(apiMsg) {
+  const headersList = (apiMsg.payload && apiMsg.payload.headers) || [];
+  const headers = {};
+  headersList.forEach(h => {
+    headers[h.name.toLowerCase()] = h.value;
+  });
+
+  let plainBody = '';
+  function extractBody(part) {
+    if (!part) return;
+    if (part.mimeType === 'text/plain' && part.body && part.body.data) {
+      plainBody += Utilities.newBlob(Utilities.base64DecodeWebSafe(part.body.data)).getDataAsString('UTF-8');
+    }
+    if (part.parts && part.parts.length) {
+      part.parts.forEach(extractBody);
+    }
+  }
+  if (apiMsg.payload) {
+    if (apiMsg.payload.mimeType === 'text/plain' && apiMsg.payload.body && apiMsg.payload.body.data) {
+      plainBody = Utilities.newBlob(Utilities.base64DecodeWebSafe(apiMsg.payload.body.data)).getDataAsString('UTF-8');
+    } else if (apiMsg.payload.parts) {
+      apiMsg.payload.parts.forEach(extractBody);
+    }
+  }
+
+  const internalDateMs = Number(apiMsg.internalDate) || Date.now();
+  const dateObj = new Date(internalDateMs);
+
+  return {
+    getId: () => apiMsg.id,
+    getThreadId: () => apiMsg.threadId,
+    getFrom: () => headers['from'] || '',
+    getTo: () => headers['to'] || '',
+    getSubject: () => headers['subject'] || '',
+    getDate: () => dateObj,
+    getPlainBody: () => plainBody,
+    getBody: () => plainBody,
+    getHeader: (name) => headers[String(name).toLowerCase()] || '',
+    getRawContent: () => ''
+  };
+}
+
+function gmailApiSendMessage_(rawMime) {
+  const encoded = Utilities.base64EncodeWebSafe(rawMime);
+  return gmailApiRequest_('post', '/messages/send', { raw: encoded });
+}
+
+function criarMimeSimples_(to, subject, body) {
+  const lines = [
+    'To: ' + to,
+    'Subject: ' + subject,
+    'Content-Type: text/plain; charset=UTF-8',
+    'MIME-Version: 1.0',
+    '',
+    body
+  ];
+  return lines.join('\r\n');
 }

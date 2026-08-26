@@ -25,6 +25,7 @@ async function run() {
     await require('./test-prepare');
     await require('./test-issue');
     await require('./test-apps-script-engine');
+    await require('./test-gmail-api-adapter');
     console.log('\n🎉 TODOS OS TESTES PASSARAM COM SUCESSO! ✅\n');
   } catch (err) {
     console.error('\n❌ FALHA NOS TESTES:', err);
