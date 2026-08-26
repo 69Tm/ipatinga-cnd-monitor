@@ -508,9 +508,9 @@ function doGet(e) {
         props.setProperty('NFE_EMAIL_E2E_PRODUCTION_ENABLED', 'true');
         result = { ok: true, diag: diagnosticoIntegracaoNfse() };
       } else if (action === 'sendProdEmail') {
-        const recipient = obterEmailEfetivo_() || 'saudesemg@gmail.com';
+        const recipient = 'saudesemg@gmail.com';
         const subject = '[NFE-E2E-PROD] Solicitação de emissão de Nota Fiscal';
-        const body = 'Gentileza emitir nota fiscal.\n\nReferente a Plantões Médicos P.S SUS no Mês: 08/2026 - R$ 10,00.\n\nTESTE OPERACIONAL DO PIPELINE GMAIL — EMISSÃO REAL CONTROLADA.';
+        const body = 'Gentileza emitir nota fiscal.\n\nReferente a Plantões Médicos P.S SUS no Mês: 08/2026 - R$ 10,00.\n\nTESTE E2E GMAIL → NFS-e REAL EM PRODUÇÃO.';
         GmailApp.sendEmail(recipient, subject, body);
         Utilities.sleep(2000);
         const threads = GmailApp.search('subject:"[NFE-E2E-PROD] Solicitação de emissão de Nota Fiscal"', 0, 1);
