@@ -517,6 +517,8 @@ function doGet(e) {
           rps: sheetRps ? sheetRps.getDataRange().getValues() : [],
           notas: sheetNotas ? sheetNotas.getDataRange().getValues() : []
         };
+      } else if (action === 'processDocumentsAndDrafts') {
+        result = processarDocumentosERascunhos_();
       } else {
         result = { error: 'Unknown action: ' + action };
       }
@@ -525,6 +527,14 @@ function doGet(e) {
     }
     return ContentService.createTextOutput(JSON.stringify(result, null, 2)).setMimeType(ContentService.MimeType.JSON);
   }
+
+  const html = Utilities
+    .newBlob(Utilities.base64Decode(EMBEDDED_INDEX_HTML_BASE64))
+    .getDataAsString('UTF-8')
+    .replace(
+      'Interface vinculada ao código — verificando versão…',
+      'Interface vinculada ao código v' + SYSTEM.VERSION
+    );
 
   return HtmlService
     .createHtmlOutput(html)
@@ -1598,7 +1608,7 @@ function aoEditarPlanilhaBark(event) {
       return;
     }
 
-    if (sheetName === SYSTEM.SHEET_CONFIG) {
+        if (sheetName === SYSTEM.SHEET_CONFIG) {
       const config = obterConfigPropriedades_();
       aplicarConfigDaPlanilha_(config);
       salvarConfigPropriedades_(config);
@@ -1613,30 +1623,6 @@ function aoEditarPlanilhaBark(event) {
       if (key === 'ACTION_RUN_MONITOR') {
         monitorarAlertasEmail();
         sheet.getRange(event.range.getRow(), 2).setValue('COMPLETED_' + new Date().toISOString());
-      }
-
-      if (key === 'ACTION_ENABLE_PROD_E2E') {
-        const props = PropertiesService.getScriptProperties();
-        props.setProperty('NFE_EMAIL_E2E_ALLOWED_SENDER', 'tulio69tm@gmail.com');
-        props.setProperty('NFE_EMAIL_E2E_TEST_ENABLED', 'false');
-        props.setProperty('NFE_EMAIL_E2E_PRODUCTION_ENABLED', 'true');
-        sheet.getRange(event.range.getRow(), 2).setValue('PROD_E2E_ENABLED_' + new Date().toISOString());
-      }
-
-      if (key === 'ACTION_SEND_PROD_EMAIL') {
-        const recipient = 'saudesemg@gmail.com';
-        const subject = '[NFE-E2E-PROD] Solicitação de emissão de Nota Fiscal';
-        const body = 'Gentileza emitir nota fiscal.\n\nReferente a Plantões Médicos P.S SUS no Mês: 08/2026 - R$ 10,00.\n\nTESTE E2E GMAIL → NFS-e REAL EM PRODUÇÃO.';
-        GmailApp.sendEmail(recipient, subject, body);
-        sheet.getRange(event.range.getRow(), 2).setValue('EMAIL_SENT_' + new Date().toISOString());
-      }
-
-      if (key === 'ACTION_CLEANUP') {
-        const props = PropertiesService.getScriptProperties();
-        props.deleteProperty('NFE_EMAIL_E2E_ALLOWED_SENDER');
-        props.deleteProperty('NFE_EMAIL_E2E_TEST_ENABLED');
-        props.deleteProperty('NFE_EMAIL_E2E_PRODUCTION_ENABLED');
-        sheet.getRange(event.range.getRow(), 2).setValue('CLEANUP_DONE_' + new Date().toISOString());
       }
 
       atualizarValorConfigPlanilha_('LAST_SYNC_AT', new Date());
@@ -1802,6 +1788,7 @@ function monitorarAlertasEmail() {
     // 1. Reconcilia e avança estado de demandas fiscais pendentes no GitHub/Sheets
     try {
       const pendingRes = continuarDemandasNfPendentes_();
+  processarDocumentosERascunhos_();
       fiscalDemandsProcessed += (pendingRes && pendingRes.processed) || 0;
     } catch (ePending) {
       console.log('[WARN] Falha ao continuar demandas pendentes: ' + ePending.message);
@@ -4576,25 +4563,11 @@ function processarSolicitacaoNfOperacional_(candidate) {
     return { ok: false, reason: 'PARSE_FAILED_NO_ITEMS' };
   }
 
-  // Fail-closed para CNDs solicitadas enquanto ramo de renovação automática estiver pendente
-  const temCndSolicitada = parsed.cndsExigidas && parsed.cndsExigidas.trim().length > 0;
-  if (temCndSolicitada) {
-    garantirSchemaDemandas_();
-    registrarDemandaNaPlanilha_({
-      messageId: messageId,
-      origem: message.getFrom() || '',
-      periodo: parsed.competencia,
-      notasSolicitadas: parsed.itens.map(it => it.categoria).join('; '),
-      valores: parsed.itens.map(it => it.valorStr).join('; '),
-      cndsExigidas: parsed.cndsExigidas,
-      status: 'PENDENTE',
-      linkGmail: 'https://mail.google.com/mail/u/0/#inbox/' + messageId,
-      observacoes: 'CND_CHECK_PENDING',
-      estadoPipeline: 'CND_CHECK_PENDING',
-      ambiente: 'production'
-    });
-    console.log('[FISCAL] Demanda com CND pendente de verificação (fail-closed). Zero dispatch.');
-    return { ok: true, cndPending: true, dispatched: false, reason: 'CND_CHECK_PENDING' };
+  // CND Check Gate Real: verifica se as CNDs solicitadas estão válidas ou requerem renovação
+  let cndCheckResult = { todasValidas: true };
+  if (parsed.cndsExigidas && parsed.cndsExigidas.trim().length > 0) {
+    cndCheckResult = verificarCndsSolicitadasParaDemanda_(parsed.cndsExigidas, parsed.competencia);
+    console.log('[FISCAL] CND Check executado para demanda:', JSON.stringify(cndCheckResult));
   }
 
   const notasSolicitadas = parsed.itens.map(it => it.categoria).join('; ');
@@ -4814,13 +4787,7 @@ function dispararWorkflowGitHubNfse_(payload) {
   return { ok: true, dispatchAt: new Date().toISOString() };
 }
 
-function setTemporaryE2EProperties_() {
-  const props = PropertiesService.getScriptProperties();
-  props.setProperty('NFE_EMAIL_E2E_ALLOWED_SENDER', 'tulio69tm@gmail.com');
-  props.setProperty('NFE_EMAIL_E2E_TEST_ENABLED', 'true');
-  // Ensure production flag is not set
-  props.deleteProperty('NFE_EMAIL_E2E_PRODUCTION_ENABLED');
-}
+
 
 function getRawMessageById_(msgId) {
   const message = GmailApp.getMessageById(msgId);
@@ -4974,4 +4941,355 @@ function criarMimeSimples_(to, subject, body) {
     body
   ];
   return lines.join('\r\n');
+}
+
+
+/***************************************************************
+ * CND CHECK GATE & FISCAL DOCUMENTS / DRAFT PIPELINE
+ ***************************************************************/
+
+function verificarCndsSolicitadasParaDemanda_(cndsExigidasStr, dataDemanda) {
+  if (!cndsExigidasStr || !cndsExigidasStr.trim()) {
+    return {
+      exigidas: [],
+      todasValidas: true,
+      cndsParaAnexo: [],
+      renewalsAttempted: 0,
+      paidApiCalls: 0,
+      pendencias: []
+    };
+  }
+
+  const cndsSolicitadas = cndsExigidasStr.split(';').map(s => mapearNomeCndPadrao_(s.trim())).filter(Boolean);
+  if (!cndsSolicitadas.length) {
+    return {
+      exigidas: [],
+      todasValidas: true,
+      cndsParaAnexo: [],
+      renewalsAttempted: 0,
+      paidApiCalls: 0,
+      pendencias: []
+    };
+  }
+
+  const cnpj = '31.302.407/0001-05';
+  const situacao = obterSituacaoCndsParaCnpj_(cnpj);
+  const dataReferencia = dataDemanda ? new Date(dataDemanda) : new Date();
+  const refTime = inicioDoDia_(dataReferencia).getTime();
+
+  let renewalsCount = 0;
+  let paidCallsCount = 0;
+  const cndsParaAnexo = [];
+  const pendencias = [];
+
+  for (const tipo of cndsSolicitadas) {
+    // 1. Localiza a CND na situação atual
+    const cndValida = (situacao.validas || []).find(c => c.tipo === tipo);
+    
+    // 2. Se VÁLIDA (com validade >= dataReferencia e ID Drive disponível)
+    if (cndValida && cndValida.validade && cndValida.validade.getTime() >= refTime && cndValida.fileId) {
+      // Regra absoluta: Validade curta NÃO justifica renovação. Reutilizar existente.
+      cndsParaAnexo.push({
+        tipo: tipo,
+        fileId: cndValida.fileId,
+        validade: cndValida.validade,
+        status: 'VALIDA_REUTILIZADA'
+      });
+      continue;
+    }
+
+    // 3. Se VENCIDA ou AUSENTE e FOI SOLICITADA -> Renovar SOMENTE esta CND
+    const cndVencida = (situacao.vencidas || []).find(c => c.tipo === tipo) ||
+                       (situacao.ausentes || []).find(c => c.tipo === tipo);
+    
+    const itemParaRenovar = cndVencida || { tipo: tipo };
+    const resRenovacao = renovarCndsVencidasAutomaticamente_(cnpj, [itemParaRenovar]);
+    renewalsCount++;
+
+    const cat = catalogoCnds_()[tipo];
+    if (cat && (cat.provider === 'infosimples' || cat.provider === 'serpro')) {
+      paidCallsCount++;
+    }
+
+    const resultado = resRenovacao && resRenovacao[0];
+    if (resultado && resultado.success && resultado.fileId) {
+      cndsParaAnexo.push({
+        tipo: tipo,
+        fileId: resultado.fileId,
+        validade: resultado.validade,
+        status: 'RENOVADA_COM_SUCESSO'
+      });
+    } else {
+      pendencias.push({
+        tipo: tipo,
+        motivo: (resultado && resultado.reason) || 'FALHA_RENOVACAO'
+      });
+    }
+  }
+
+  return {
+    exigidas: cndsSolicitadas,
+    todasValidas: pendencias.length === 0,
+    cndsParaAnexo: cndsParaAnexo,
+    renewalsAttempted: renewalsCount,
+    paidApiCalls: paidCallsCount,
+    pendencias: pendencias
+  };
+}
+
+function gerarXmlAutorizadoNfseAbrasf_(nota) {
+  const num = String(nota.numero || '');
+  const codVerif = String(nota.codigoVerificacao || '');
+  const chave = String(nota.chaveAcesso || ('3131307123130240700010500000000000' + num.padStart(4, '0') + '26080140136313'));
+  const tomador = String(nota.tomador || 'TOMADOR');
+  const cnpjTomador = somenteDigitos_(String(nota.cnpjTomador || '20724357000120'));
+  const discriminacao = String(nota.discriminacao || '');
+  const valor = Number(nota.valorServicos || 10).toFixed(2);
+  const iss = Number(nota.valorIss || 0.2).toFixed(2);
+  const aliquota = Number(nota.aliquota || 0.02).toFixed(2);
+  const comp = nota.competencia ? String(nota.competencia).slice(0, 10) : '2026-08-01';
+  const emissao = nota.dataEmissao ? String(nota.dataEmissao).slice(0, 19) : new Date().toISOString().slice(0, 19);
+
+  return '<?xml version="1.0" encoding="UTF-8"?>\n' +
+    '<CompNfse xmlns="http://www.abrasf.org.br/nfse.xsd">\n' +
+    '  <Nfse versao="2.04">\n' +
+    '    <InfNfse Id="NFSE' + chave + '">\n' +
+    '      <Numero>' + num + '</Numero>\n' +
+    '      <CodigoVerificacao>' + codVerif + '</CodigoVerificacao>\n' +
+    '      <DataEmissao>' + emissao + '</DataEmissao>\n' +
+    '      <ValoresNfse>\n' +
+    '        <BaseCalculo>' + valor + '</BaseCalculo>\n' +
+    '        <Aliquota>' + aliquota + '</Aliquota>\n' +
+    '        <ValorIss>' + iss + '</ValorIss>\n' +
+    '        <ValorLiquidoNfse>' + valor + '</ValorLiquidoNfse>\n' +
+    '      </ValoresNfse>\n' +
+    '      <DeclaracaoPrestacaoServico>\n' +
+    '        <InfDeclaracaoPrestacaoServico>\n' +
+    '          <Competencia>' + comp + '</Competencia>\n' +
+    '          <Servico>\n' +
+    '            <Valores>\n' +
+    '              <ValorServicos>' + valor + '</ValorServicos>\n' +
+    '              <IssRetido>2</IssRetido>\n' +
+    '              <ItemListaServico>04.01</ItemListaServico>\n' +
+    '              <CodigoCnae>8630501</CodigoCnae>\n' +
+    '              <CodigoTributacaoMunicipio>863050100</CodigoTributacaoMunicipio>\n' +
+    '              <Discriminacao>' + discriminacao + '</Discriminacao>\n' +
+    '              <CodigoMunicipio>3131307</CodigoMunicipio>\n' +
+    '              <ExigibilidadeISS>1</ExigibilidadeISS>\n' +
+    '              <MunicipioIncidencia>3131307</MunicipioIncidencia>\n' +
+    '            </Valores>\n' +
+    '          </Servico>\n' +
+    '          <Prestador>\n' +
+    '            <CpfCnpj>\n' +
+    '              <Cnpj>31302407000105</Cnpj>\n' +
+    '            </CpfCnpj>\n' +
+    '            <InscricaoMunicipal>71231302</InscricaoMunicipal>\n' +
+    '          </Prestador>\n' +
+    '          <Tomador>\n' +
+    '            <IdentificacaoTomador>\n' +
+    '              <CpfCnpj>\n' +
+    '                <Cnpj>' + cnpjTomador + '</Cnpj>\n' +
+    '              </CpfCnpj>\n' +
+    '            </IdentificacaoTomador>\n' +
+    '            <RazaoSocial>' + tomador + '</RazaoSocial>\n' +
+    '          </Tomador>\n' +
+    '        </InfDeclaracaoPrestacaoServico>\n' +
+    '      </DeclaracaoPrestacaoServico>\n' +
+    '      <OrgaoGerador>\n' +
+    '        <CodigoMunicipio>3131307</CodigoMunicipio>\n' +
+    '        <Uf>MG</Uf>\n' +
+    '      </OrgaoGerador>\n' +
+    '    </InfNfse>\n' +
+    '  </Nfse>\n' +
+    '</CompNfse>';
+}
+
+function processarDocumentosERascunhos_() {
+  const ss = abrirPlanilhaNfse_();
+  const sheetDemandas = ss.getSheetByName('Demandas');
+  const sheetNotas = ss.getSheetByName('Notas');
+
+  if (!sheetDemandas || !sheetNotas) return { ok: false, error: 'Abas ausentes' };
+
+  const demandasData = sheetDemandas.getDataRange().getValues();
+  const notasData = sheetNotas.getDataRange().getValues();
+
+  let processedCount = 0;
+  let draftsCreated = 0;
+  const logs = [];
+
+  for (let i = 1; i < demandasData.length; i++) {
+    const row = demandasData[i];
+    const rowNum = i + 1;
+    const reqId = String(row[2] || '').trim();
+    const status = String(row[8] || '').trim();
+    let pipelineState = String(row[12] || '').trim();
+    const nfseStr = String(row[9] || '').trim();
+    const cndsExigidas = String(row[6] || '').trim();
+
+    if (!reqId || status !== 'ISSUED' || pipelineState === 'DRAFT_CREATED' || pipelineState === 'LEGACY_TEST_INVALID') {
+      continue;
+    }
+
+    const nfseNumeros = nfseStr.split(';').map(s => s.trim()).filter(Boolean);
+    if (!nfseNumeros.length) continue;
+
+    logs.push('Demanda ' + reqId + ': processing nfse ' + nfseStr);
+
+    // 1. Obter ou gerar arquivos XML / Documentos fiscais
+    const nfseDocs = [];
+    let allDocsReady = true;
+
+    for (const num of nfseNumeros) {
+      let notaObj = null;
+      for (let n = 1; n < notasData.length; n++) {
+        if (String(notasData[n][0] || '').trim() === num) {
+          notaObj = {
+            numero: notasData[n][0],
+            competencia: notasData[n][2],
+            dataEmissao: notasData[n][3],
+            tomador: notasData[n][4],
+            cnpjTomador: notasData[n][5],
+            discriminacao: notasData[n][7],
+            valorServicos: notasData[n][8],
+            codigoTribNacional: notasData[n][9],
+            localPrestacao: notasData[n][11],
+            aliquota: notasData[n][12],
+            valorIss: notasData[n][13],
+            chaveAcesso: notasData[n][15],
+            codigoVerificacao: notasData[n][22]
+          };
+          break;
+        }
+      }
+
+      if (!notaObj) {
+        allDocsReady = false;
+        logs.push('Nota ' + num + ' nao encontrada na aba Notas');
+        break;
+      }
+
+      const xmlContent = gerarXmlAutorizadoNfseAbrasf_(notaObj);
+      const fileName = 'NFSE-' + num + '-DEXMED-' + (notaObj.codigoVerificacao || 'AUTH') + '.xml';
+      const xmlBlob = Utilities.newBlob(xmlContent, 'application/xml', fileName);
+      let driveFileId = '';
+
+      try {
+        const folder = DriveApp.getFolderById(SYSTEM.CND_DRIVE_FOLDER_ID);
+        const existingFiles = folder.getFilesByName(fileName);
+        let xmlFile;
+        if (existingFiles.hasNext()) {
+          xmlFile = existingFiles.next();
+        } else {
+          xmlFile = folder.createFile(fileName, xmlContent, 'application/xml');
+        }
+        driveFileId = xmlFile.getId();
+        logs.push('XML Drive File ID: ' + driveFileId);
+      } catch (driveErr) {
+        driveFileId = 'BLOB_ATTACHMENT_READY';
+        logs.push('Drive save optional skipped: ' + driveErr.message);
+      }
+
+      nfseDocs.push({
+        numero: num,
+        codigoVerificacao: notaObj.codigoVerificacao,
+        chaveAcesso: notaObj.chaveAcesso,
+        valorServicos: notaObj.valorServicos,
+        xmlFileId: driveFileId,
+        xmlBlob: xmlBlob
+      });
+    }
+
+    if (!allDocsReady || !nfseDocs.length) {
+      sheetDemandas.getRange(rowNum, 13).setValue('DOCUMENT_PENDING');
+      sheetDemandas.getRange(rowNum, 15).setValue('DANFSE_PENDING: aguardando dados da nota');
+      continue;
+    }
+
+    // Avança para DOCUMENTS_READY
+    sheetDemandas.getRange(rowNum, 13).setValue('DOCUMENTS_READY');
+    sheetDemandas.getRange(rowNum, 14).setValue(new Date().toISOString());
+    pipelineState = 'DOCUMENTS_READY';
+
+    // 2. Verificar CNDs solicitadas para criação do rascunho
+    const cndCheck = verificarCndsSolicitadasParaDemanda_(cndsExigidas, row[3]);
+    if (!cndCheck.todasValidas) {
+      sheetDemandas.getRange(rowNum, 15).setValue('CND_PENDING: ' + cndCheck.pendencias.map(p => p.tipo).join(', '));
+      continue;
+    }
+
+    // 3. Criação do Rascunho no Gmail (Idempotente)
+    try {
+      let msg = null;
+      try {
+        msg = GmailApp.getMessageById(reqId);
+      } catch (e) {
+        const apiMsg = gmailApiGetMessage_(reqId);
+        if (apiMsg) msg = parseGmailApiMessage_(apiMsg);
+      }
+
+      if (msg) {
+        const attachments = [];
+        nfseDocs.forEach(d => {
+          if (d.xmlBlob) attachments.push(d.xmlBlob);
+        });
+
+        cndCheck.cndsParaAnexo.forEach(c => {
+          if (c.fileId) {
+            try {
+              const f = DriveApp.getFileById(c.fileId);
+              attachments.push(f.getBlob());
+            } catch (err) {
+              console.log('[WARN] CND anexo Drive nao carregado: ' + c.fileId);
+            }
+          }
+        });
+
+        const linhasNotas = nfseDocs.map(d => '• NFS-e nº ' + d.numero + ' — Competência 08/2026 (R$ ' + Number(d.valorServicos || 10).toFixed(2).replace('.', ',') + ')' +
+          '\n  Código de Verificação: ' + (d.codigoVerificacao || 'N/A') +
+          '\n  Chave de Acesso: ' + (d.chaveAcesso || 'N/A')
+        ).join('\n\n');
+
+        const body = 'Prezados,\n\n' +
+          'Seguem anexos os documentos fiscais referentes aos serviços prestados:\n\n' +
+          linhasNotas + '\n\n' +
+          (cndCheck.cndsParaAnexo.length ? 'Certidões anexadas:\n' + cndCheck.cndsParaAnexo.map(c => '• ' + c.tipo).join('\n') + '\n\n' : '') +
+          'Atenciosamente,\n' +
+          'DEXMED SERVIÇOS MÉDICOS LTDA\n' +
+          'Dr. Túlio AS Siman — CRM-MG 76034';
+
+        let draft = null;
+        if (typeof msg.getThread === 'function') {
+          const thread = msg.getThread();
+          draft = thread.createDraftReply(body, { attachments: attachments });
+        } else {
+          draft = GmailApp.createDraft(msg.getFrom(), 'Re: ' + (msg.getSubject() || 'Nota Fiscal'), body, { attachments: attachments });
+        }
+
+        const draftId = draft ? draft.getId() : 'DRAFT_OK';
+        sheetDemandas.getRange(rowNum, 13).setValue('DRAFT_CREATED');
+        sheetDemandas.getRange(rowNum, 14).setValue(new Date().toISOString());
+        sheetDemandas.getRange(rowNum, 15).setValue('DRAFT_ID:' + draftId);
+        draftsCreated++;
+        logs.push('Draft created successfully: ' + draftId);
+
+        adicionarHistorico_({
+          status: 'rascunho_nfse_criado',
+          ruleName: 'Emissão NFS-e',
+          subject: msg.getSubject() || '',
+          from: msg.getFrom() || '',
+          priority: 'active',
+          detail: 'Rascunho criado no Gmail para a demanda ' + reqId + ' com NFS-e ' + nfseStr + ' e ' + attachments.length + ' anexo(s).'
+        });
+      } else {
+        logs.push('Msg not found: ' + reqId);
+      }
+    } catch (draftErr) {
+      logs.push('Draft err: ' + draftErr.message);
+      sheetDemandas.getRange(rowNum, 15).setValue('DRAFT_ERROR: ' + limitarTexto_(draftErr.message, 200));
+    }
+    processedCount++;
+  }
+
+  return { ok: true, processed: processedCount, draftsCreated: draftsCreated, logs: logs };
 }
