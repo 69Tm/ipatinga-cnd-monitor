@@ -8,6 +8,7 @@ const {
   normalizeCnpj,
   formatCnpj,
   parseCurrency,
+  formatCurrency,
   parseIsoDate,
   parseCompetencia,
   onlyDigits
@@ -495,8 +496,9 @@ function prepareDemand({ requestId, demandas, tomadores, patterns, notas = [], n
   const candidates = [];
 
   notasSolicitadas.forEach((notaSolicitada, idx) => {
-    const valorStr = valores[idx];
-    const valor = parseCurrency(valorStr);
+    const rawValorStr = valores[idx];
+    const valor = parseCurrency(rawValorStr);
+    const valorStr = formatCurrency(valor);
     const descricaoObrig = descricoes[idx] || (descricoes.length === 1 ? descricoes[0] : '');
 
     const pattern = matchPattern(notaSolicitada, patterns);

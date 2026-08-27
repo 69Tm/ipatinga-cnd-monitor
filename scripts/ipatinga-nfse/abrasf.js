@@ -56,16 +56,18 @@ function buildConsultarNfseFaixaEnvio({
  * Extrai dados padronizados de um nó InfNfse
  */
 function extractNfseData(compNfseNode) {
-  const infNfse = getXmlNode(compNfseNode, ['InfNfse', 'tc:InfNfse']) ||
-                  getXmlNode(compNfseNode, ['Nfse', 'tc:Nfse']) ||
-                  compNfseNode;
+  const nfseNode = getXmlNode(compNfseNode, ['Nfse', 'tc:Nfse']) || compNfseNode;
+  const infNfse = getXmlNode(nfseNode, ['InfNfse', 'tc:InfNfse']) ||
+                  getXmlNode(compNfseNode, ['InfNfse', 'tc:InfNfse']) ||
+                  nfseNode;
 
   const cancelamentoNode = getXmlNode(compNfseNode, ['NfseCancelamento', 'tc:NfseCancelamento', 'Cancelamento', 'tc:Cancelamento']);
   const substituicaoNode = getXmlNode(compNfseNode, ['NfseSubstituicao', 'tc:NfseSubstituicao', 'Substituicao', 'tc:Substituicao']);
 
-  const numero = getXmlValue(infNfse, ['Numero', 'tc:Numero']) || findXmlValue(infNfse, 'Numero');
-  const codigoVerificacao = getXmlValue(infNfse, ['CodigoVerificacao', 'tc:CodigoVerificacao']) || findXmlValue(infNfse, 'CodigoVerificacao');
-  const dataEmissaoRaw = getXmlValue(infNfse, ['DataEmissao', 'tc:DataEmissao']) || findXmlValue(infNfse, 'DataEmissao');
+  // Identificação estrita da Nota a partir de InfNfse (fail-closed contra captura indevida de RPS)
+  const numero = getXmlValue(infNfse, ['Numero', 'tc:Numero', 'NumeroNfse', 'tc:NumeroNfse']);
+  const codigoVerificacao = getXmlValue(infNfse, ['CodigoVerificacao', 'tc:CodigoVerificacao']);
+  const dataEmissaoRaw = getXmlValue(infNfse, ['DataEmissao', 'tc:DataEmissao']);
   const outrasInformacoes = getXmlValue(infNfse, ['OutrasInformacoes', 'tc:OutrasInformacoes']);
 
   // DPS / Declaracao Prestacao Servico
@@ -205,7 +207,9 @@ function parseConsultarNfseResposta(xmlString) {
     'ConsultarNfseFaixaResposta', 'tc:ConsultarNfseFaixaResposta',
     'ConsultarNfseServicoPrestadoResposta', 'tc:ConsultarNfseServicoPrestadoResposta',
     'ConsultarNfseRpsResposta', 'tc:ConsultarNfseRpsResposta',
-    'ConsultarNfseResposta', 'tc:ConsultarNfseResposta'
+    'ConsultarNfsePorRpsResposta', 'tc:ConsultarNfsePorRpsResposta',
+    'ConsultarNfseResposta', 'tc:ConsultarNfseResposta',
+    'GerarNfseResposta', 'tc:GerarNfseResposta'
   ]) || parsed;
 
   const listaNfse = getXmlNode(root, ['ListaNfse', 'tc:ListaNfse']);

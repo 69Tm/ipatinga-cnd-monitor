@@ -501,44 +501,6 @@ function doGet(e) {
     try {
       if (action === 'diag') {
         result = diagnosticoIntegracaoNfse();
-      } else if (action === 'enableProdE2E') {
-        const props = PropertiesService.getScriptProperties();
-        props.setProperty('NFE_EMAIL_E2E_ALLOWED_SENDER', 'saudesemg@gmail.com');
-        props.setProperty('NFE_EMAIL_E2E_TEST_ENABLED', 'false');
-        props.setProperty('NFE_EMAIL_E2E_PRODUCTION_ENABLED', 'true');
-        result = { ok: true, diag: diagnosticoIntegracaoNfse() };
-      } else if (action === 'sendProdEmail') {
-        const recipient = 'saudesemg@gmail.com';
-        const subject = '[NFE-E2E-PROD] Solicitação de emissão de Nota Fiscal';
-        const body = 'Gentileza emitir nota fiscal.\n\nReferente a Plantões Médicos P.S SUS no Mês: 08/2026 - R$ 10,00.\n\nTESTE E2E GMAIL → NFS-e REAL EM PRODUÇÃO.';
-        const mime = criarMimeSimples_(recipient, subject, body);
-        const sendRes = gmailApiSendMessage_(mime);
-        const msgId = sendRes.id || '';
-        result = { ok: true, msgId: msgId, recipient: recipient, sendRes: sendRes };
-      } else if (action === 'searchProdEmail') {
-        const apiMsgRefs = gmailApiListMessages_('subject:"[NFE-E2E-PROD]" newer_than:1d', 5);
-        const msgsData = [];
-        apiMsgRefs.forEach(ref => {
-          try {
-            const apiMsg = gmailApiGetMessage_(ref.id);
-            if (apiMsg) {
-              const wrapper = parseGmailApiMessage_(apiMsg);
-              msgsData.push({
-                id: wrapper.getId(),
-                subject: wrapper.getSubject(),
-                from: wrapper.getFrom(),
-                date: wrapper.getDate() ? wrapper.getDate().toISOString() : '',
-                bodySnippet: (wrapper.getPlainBody() || '').slice(0, 100)
-              });
-            }
-          } catch (eGet) {
-            msgsData.push({ id: ref.id, error: eGet.message });
-          }
-        });
-        result = { ok: true, messages: msgsData };
-      } else if (action === 'testGmailApiAuth') {
-        const profile = gmailApiGetProfile_();
-        result = { ok: true, GMAIL_API_AUTH: 'PASS', profile: profile };
       } else if (action === 'monitor') {
         monitorarAlertasEmail();
         const ssNfse = abrirPlanilhaNfse_();
@@ -555,12 +517,6 @@ function doGet(e) {
           rps: sheetRps ? sheetRps.getDataRange().getValues() : [],
           notas: sheetNotas ? sheetNotas.getDataRange().getValues() : []
         };
-      } else if (action === 'cleanup') {
-        const props = PropertiesService.getScriptProperties();
-        props.deleteProperty('NFE_EMAIL_E2E_ALLOWED_SENDER');
-        props.deleteProperty('NFE_EMAIL_E2E_TEST_ENABLED');
-        props.deleteProperty('NFE_EMAIL_E2E_PRODUCTION_ENABLED');
-        result = { ok: true, diag: diagnosticoIntegracaoNfse() };
       } else {
         result = { error: 'Unknown action: ' + action };
       }
@@ -569,16 +525,6 @@ function doGet(e) {
     }
     return ContentService.createTextOutput(JSON.stringify(result, null, 2)).setMimeType(ContentService.MimeType.JSON);
   }
-
-  // O rodapé recebe a versão ainda no servidor. Assim, a confirmação não
-  // depende do carregamento do JavaScript da interface.
-  const html = Utilities
-    .newBlob(Utilities.base64Decode(EMBEDDED_INDEX_HTML_BASE64))
-    .getDataAsString('UTF-8')
-    .replace(
-      'Interface vinculada ao código — verificando versão…',
-      'Interface vinculada ao código v' + SYSTEM.VERSION
-    );
 
   return HtmlService
     .createHtmlOutput(html)
@@ -602,44 +548,6 @@ function executeClientAction(action, params) {
   let result = {};
   if (action === 'diag') {
     result = diagnosticoIntegracaoNfse();
-  } else if (action === 'enableProdE2E') {
-    const props = PropertiesService.getScriptProperties();
-    props.setProperty('NFE_EMAIL_E2E_ALLOWED_SENDER', 'saudesemg@gmail.com');
-    props.setProperty('NFE_EMAIL_E2E_TEST_ENABLED', 'false');
-    props.setProperty('NFE_EMAIL_E2E_PRODUCTION_ENABLED', 'true');
-    result = { ok: true, diag: diagnosticoIntegracaoNfse() };
-  } else if (action === 'sendProdEmail') {
-    const recipient = 'saudesemg@gmail.com';
-    const subject = '[NFE-E2E-PROD] Solicitação de emissão de Nota Fiscal';
-    const body = 'Gentileza emitir nota fiscal.\n\nReferente a Plantões Médicos P.S SUS no Mês: 08/2026 - R$ 10,00.\n\nTESTE E2E GMAIL → NFS-e REAL EM PRODUÇÃO.';
-    const mime = criarMimeSimples_(recipient, subject, body);
-    const sendRes = gmailApiSendMessage_(mime);
-    const msgId = sendRes.id || '';
-    result = { ok: true, msgId: msgId, recipient: recipient, sendRes: sendRes };
-  } else if (action === 'searchProdEmail') {
-    const apiMsgRefs = gmailApiListMessages_('subject:"[NFE-E2E-PROD]" newer_than:1d', 5);
-    const msgsData = [];
-    apiMsgRefs.forEach(ref => {
-      try {
-        const apiMsg = gmailApiGetMessage_(ref.id);
-        if (apiMsg) {
-          const wrapper = parseGmailApiMessage_(apiMsg);
-          msgsData.push({
-            id: wrapper.getId(),
-            subject: wrapper.getSubject(),
-            from: wrapper.getFrom(),
-            date: wrapper.getDate() ? wrapper.getDate().toISOString() : '',
-            bodySnippet: (wrapper.getPlainBody() || '').slice(0, 100)
-          });
-        }
-      } catch (eGet) {
-        msgsData.push({ id: ref.id, error: eGet.message });
-      }
-    });
-    result = { ok: true, messages: msgsData };
-  } else if (action === 'testGmailApiAuth') {
-    const profile = gmailApiGetProfile_();
-    result = { ok: true, GMAIL_API_AUTH: 'PASS', profile: profile };
   } else if (action === 'monitor') {
     monitorarAlertasEmail();
     const ssNfse = abrirPlanilhaNfse_();
@@ -656,12 +564,6 @@ function executeClientAction(action, params) {
       rps: sheetRps ? sheetRps.getDataRange().getValues() : [],
       notas: sheetNotas ? sheetNotas.getDataRange().getValues() : []
     };
-  } else if (action === 'cleanup') {
-    const props = PropertiesService.getScriptProperties();
-    props.deleteProperty('NFE_EMAIL_E2E_ALLOWED_SENDER');
-    props.deleteProperty('NFE_EMAIL_E2E_TEST_ENABLED');
-    props.deleteProperty('NFE_EMAIL_E2E_PRODUCTION_ENABLED');
-    result = { ok: true, diag: diagnosticoIntegracaoNfse() };
   } else {
     result = { error: 'Unknown action: ' + action };
   }
@@ -1715,7 +1617,7 @@ function aoEditarPlanilhaBark(event) {
 
       if (key === 'ACTION_ENABLE_PROD_E2E') {
         const props = PropertiesService.getScriptProperties();
-        props.setProperty('NFE_EMAIL_E2E_ALLOWED_SENDER', 'saudesemg@gmail.com');
+        props.setProperty('NFE_EMAIL_E2E_ALLOWED_SENDER', 'tulio69tm@gmail.com');
         props.setProperty('NFE_EMAIL_E2E_TEST_ENABLED', 'false');
         props.setProperty('NFE_EMAIL_E2E_PRODUCTION_ENABLED', 'true');
         sheet.getRange(event.range.getRow(), 2).setValue('PROD_E2E_ENABLED_' + new Date().toISOString());
@@ -4914,7 +4816,7 @@ function dispararWorkflowGitHubNfse_(payload) {
 
 function setTemporaryE2EProperties_() {
   const props = PropertiesService.getScriptProperties();
-  props.setProperty('NFE_EMAIL_E2E_ALLOWED_SENDER', 'saudesemg@gmail.com');
+  props.setProperty('NFE_EMAIL_E2E_ALLOWED_SENDER', 'tulio69tm@gmail.com');
   props.setProperty('NFE_EMAIL_E2E_TEST_ENABLED', 'true');
   // Ensure production flag is not set
   props.deleteProperty('NFE_EMAIL_E2E_PRODUCTION_ENABLED');

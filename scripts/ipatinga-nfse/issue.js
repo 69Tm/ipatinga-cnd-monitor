@@ -159,12 +159,19 @@ function parseGerarNfseResposta(xmlString) {
   const parsed = parseXml(xmlString);
   const root = getXmlNode(parsed, ['GerarNfseResposta', 'tc:GerarNfseResposta']) || parsed;
 
-  const compNfse = findXmlNode(root, 'CompNfse');
-  const infNfse = compNfse ? findXmlNode(compNfse, 'InfNfse') : findXmlNode(root, 'InfNfse');
+  const listaNfse = getXmlNode(root, ['ListaNfse', 'tc:ListaNfse']);
+  const compNfse = (listaNfse ? getXmlNode(listaNfse, ['CompNfse', 'tc:CompNfse']) : null) ||
+                   getXmlNode(root, ['CompNfse', 'tc:CompNfse']) ||
+                   root;
+  const nfseNode = getXmlNode(compNfse, ['Nfse', 'tc:Nfse']) || compNfse;
+  const infNfse = getXmlNode(nfseNode, ['InfNfse', 'tc:InfNfse']) ||
+                  getXmlNode(compNfse, ['InfNfse', 'tc:InfNfse']) ||
+                  nfseNode;
 
-  const numero = infNfse ? findXmlValue(infNfse, 'Numero') : findXmlValue(root, 'NumeroNfse');
-  const codigoVerificacao = infNfse ? findXmlValue(infNfse, 'CodigoVerificacao') : findXmlValue(root, 'CodigoVerificacao');
-  const dataEmissao = infNfse ? findXmlValue(infNfse, 'DataEmissao') : findXmlValue(root, 'DataEmissao');
+  // Extração estrita sem busca recursiva para não colidir com o RPS
+  const numero = getXmlValue(infNfse, ['Numero', 'tc:Numero', 'NumeroNfse', 'tc:NumeroNfse']);
+  const codigoVerificacao = getXmlValue(infNfse, ['CodigoVerificacao', 'tc:CodigoVerificacao']);
+  const dataEmissao = getXmlValue(infNfse, ['DataEmissao', 'tc:DataEmissao']);
 
   const mensagens = [];
 
