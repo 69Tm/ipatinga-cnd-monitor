@@ -179,6 +179,7 @@ async function uploadDriveBuffer(buffer, fileName, mimeType = 'application/xml',
   const res = await drive.files.create({
     requestBody: fileMetadata,
     media,
+    supportsAllDrives: true,
     fields: 'id, name, mimeType, size'
   });
 

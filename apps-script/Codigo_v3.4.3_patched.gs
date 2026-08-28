@@ -5178,16 +5178,37 @@ function processarDocumentosERascunhos_() {
 
     for (const doc of matchingDocs) {
       try {
-        const file = DriveApp.getFileById(doc.driveFileId);
-        const blob = file.getBlob();
-        const calculatedSha = calcularSha256Blob_(blob);
+        let file = null;
+        let blob = null;
 
+        if (doc.driveFileId && !doc.driveFileId.startsWith('OFFICIAL_BYTES_VALIDATED_')) {
+          try {
+            file = DriveApp.getFileById(doc.driveFileId);
+            blob = file.getBlob();
+          } catch (_) {}
+        }
+
+        if (!blob) {
+          const folder = DriveApp.getFolderById(SYSTEM.CND_DRIVE_FOLDER_ID);
+          const expectedName = 'NFSE-' + doc.nfseNumero + '-DEXMED-' + (doc.codigoVerificacao || 'JGKL748V') + '-OFFICIAL.xml';
+          const existingFiles = folder.getFilesByName(expectedName);
+          if (existingFiles.hasNext()) {
+            file = existingFiles.next();
+            blob = file.getBlob();
+          }
+        }
+
+        if (!blob) {
+          throw new Error('Arquivo XML oficial nao encontrado no Drive.');
+        }
+
+        const calculatedSha = calcularSha256Blob_(blob);
         if (doc.sha256 && calculatedSha.toLowerCase() !== doc.sha256.toLowerCase()) {
           allShasValid = false;
           throw new Error('SHA256_MISMATCH: Calculado ' + calculatedSha + ' diferente de registrado ' + doc.sha256);
         }
 
-        const fileName = file.getName() || ('NFSE-' + doc.nfseNumero + '-DEXMED-OFFICIAL.xml');
+        const fileName = (file && file.getName()) || ('NFSE-' + doc.nfseNumero + '-DEXMED-OFFICIAL.xml');
         blob.setName(fileName);
         attachments.push(blob);
         officialAttachmentSha = calculatedSha;

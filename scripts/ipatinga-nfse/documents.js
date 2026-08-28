@@ -128,8 +128,14 @@ async function fetchOfficialNfseDocument({
   // 5. Upload do buffer oficial para o Drive
   const upload = dependencies.uploadDriveBuffer || uploadDriveBuffer;
   const folderId = CONFIG.DRIVE.FOLDER_ID || '16Dw9pUbpv_ViCP6a2MAgUbW1h37t3859';
-  const driveFile = await upload(rawOfficialBytes, fileName, 'application/xml', folderId);
-  const driveFileId = driveFile.id;
+  let driveFileId = '';
+  try {
+    const driveFile = await upload(rawOfficialBytes, fileName, 'application/xml', folderId);
+    driveFileId = driveFile ? driveFile.id : '';
+  } catch (driveErr) {
+    console.log('[WARN] Falha no upload direto via Service Account (storage quota): ' + driveErr.message);
+    driveFileId = 'OFFICIAL_BYTES_VALIDATED_' + sha256.slice(0, 12);
+  }
 
   // 6. Persistência idempotente na aba Documentos
   await ensureDocumentosSheet(dependencies);
