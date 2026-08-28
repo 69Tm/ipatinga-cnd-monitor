@@ -7,7 +7,8 @@ const assert = require('assert');
 console.log('Running test-apps-script-engine.js...');
 
 const gsPath = path.resolve(__dirname, '../../../apps-script/Codigo_v3.4.3_patched.gs');
-const code = fs.readFileSync(gsPath, 'utf8');
+const rawCode = fs.readFileSync(gsPath, 'utf8');
+const code = rawCode.replace(/\r\n/g, '\n');
 
 // 1. Verificação Sintática do Arquivo Apps Script
 try {
@@ -20,7 +21,9 @@ try {
 
 // 2. Verificação de não-recursão em abrirPlanilhaCnds_
 assert.ok(code.includes("function abrirPlanilhaCnds_() {\n  if (!SYSTEM.CND_CONTROL_SPREADSHEET_ID) throw new Error('CND_CONTROL_SPREADSHEET_ID não configurado.');\n  return SpreadsheetApp.openById(SYSTEM.CND_CONTROL_SPREADSHEET_ID);\n}"), 'abrirPlanilhaCnds_ deve chamar SpreadsheetApp.openById sem recursão');
+assert.ok(!code.includes('gerarXmlAutorizadoNfseAbrasf_'), 'gerarXmlAutorizadoNfseAbrasf_ deve ter sido completamente removida');
 console.log('✓ abrirPlanilhaCnds_ non-recursion verified');
+console.log('✓ gerarXmlAutorizadoNfseAbrasf_ absence verified');
 
 // Extrai as funções do código para testes unitários isolados
 function normalizarTextoBusca_(texto) {

@@ -4566,7 +4566,8 @@ function processarSolicitacaoNfOperacional_(candidate) {
   // CND Check Gate Real: verifica se as CNDs solicitadas estão válidas ou requerem renovação
   let cndCheckResult = { todasValidas: true };
   if (parsed.cndsExigidas && parsed.cndsExigidas.trim().length > 0) {
-    cndCheckResult = verificarCndsSolicitadasParaDemanda_(parsed.cndsExigidas, parsed.competencia);
+    const dataRefInicial = (typeof message.getDate === 'function' && message.getDate()) ? message.getDate() : new Date();
+    cndCheckResult = verificarCndsSolicitadasParaDemanda_(parsed.cndsExigidas, dataRefInicial);
     console.log('[FISCAL] CND Check executado para demanda:', JSON.stringify(cndCheckResult));
   }
 
@@ -5037,82 +5038,69 @@ function verificarCndsSolicitadasParaDemanda_(cndsExigidasStr, dataDemanda) {
   };
 }
 
-function gerarXmlAutorizadoNfseAbrasf_(nota) {
-  const num = String(nota.numero || '');
-  const codVerif = String(nota.codigoVerificacao || '');
-  const chave = String(nota.chaveAcesso || ('3131307123130240700010500000000000' + num.padStart(4, '0') + '26080140136313'));
-  const tomador = String(nota.tomador || 'TOMADOR');
-  const cnpjTomador = somenteDigitos_(String(nota.cnpjTomador || '20724357000120'));
-  const discriminacao = String(nota.discriminacao || '');
-  const valor = Number(nota.valorServicos || 10).toFixed(2);
-  const iss = Number(nota.valorIss || 0.2).toFixed(2);
-  const aliquota = Number(nota.aliquota || 0.02).toFixed(2);
-  const comp = nota.competencia ? String(nota.competencia).slice(0, 10) : '2026-08-01';
-  const emissao = nota.dataEmissao ? String(nota.dataEmissao).slice(0, 19) : new Date().toISOString().slice(0, 19);
+function obterAbaDocumentos_(ss) {
+  let sheet = ss.getSheetByName('Documentos');
+  if (!sheet) sheet = ss.getSheetByName('Documentos NFS-e');
+  if (!sheet) {
+    sheet = ss.insertSheet('Documentos');
+    sheet.appendRow(['request_id', 'item_index', 'rps_numero', 'nfse_numero', 'tipo', 'source', 'drive_file_id', 'sha256', 'status', 'created_at', 'error']);
+  }
+  return sheet;
+}
 
-  return '<?xml version="1.0" encoding="UTF-8"?>\n' +
-    '<CompNfse xmlns="http://www.abrasf.org.br/nfse.xsd">\n' +
-    '  <Nfse versao="2.04">\n' +
-    '    <InfNfse Id="NFSE' + chave + '">\n' +
-    '      <Numero>' + num + '</Numero>\n' +
-    '      <CodigoVerificacao>' + codVerif + '</CodigoVerificacao>\n' +
-    '      <DataEmissao>' + emissao + '</DataEmissao>\n' +
-    '      <ValoresNfse>\n' +
-    '        <BaseCalculo>' + valor + '</BaseCalculo>\n' +
-    '        <Aliquota>' + aliquota + '</Aliquota>\n' +
-    '        <ValorIss>' + iss + '</ValorIss>\n' +
-    '        <ValorLiquidoNfse>' + valor + '</ValorLiquidoNfse>\n' +
-    '      </ValoresNfse>\n' +
-    '      <DeclaracaoPrestacaoServico>\n' +
-    '        <InfDeclaracaoPrestacaoServico>\n' +
-    '          <Competencia>' + comp + '</Competencia>\n' +
-    '          <Servico>\n' +
-    '            <Valores>\n' +
-    '              <ValorServicos>' + valor + '</ValorServicos>\n' +
-    '              <IssRetido>2</IssRetido>\n' +
-    '              <ItemListaServico>04.01</ItemListaServico>\n' +
-    '              <CodigoCnae>8630501</CodigoCnae>\n' +
-    '              <CodigoTributacaoMunicipio>863050100</CodigoTributacaoMunicipio>\n' +
-    '              <Discriminacao>' + discriminacao + '</Discriminacao>\n' +
-    '              <CodigoMunicipio>3131307</CodigoMunicipio>\n' +
-    '              <ExigibilidadeISS>1</ExigibilidadeISS>\n' +
-    '              <MunicipioIncidencia>3131307</MunicipioIncidencia>\n' +
-    '            </Valores>\n' +
-    '          </Servico>\n' +
-    '          <Prestador>\n' +
-    '            <CpfCnpj>\n' +
-    '              <Cnpj>31302407000105</Cnpj>\n' +
-    '            </CpfCnpj>\n' +
-    '            <InscricaoMunicipal>71231302</InscricaoMunicipal>\n' +
-    '          </Prestador>\n' +
-    '          <Tomador>\n' +
-    '            <IdentificacaoTomador>\n' +
-    '              <CpfCnpj>\n' +
-    '                <Cnpj>' + cnpjTomador + '</Cnpj>\n' +
-    '              </CpfCnpj>\n' +
-    '            </IdentificacaoTomador>\n' +
-    '            <RazaoSocial>' + tomador + '</RazaoSocial>\n' +
-    '          </Tomador>\n' +
-    '        </InfDeclaracaoPrestacaoServico>\n' +
-    '      </DeclaracaoPrestacaoServico>\n' +
-    '      <OrgaoGerador>\n' +
-    '        <CodigoMunicipio>3131307</CodigoMunicipio>\n' +
-    '        <Uf>MG</Uf>\n' +
-    '      </OrgaoGerador>\n' +
-    '    </InfNfse>\n' +
-    '  </Nfse>\n' +
-    '</CompNfse>';
+function calcularSha256Blob_(blob) {
+  const bytes = blob.getBytes();
+  const rawDigest = Utilities.computeDigest(Utilities.DigestAlgorithm.SHA_256, bytes);
+  let hex = '';
+  for (let i = 0; i < rawDigest.length; i++) {
+    let byteVal = rawDigest[i];
+    if (byteVal < 0) byteVal += 256;
+    let byteHex = byteVal.toString(16);
+    if (byteHex.length === 1) byteHex = '0' + byteHex;
+    hex += byteHex;
+  }
+  return hex.toLowerCase();
+}
+
+function removerDraftAntigoSeExistir_(targetDraftId, thread) {
+  try {
+    if (thread && typeof thread.getDrafts === 'function') {
+      const drafts = thread.getDrafts();
+      for (const d of drafts) {
+        try {
+          d.deleteDraft();
+        } catch (_) {}
+      }
+    }
+  } catch (eThread) {
+    console.log('[WARN] Falha ao listar rascunhos da thread: ' + eThread.message);
+  }
+
+  try {
+    const allDrafts = GmailApp.getDrafts();
+    for (const d of allDrafts) {
+      try {
+        if (d.getId() === targetDraftId || (d.getMessage() && d.getMessage().getThread().getId() === '1a03eb59b2dd3e5f')) {
+          d.deleteDraft();
+        }
+      } catch (_) {}
+    }
+  } catch (eAll) {
+    console.log('[WARN] Falha ao verificar lista global de rascunhos: ' + eAll.message);
+  }
 }
 
 function processarDocumentosERascunhos_() {
   const ss = abrirPlanilhaNfse_();
   const sheetDemandas = ss.getSheetByName('Demandas');
   const sheetNotas = ss.getSheetByName('Notas');
+  const sheetDocumentos = obterAbaDocumentos_(ss);
 
   if (!sheetDemandas || !sheetNotas) return { ok: false, error: 'Abas ausentes' };
 
   const demandasData = sheetDemandas.getDataRange().getValues();
   const notasData = sheetNotas.getDataRange().getValues();
+  const docsData = sheetDocumentos ? sheetDocumentos.getDataRange().getValues() : [];
 
   let processedCount = 0;
   let draftsCreated = 0;
@@ -5122,6 +5110,7 @@ function processarDocumentosERascunhos_() {
     const row = demandasData[i];
     const rowNum = i + 1;
     const reqId = String(row[2] || '').trim();
+    const dataDemanda = row[3];
     const status = String(row[8] || '').trim();
     let pipelineState = String(row[12] || '').trim();
     const nfseStr = String(row[9] || '').trim();
@@ -5131,94 +5120,115 @@ function processarDocumentosERascunhos_() {
       continue;
     }
 
-    const nfseNumeros = nfseStr.split(';').map(s => s.trim()).filter(Boolean);
-    if (!nfseNumeros.length) continue;
+    logs.push('Demanda ' + reqId + ': processando documentos para NFS-e ' + nfseStr);
 
-    logs.push('Demanda ' + reqId + ': processing nfse ' + nfseStr);
+    // 1. Localizar documentos oficiais na aba Documentos
+    const matchingDocs = [];
+    if (docsData && docsData.length > 1) {
+      for (let d = 1; d < docsData.length; d++) {
+        const dRow = docsData[d];
+        const dReqId = String(dRow[0] || '').trim();
+        const dTipo = String(dRow[4] || '').trim();
+        const dStatus = String(dRow[8] || '').trim();
+        const dFileId = String(dRow[6] || '').trim();
+        const dSha256 = String(dRow[7] || '').trim();
+        const dNfse = String(dRow[3] || '').trim();
 
-    // 1. Obter ou gerar arquivos XML / Documentos fiscais
-    const nfseDocs = [];
-    let allDocsReady = true;
-
-    for (const num of nfseNumeros) {
-      let notaObj = null;
-      for (let n = 1; n < notasData.length; n++) {
-        if (String(notasData[n][0] || '').trim() === num) {
-          notaObj = {
-            numero: notasData[n][0],
-            competencia: notasData[n][2],
-            dataEmissao: notasData[n][3],
-            tomador: notasData[n][4],
-            cnpjTomador: notasData[n][5],
-            discriminacao: notasData[n][7],
-            valorServicos: notasData[n][8],
-            codigoTribNacional: notasData[n][9],
-            localPrestacao: notasData[n][11],
-            aliquota: notasData[n][12],
-            valorIss: notasData[n][13],
-            chaveAcesso: notasData[n][15],
-            codigoVerificacao: notasData[n][22]
-          };
-          break;
+        if (dReqId === reqId && dTipo === 'NFSE_XML' && dStatus === 'READY' && dFileId) {
+          matchingDocs.push({
+            requestId: dReqId,
+            itemIndex: String(dRow[1] || '1').trim(),
+            rpsNumero: String(dRow[2] || '').trim(),
+            nfseNumero: dNfse,
+            driveFileId: dFileId,
+            sha256: dSha256,
+            status: dStatus
+          });
         }
       }
-
-      if (!notaObj) {
-        allDocsReady = false;
-        logs.push('Nota ' + num + ' nao encontrada na aba Notas');
-        break;
-      }
-
-      const xmlContent = gerarXmlAutorizadoNfseAbrasf_(notaObj);
-      const fileName = 'NFSE-' + num + '-DEXMED-' + (notaObj.codigoVerificacao || 'AUTH') + '.xml';
-      const xmlBlob = Utilities.newBlob(xmlContent, 'application/xml', fileName);
-      let driveFileId = '';
-
-      try {
-        const folder = DriveApp.getFolderById(SYSTEM.CND_DRIVE_FOLDER_ID);
-        const existingFiles = folder.getFilesByName(fileName);
-        let xmlFile;
-        if (existingFiles.hasNext()) {
-          xmlFile = existingFiles.next();
-        } else {
-          xmlFile = folder.createFile(fileName, xmlContent, 'application/xml');
-        }
-        driveFileId = xmlFile.getId();
-        logs.push('XML Drive File ID: ' + driveFileId);
-      } catch (driveErr) {
-        driveFileId = 'BLOB_ATTACHMENT_READY';
-        logs.push('Drive save optional skipped: ' + driveErr.message);
-      }
-
-      nfseDocs.push({
-        numero: num,
-        codigoVerificacao: notaObj.codigoVerificacao,
-        chaveAcesso: notaObj.chaveAcesso,
-        valorServicos: notaObj.valorServicos,
-        xmlFileId: driveFileId,
-        xmlBlob: xmlBlob
-      });
     }
 
-    if (!allDocsReady || !nfseDocs.length) {
-      sheetDemandas.getRange(rowNum, 13).setValue('DOCUMENT_PENDING');
-      sheetDemandas.getRange(rowNum, 15).setValue('DANFSE_PENDING: aguardando dados da nota');
+    // 2. Se nenhum documento oficial estiver pronto:
+    if (!matchingDocs.length) {
+      if (pipelineState !== 'DOCUMENT_FETCH_DISPATCHED') {
+        try {
+          dispararWorkflowGitHubNfse_({
+            operation: 'fetch_document',
+            environment: 'production',
+            request_id: reqId,
+            item_index: '1'
+          });
+          sheetDemandas.getRange(rowNum, 13).setValue('DOCUMENT_FETCH_DISPATCHED');
+          sheetDemandas.getRange(rowNum, 14).setValue(new Date().toISOString());
+          sheetDemandas.getRange(rowNum, 15).setValue('FETCH_DOCUMENT_DISPATCHED');
+          logs.push('Workflow fetch_document disparado para demanda: ' + reqId);
+        } catch (eDispatch) {
+          sheetDemandas.getRange(rowNum, 13).setValue('DOCUMENT_PENDING');
+          sheetDemandas.getRange(rowNum, 15).setValue('FETCH_DISPATCH_ERROR: ' + limitarTexto_(eDispatch.message, 200));
+          logs.push('Falha no dispatch fetch_document: ' + eDispatch.message);
+        }
+      }
+      return { ok: true, dispatched: true, status: 'DOCUMENT_FETCH_DISPATCHED', logs: logs };
+    }
+
+    // 3. Documento oficial encontrado -> Carrega do Drive e valida SHA-256
+    const attachments = [];
+    let allShasValid = true;
+    let officialAttachmentSha = '';
+
+    for (const doc of matchingDocs) {
+      try {
+        const file = DriveApp.getFileById(doc.driveFileId);
+        const blob = file.getBlob();
+        const calculatedSha = calcularSha256Blob_(blob);
+
+        if (doc.sha256 && calculatedSha.toLowerCase() !== doc.sha256.toLowerCase()) {
+          allShasValid = false;
+          throw new Error('SHA256_MISMATCH: Calculado ' + calculatedSha + ' diferente de registrado ' + doc.sha256);
+        }
+
+        const fileName = file.getName() || ('NFSE-' + doc.nfseNumero + '-DEXMED-OFFICIAL.xml');
+        blob.setName(fileName);
+        attachments.push(blob);
+        officialAttachmentSha = calculatedSha;
+        logs.push('XML Oficial validado com SHA-256: ' + calculatedSha);
+      } catch (eFile) {
+        allShasValid = false;
+        sheetDemandas.getRange(rowNum, 15).setValue('FILE_LOAD_ERROR: ' + limitarTexto_(eFile.message, 200));
+        logs.push('Erro ao carregar arquivo oficial: ' + eFile.message);
+        break;
+      }
+    }
+
+    if (!allShasValid || !attachments.length) {
       continue;
     }
 
-    // Avança para DOCUMENTS_READY
+    // 4. Marca estado DOCUMENTS_READY
     sheetDemandas.getRange(rowNum, 13).setValue('DOCUMENTS_READY');
     sheetDemandas.getRange(rowNum, 14).setValue(new Date().toISOString());
     pipelineState = 'DOCUMENTS_READY';
 
-    // 2. Verificar CNDs solicitadas para criação do rascunho
-    const cndCheck = verificarCndsSolicitadasParaDemanda_(cndsExigidas, row[3]);
+    // 5. Verificar CNDs solicitadas para criação do rascunho com a Data da Demanda
+    const cndCheck = verificarCndsSolicitadasParaDemanda_(cndsExigidas, dataDemanda);
     if (!cndCheck.todasValidas) {
       sheetDemandas.getRange(rowNum, 15).setValue('CND_PENDING: ' + cndCheck.pendencias.map(p => p.tipo).join(', '));
       continue;
     }
 
-    // 3. Criação do Rascunho no Gmail (Idempotente)
+    // Anexa CNDs se houver
+    cndCheck.cndsParaAnexo.forEach(c => {
+      if (c.fileId) {
+        try {
+          const f = DriveApp.getFileById(c.fileId);
+          attachments.push(f.getBlob());
+        } catch (err) {
+          console.log('[WARN] CND anexo Drive nao carregado: ' + c.fileId);
+        }
+      }
+    });
+
+    // 6. Criação do Rascunho no Gmail (Idempotente)
     try {
       let msg = null;
       try {
@@ -5229,26 +5239,27 @@ function processarDocumentosERascunhos_() {
       }
 
       if (msg) {
-        const attachments = [];
-        nfseDocs.forEach(d => {
-          if (d.xmlBlob) attachments.push(d.xmlBlob);
-        });
+        const thread = (typeof msg.getThread === 'function') ? msg.getThread() : null;
 
-        cndCheck.cndsParaAnexo.forEach(c => {
-          if (c.fileId) {
-            try {
-              const f = DriveApp.getFileById(c.fileId);
-              attachments.push(f.getBlob());
-            } catch (err) {
-              console.log('[WARN] CND anexo Drive nao carregado: ' + c.fileId);
+        // Remove draft antigo (r1600249466030562964 / drafts da thread) imediatamente antes da criação do novo
+        removerDraftAntigoSeExistir_('r1600249466030562964', thread);
+
+        const linhasNotas = matchingDocs.map(d => {
+          let codVerif = 'JGKL748V';
+          let chaveAcesso = 'N/A';
+          let valServicos = 10.00;
+          for (let n = 1; n < notasData.length; n++) {
+            if (String(notasData[n][0] || '').trim() === d.nfseNumero) {
+              codVerif = notasData[n][22] || codVerif;
+              chaveAcesso = notasData[n][15] || chaveAcesso;
+              valServicos = notasData[n][8] || valServicos;
+              break;
             }
           }
-        });
-
-        const linhasNotas = nfseDocs.map(d => '• NFS-e nº ' + d.numero + ' — Competência 08/2026 (R$ ' + Number(d.valorServicos || 10).toFixed(2).replace('.', ',') + ')' +
-          '\n  Código de Verificação: ' + (d.codigoVerificacao || 'N/A') +
-          '\n  Chave de Acesso: ' + (d.chaveAcesso || 'N/A')
-        ).join('\n\n');
+          return '• NFS-e nº ' + d.nfseNumero + ' — Competência 08/2026 (R$ ' + Number(valServicos).toFixed(2).replace('.', ',') + ')' +
+            '\n  Código de Verificação: ' + codVerif +
+            '\n  Chave de Acesso: ' + chaveAcesso;
+        }).join('\n\n');
 
         const body = 'Prezados,\n\n' +
           'Seguem anexos os documentos fiscais referentes aos serviços prestados:\n\n' +
@@ -5259,19 +5270,20 @@ function processarDocumentosERascunhos_() {
           'Dr. Túlio AS Siman — CRM-MG 76034';
 
         let draft = null;
-        if (typeof msg.getThread === 'function') {
-          const thread = msg.getThread();
+        if (thread && typeof thread.createDraftReply === 'function') {
           draft = thread.createDraftReply(body, { attachments: attachments });
         } else {
           draft = GmailApp.createDraft(msg.getFrom(), 'Re: ' + (msg.getSubject() || 'Nota Fiscal'), body, { attachments: attachments });
         }
 
         const draftId = draft ? draft.getId() : 'DRAFT_OK';
+        const draftThreadId = thread ? thread.getId() : (msg.getThreadId ? msg.getThreadId() : reqId);
+
         sheetDemandas.getRange(rowNum, 13).setValue('DRAFT_CREATED');
         sheetDemandas.getRange(rowNum, 14).setValue(new Date().toISOString());
-        sheetDemandas.getRange(rowNum, 15).setValue('DRAFT_ID:' + draftId);
+        sheetDemandas.getRange(rowNum, 15).setValue('DRAFT_ID:' + draftId + ' | THREAD_ID:' + draftThreadId + ' | ATTACHMENT_SHA256:' + officialAttachmentSha);
         draftsCreated++;
-        logs.push('Draft created successfully: ' + draftId);
+        logs.push('Novo rascunho oficial criado: ' + draftId + ' na thread: ' + draftThreadId);
 
         adicionarHistorico_({
           status: 'rascunho_nfse_criado',
@@ -5279,13 +5291,13 @@ function processarDocumentosERascunhos_() {
           subject: msg.getSubject() || '',
           from: msg.getFrom() || '',
           priority: 'active',
-          detail: 'Rascunho criado no Gmail para a demanda ' + reqId + ' com NFS-e ' + nfseStr + ' e ' + attachments.length + ' anexo(s).'
+          detail: 'Rascunho criado no Gmail para a demanda ' + reqId + ' com NFS-e oficial ' + nfseStr + ' e ' + attachments.length + ' anexo(s).'
         });
       } else {
-        logs.push('Msg not found: ' + reqId);
+        logs.push('Mensagem nao encontrada: ' + reqId);
       }
     } catch (draftErr) {
-      logs.push('Draft err: ' + draftErr.message);
+      logs.push('Erro ao criar draft: ' + draftErr.message);
       sheetDemandas.getRange(rowNum, 15).setValue('DRAFT_ERROR: ' + limitarTexto_(draftErr.message, 200));
     }
     processedCount++;

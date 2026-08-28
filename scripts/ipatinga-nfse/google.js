@@ -155,12 +155,43 @@ async function createSheetIfNotExists(spreadsheetId, sheetTitle) {
   return true;
 }
 
+const { Readable } = require('stream');
+
+async function uploadDriveBuffer(buffer, fileName, mimeType = 'application/xml', folderId = null) {
+  if (!buffer) throw new Error('Buffer não fornecido para upload.');
+  const drive = getDriveClient();
+  const targetFolderId = folderId || process.env.DRIVE_FOLDER_ID || CONFIG.DRIVE.FOLDER_ID || '16Dw9pUbpv_ViCP6a2MAgUbW1h37t3859';
+
+  const readableStream = new Readable();
+  readableStream.push(buffer);
+  readableStream.push(null);
+
+  const fileMetadata = {
+    name: fileName,
+    parents: targetFolderId ? [targetFolderId] : []
+  };
+
+  const media = {
+    mimeType,
+    body: readableStream
+  };
+
+  const res = await drive.files.create({
+    requestBody: fileMetadata,
+    media,
+    fields: 'id, name, mimeType, size'
+  });
+
+  return res.data;
+}
+
 module.exports = {
   getAuth,
   getSheetsClient,
   getDriveClient,
   downloadDriveFile,
   getDriveFileMetadata,
+  uploadDriveBuffer,
   readSheetValues,
   updateSheetValues,
   appendSheetValues,
@@ -168,3 +199,4 @@ module.exports = {
   getSpreadsheetMetadata,
   createSheetIfNotExists
 };
+

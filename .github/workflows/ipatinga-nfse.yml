@@ -18,6 +18,7 @@ on:
           - prepare
           - reconcile_rps
           - issue
+          - fetch_document
       sync_mode:
         description: 'Modo de sincronização de notas'
         required: true

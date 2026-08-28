@@ -6,10 +6,10 @@ const { buildUnsignedCandidateXml, validateCandidate, prepareDemand, demandRows,
 console.log('Running test-fiscal-xml.js...');
 
 // 1. Testa que candidato com ISS Retido = 1 e Exigibilidade ISS = 2 gera exatamente essas tags no XML
-const syntheticCandidate = {
-  requestId: 'req-synthetic-tax-test',
+const mockCandidate = {
+  requestId: 'req-mock-tax-test',
   sequence: 1,
-  patternId: 'SYNTHETIC_PATTERN',
+  patternId: 'MOCK_PATTERN',
   categoria: 'Serviço com Retenção',
   tomador: 'TOMADOR TESTE LTDA',
   cnpjTomador: '20724357000120',
@@ -41,17 +41,17 @@ const syntheticCandidate = {
   rpsTipo: '1'
 };
 
-const xml = buildUnsignedCandidateXml(syntheticCandidate);
+const xml = buildUnsignedCandidateXml(mockCandidate);
 assert.ok(xml.includes('<IssRetido>1</IssRetido>'), 'Deveria conter <IssRetido>1</IssRetido>');
 assert.ok(xml.includes('<ExigibilidadeISS>2</ExigibilidadeISS>'), 'Deveria conter <ExigibilidadeISS>2</ExigibilidadeISS>');
 assert.ok(xml.includes('<MunicipioIncidencia>3131307</MunicipioIncidencia>'));
 
 // 2. Testa que ausência de campos fiscais obrigatórios bloqueia prepareDemand (sem defaults silenciosos)
-const candidateMissingIncidence = { ...syntheticCandidate, codigoMunicipioIncidenciaIss: '' };
+const candidateMissingIncidence = { ...mockCandidate, codigoMunicipioIncidenciaIss: '' };
 const errors = validateCandidate(candidateMissingIncidence);
 assert.ok(errors.includes('ISS_INCIDENCE_LOCATION_IBGE_MISSING'), 'Deveria barrar falta de incidencia');
 
-const candidateMissingRetencao = { ...syntheticCandidate, issRetido: '' };
+const candidateMissingRetencao = { ...mockCandidate, issRetido: '' };
 const errorsRet = validateCandidate(candidateMissingRetencao);
 assert.ok(errorsRet.includes('ISS_RETIDO_MISSING'), 'Deveria barrar falta de issRetido');
 

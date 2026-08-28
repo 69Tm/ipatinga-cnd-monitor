@@ -10,6 +10,7 @@ const { inspectWsdl } = require('./wsdl');
 const { syncNfse } = require('./sync');
 const { handlePrepare } = require('./prepare');
 const { issueNfse, reconcileRps, probeProviderHealth, runAutoRecoveryBatch } = require('./issue');
+const { fetchOfficialNfseDocument } = require('./documents');
 const { runHistoricalAnalysis } = require('./patterns');
 const { loadLedger, RPS_STATUS } = require('./ledger');
 
@@ -234,7 +235,7 @@ async function main() {
     let summary = {};
     let certData = null;
 
-    if (['sync', 'issue', 'reconcile_rps', 'provider_health', 'auto_recovery'].includes(operation)) {
+    if (['sync', 'issue', 'reconcile_rps', 'provider_health', 'auto_recovery', 'fetch_document'].includes(operation)) {
       const certPassword = process.env.NFE_CERT_PASSWORD || CONFIG.CERT.PASSWORD;
       if (certPassword) {
         try {
@@ -280,6 +281,21 @@ async function main() {
         itemIndex,
         rpsNumero: fromNumber,
         certData
+      });
+    } else if (operation === 'fetch_document') {
+      if (!certData || !certData.loaded || !certData.isValid) {
+        throw new Error('CERT_PASSWORD_MISSING: fetch_document requer certificado A1 desbloqueado.');
+      }
+      if (!requestId) {
+        throw new Error('REQUEST_ID_REQUIRED: fetch_document requer parâmetro request_id.');
+      }
+      summary = await fetchOfficialNfseDocument({
+        requestId,
+        itemIndex,
+        environment,
+        fromNumber,
+        certData,
+        dryRun
       });
     } else if (operation === 'issue') {
       if (!certData || !certData.loaded || !certData.isValid) {
