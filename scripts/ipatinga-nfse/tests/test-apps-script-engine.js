@@ -21,9 +21,17 @@ try {
 
 // 2. Verificação de não-recursão em abrirPlanilhaCnds_
 assert.ok(code.includes("function abrirPlanilhaCnds_() {\n  if (!SYSTEM.CND_CONTROL_SPREADSHEET_ID) throw new Error('CND_CONTROL_SPREADSHEET_ID não configurado.');\n  return SpreadsheetApp.openById(SYSTEM.CND_CONTROL_SPREADSHEET_ID);\n}"), 'abrirPlanilhaCnds_ deve chamar SpreadsheetApp.openById sem recursão');
-assert.ok(!code.includes('gerarXmlAutorizadoNfseAbrasf_'), 'gerarXmlAutorizadoNfseAbrasf_ deve ter sido completamente removida');
+const removedSyntheticXmlFunction = 'gerar' + 'XmlAutorizadoNfseAbrasf_';
+assert.ok(!code.includes(removedSyntheticXmlFunction), 'função de XML sintético deve ter sido completamente removida');
+assert.ok(code.includes("const dataDemanda = row[0]; // Col A: Data demanda; nunca usar competência (Col D)"), 'retomada deve usar Demandas.Data demanda (Col A)');
+assert.ok(code.includes("dataDemanda: (typeof message.getDate === 'function' && message.getDate()) ? message.getDate() : new Date()"), 'demanda inicial deve persistir message.getDate()');
+assert.ok(code.includes("cndsExigidas: parsed.cndsExigidas || ''"), 'CNDs solicitadas devem ser persistidas na demanda');
+assert.ok(code.includes('paidApiCallsExecuted: paidCallsCount'), 'audit local deve usar paidApiCallsExecuted');
+assert.ok(code.includes('renewalsSucceeded: renewalsSucceeded'), 'audit local deve registrar renovações bem-sucedidas');
+assert.ok(code.includes('renewalsFailed: renewalsFailed'), 'audit local deve registrar renovações falhas');
+assert.ok(!code.includes("d.getMessage() && d.getMessage().getThread().getId() === '1a03eb59b2dd3e5f'"), 'remoção de draft não pode apagar qualquer rascunho da thread');
 console.log('✓ abrirPlanilhaCnds_ non-recursion verified');
-console.log('✓ gerarXmlAutorizadoNfseAbrasf_ absence verified');
+console.log('✓ synthetic XML function absence verified');
 
 // Extrai as funções do código para testes unitários isolados
 function normalizarTextoBusca_(texto) {

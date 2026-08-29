@@ -16,12 +16,14 @@ function runTests() {
 
   function mockVerificarCndsSolicitadas(situacao, cndsExigidasStr, dataDemanda, options = {}) {
     if (!cndsExigidasStr || !cndsExigidasStr.trim()) {
-      return { exigidas: [], todasValidas: true, cndsParaAnexo: [], renewalsAttempted: 0, paidApiCalls: 0 };
+      return { exigidas: [], todasValidas: true, cndsParaAnexo: [], renewalsAttempted: 0, renewalsSucceeded: 0, renewalsFailed: 0, paidApiCallsExecuted: 0 };
     }
 
     const cndsSolicitadas = cndsExigidasStr.split(';').map(s => s.trim()).filter(Boolean);
     const dataRef = dataDemanda ? new Date(dataDemanda) : new Date();
     let renewalsCount = 0;
+    let renewalsSucceeded = 0;
+    let renewalsFailed = 0;
     let paidCallsCount = 0;
     const cndsParaAnexo = [];
     const pendencias = [];
@@ -43,8 +45,10 @@ function runTests() {
         paidCallsCount++;
       }
       if (options.mockRenewSuccess) {
+        renewalsSucceeded++;
         cndsParaAnexo.push({ tipo, fileId: 'drive_new_' + tipo, status: 'RENOVADA_COM_SUCESSO' });
       } else {
+        renewalsFailed++;
         pendencias.push({ tipo, motivo: 'FALHA_RENOVACAO' });
       }
     }
@@ -54,7 +58,9 @@ function runTests() {
       todasValidas: pendencias.length === 0,
       cndsParaAnexo,
       renewalsAttempted: renewalsCount,
-      paidApiCalls: paidCallsCount,
+      renewalsSucceeded,
+      renewalsFailed,
+      paidApiCallsExecuted: paidCallsCount,
       pendencias
     };
   }
@@ -75,7 +81,9 @@ function runTests() {
   const resValid = mockVerificarCndsSolicitadas(mockSituation, 'CRF FGTS; CND Estadual MG', '2026-08-27');
   assert.strictEqual(resValid.todasValidas, true);
   assert.strictEqual(resValid.renewalsAttempted, 0, 'Should not renew valid CNDs');
-  assert.strictEqual(resValid.paidApiCalls, 0, 'Should not call paid APIs for valid CNDs');
+  assert.strictEqual(resValid.renewalsSucceeded, 0);
+  assert.strictEqual(resValid.renewalsFailed, 0);
+  assert.strictEqual(resValid.paidApiCallsExecuted, 0, 'Should not call paid APIs for valid CNDs');
   assert.strictEqual(resValid.cndsParaAnexo.length, 2);
   console.log('✅ PASS: CND válida solicitada -> reuse (0 renewal, 0 paid calls)');
 
@@ -83,20 +91,24 @@ function runTests() {
   const resExpiredRequested = mockVerificarCndsSolicitadas(mockSituation, 'CNDT', '2026-08-27', { mockRenewSuccess: true });
   assert.strictEqual(resExpiredRequested.todasValidas, true);
   assert.strictEqual(resExpiredRequested.renewalsAttempted, 1);
-  assert.strictEqual(resExpiredRequested.paidApiCalls, 1);
+  assert.strictEqual(resExpiredRequested.renewalsSucceeded, 1);
+  assert.strictEqual(resExpiredRequested.renewalsFailed, 0);
+  assert.strictEqual(resExpiredRequested.paidApiCallsExecuted, 1);
   assert.strictEqual(resExpiredRequested.cndsParaAnexo[0].status, 'RENOVADA_COM_SUCESSO');
   console.log('✅ PASS: CND vencida solicitada -> renewal');
 
   // 3. Test: Expired CND NOT requested -> ZERO renewal
   const resNotRequested = mockVerificarCndsSolicitadas(mockSituation, 'CRF FGTS', '2026-08-27');
   assert.strictEqual(resNotRequested.renewalsAttempted, 0, 'CNDT and CND Federal must NOT be renewed when only CRF FGTS is requested');
-  assert.strictEqual(resNotRequested.paidApiCalls, 0);
+  assert.strictEqual(resNotRequested.paidApiCallsExecuted, 0);
   console.log('✅ PASS: CND vencida não solicitada -> zero renewal');
 
   // 4. Test: Demand with 0 CND requested -> 0 renewals, 0 paid calls
   const resZeroCnd = mockVerificarCndsSolicitadas(mockSituation, '', '2026-08-27');
   assert.strictEqual(resZeroCnd.renewalsAttempted, 0);
-  assert.strictEqual(resZeroCnd.paidApiCalls, 0);
+  assert.strictEqual(resZeroCnd.renewalsSucceeded, 0);
+  assert.strictEqual(resZeroCnd.renewalsFailed, 0);
+  assert.strictEqual(resZeroCnd.paidApiCallsExecuted, 0);
   assert.strictEqual(resZeroCnd.todasValidas, true);
   console.log('✅ PASS: Demanda sem CND -> 0 renewals, 0 paid calls');
 

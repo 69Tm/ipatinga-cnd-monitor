@@ -10,6 +10,25 @@ function decodeXmlEntities(value) {
   return String(value || '').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"').replace(/&apos;/g, "'").replace(/&amp;/g, '&');
 }
 
+function extractRawOutputText(data) {
+  const envelope = String(data || '');
+  const tags = ['outputXML', 'output'];
+  for (const tag of tags) {
+    const pattern = new RegExp(
+      `<(?:[\\w.-]+:)?${tag}\\b[^>]*>([\\s\\S]*?)<\\/(?:[\\w.-]+:)?${tag}\\s*>`,
+      'i'
+    );
+    const match = envelope.match(pattern);
+    if (!match) continue;
+    const rawValue = match[1];
+    if (rawValue.startsWith('<![CDATA[') && rawValue.endsWith(']]>')) {
+      return rawValue.slice(9, -3);
+    }
+    return decodeXmlEntities(rawValue);
+  }
+  return null;
+}
+
 function extractSoapOutput(data, operation) {
   const parsed = parseXml(data);
   const fault = findXmlNode(parsed, 'Fault');
@@ -18,13 +37,19 @@ function extractSoapOutput(data, operation) {
     const message = findXmlValue(fault, 'faultstring') || 'SOAP Fault sem mensagem';
     throw new Error(`SOAP_FAULT: ${code}: ${message}`);
   }
-  let output = findXmlValue(parsed, 'outputXML');
+  // Extrai diretamente do envelope original para não normalizar espaços,
+  // quebras de linha ou serialização do XML oficial.
+  const rawOutput = extractRawOutputText(data);
+  let output = rawOutput;
+  if (!output) {
+    output = findXmlValue(parsed, 'outputXML');
+  }
   if (!output) {
     const response = findXmlNode(parsed, `${operation}Response`);
     output = findXmlValue(response, 'output') || findXmlValue(response, `${operation}Response`);
   }
   if (!output) throw new Error('SOAP_OUTPUT_MISSING: outputXML ausente.');
-  output = decodeXmlEntities(output).trim();
+  if (rawOutput === null) output = decodeXmlEntities(output);
   parseXml(output);
   return output;
 }
@@ -89,7 +114,15 @@ async function callSoapOperation({
         }
         try {
           const outputXml = extractSoapOutput(data, operation);
-          resolve({ statusCode: res.statusCode, outputXml, rawEnvelope: data });
+          // outputXmlBytes é a representação UTF-8 exata do XML oficial
+          // extraído do outputXML. Consumidores de documentos devem persistir
+          // este buffer diretamente, sem parse/rebuild.
+          resolve({
+            statusCode: res.statusCode,
+            outputXml,
+            outputXmlBytes: Buffer.from(outputXml, 'utf8'),
+            rawEnvelope: data
+          });
         } catch (err) {
           reject(err);
         }
@@ -107,6 +140,7 @@ async function callSoapOperation({
 
 module.exports = {
   extractSoapOutput,
+  extractRawOutputText,
   callSoapOperation,
   decodeXmlEntities
 };

@@ -4578,12 +4578,13 @@ function processarSolicitacaoNfOperacional_(candidate) {
   // 4. Registro na aba Demandas
   const env = 'production';
   const reg = registrarDemandaNaPlanilha_({
+    dataDemanda: (typeof message.getDate === 'function' && message.getDate()) ? message.getDate() : new Date(),
     messageId: messageId,
     origem: message.getFrom() || '',
     periodo: parsed.competencia,
     notasSolicitadas: notasSolicitadas,
     valores: valores,
-    cndsExigidas: '',
+    cndsExigidas: parsed.cndsExigidas || '',
     descricaoObrigatoria: descricoes,
     status: 'PENDENTE',
     linkGmail: 'https://mail.google.com/mail/u/0/#inbox/' + messageId,
@@ -4956,7 +4957,9 @@ function verificarCndsSolicitadasParaDemanda_(cndsExigidasStr, dataDemanda) {
       todasValidas: true,
       cndsParaAnexo: [],
       renewalsAttempted: 0,
-      paidApiCalls: 0,
+      renewalsSucceeded: 0,
+      renewalsFailed: 0,
+      paidApiCallsExecuted: 0,
       pendencias: []
     };
   }
@@ -4968,17 +4971,33 @@ function verificarCndsSolicitadasParaDemanda_(cndsExigidasStr, dataDemanda) {
       todasValidas: true,
       cndsParaAnexo: [],
       renewalsAttempted: 0,
-      paidApiCalls: 0,
+      renewalsSucceeded: 0,
+      renewalsFailed: 0,
+      paidApiCallsExecuted: 0,
       pendencias: []
     };
   }
 
   const cnpj = '31.302.407/0001-05';
   const situacao = obterSituacaoCndsParaCnpj_(cnpj);
-  const dataReferencia = dataDemanda ? new Date(dataDemanda) : new Date();
+  let dataReferencia;
+  if (dataDemanda instanceof Date && !isNaN(dataDemanda.getTime())) {
+    dataReferencia = new Date(dataDemanda.getTime());
+  } else {
+    const dataTexto = String(dataDemanda || '').trim();
+    const brMatch = dataTexto.match(/^(\d{2})\/(\d{2})\/(\d{4})$/);
+    dataReferencia = brMatch
+      ? new Date(Number(brMatch[3]), Number(brMatch[2]) - 1, Number(brMatch[1]))
+      : new Date(dataTexto);
+  }
+  if (isNaN(dataReferencia.getTime())) {
+    throw new Error('DATA_REFERENCIA_DEMANDA_INVALIDA');
+  }
   const refTime = inicioDoDia_(dataReferencia).getTime();
 
   let renewalsCount = 0;
+  let renewalsSucceeded = 0;
+  let renewalsFailed = 0;
   let paidCallsCount = 0;
   const cndsParaAnexo = [];
   const pendencias = [];
@@ -5014,6 +5033,7 @@ function verificarCndsSolicitadasParaDemanda_(cndsExigidasStr, dataDemanda) {
 
     const resultado = resRenovacao && resRenovacao[0];
     if (resultado && resultado.success && resultado.fileId) {
+      renewalsSucceeded++;
       cndsParaAnexo.push({
         tipo: tipo,
         fileId: resultado.fileId,
@@ -5021,6 +5041,7 @@ function verificarCndsSolicitadasParaDemanda_(cndsExigidasStr, dataDemanda) {
         status: 'RENOVADA_COM_SUCESSO'
       });
     } else {
+      renewalsFailed++;
       pendencias.push({
         tipo: tipo,
         motivo: (resultado && resultado.reason) || 'FALHA_RENOVACAO'
@@ -5033,7 +5054,9 @@ function verificarCndsSolicitadasParaDemanda_(cndsExigidasStr, dataDemanda) {
     todasValidas: pendencias.length === 0,
     cndsParaAnexo: cndsParaAnexo,
     renewalsAttempted: renewalsCount,
-    paidApiCalls: paidCallsCount,
+    renewalsSucceeded: renewalsSucceeded,
+    renewalsFailed: renewalsFailed,
+    paidApiCallsExecuted: paidCallsCount,
     pendencias: pendencias
   };
 }
@@ -5062,32 +5085,21 @@ function calcularSha256Blob_(blob) {
   return hex.toLowerCase();
 }
 
-function removerDraftAntigoSeExistir_(targetDraftId, thread) {
-  try {
-    if (thread && typeof thread.getDrafts === 'function') {
-      const drafts = thread.getDrafts();
-      for (const d of drafts) {
-        try {
-          d.deleteDraft();
-        } catch (_) {}
-      }
-    }
-  } catch (eThread) {
-    console.log('[WARN] Falha ao listar rascunhos da thread: ' + eThread.message);
-  }
-
+function removerDraftAntigoSeExistir_(targetDraftId) {
   try {
     const allDrafts = GmailApp.getDrafts();
     for (const d of allDrafts) {
       try {
-        if (d.getId() === targetDraftId || (d.getMessage() && d.getMessage().getThread().getId() === '1a03eb59b2dd3e5f')) {
+        if (d.getId() === targetDraftId) {
           d.deleteDraft();
+          return true;
         }
       } catch (_) {}
     }
   } catch (eAll) {
     console.log('[WARN] Falha ao verificar lista global de rascunhos: ' + eAll.message);
   }
+  return false;
 }
 
 function processarDocumentosERascunhos_() {
@@ -5110,7 +5122,7 @@ function processarDocumentosERascunhos_() {
     const row = demandasData[i];
     const rowNum = i + 1;
     const reqId = String(row[2] || '').trim();
-    const dataDemanda = row[3];
+    const dataDemanda = row[0]; // Col A: Data demanda; nunca usar competência (Col D)
     const status = String(row[8] || '').trim();
     let pipelineState = String(row[12] || '').trim();
     const nfseStr = String(row[9] || '').trim();
@@ -5134,7 +5146,7 @@ function processarDocumentosERascunhos_() {
         const dSha256 = String(dRow[7] || '').trim();
         const dNfse = String(dRow[3] || '').trim();
 
-        if (dReqId === reqId && dTipo === 'NFSE_XML' && dStatus === 'READY' && dFileId) {
+        if (dReqId === reqId && dTipo === 'NFSE_XML' && dStatus === 'READY' && dFileId && dSha256 && !dFileId.startsWith('OFFICIAL_BYTES_VALIDATED_')) {
           matchingDocs.push({
             requestId: dReqId,
             itemIndex: String(dRow[1] || '1').trim(),
@@ -5178,29 +5190,8 @@ function processarDocumentosERascunhos_() {
 
     for (const doc of matchingDocs) {
       try {
-        let file = null;
-        let blob = null;
-
-        if (doc.driveFileId && !doc.driveFileId.startsWith('OFFICIAL_BYTES_VALIDATED_')) {
-          try {
-            file = DriveApp.getFileById(doc.driveFileId);
-            blob = file.getBlob();
-          } catch (_) {}
-        }
-
-        if (!blob) {
-          const folder = DriveApp.getFolderById(SYSTEM.CND_DRIVE_FOLDER_ID);
-          const expectedName = 'NFSE-' + doc.nfseNumero + '-DEXMED-' + (doc.codigoVerificacao || 'JGKL748V') + '-OFFICIAL.xml';
-          const existingFiles = folder.getFilesByName(expectedName);
-          if (existingFiles.hasNext()) {
-            file = existingFiles.next();
-            blob = file.getBlob();
-          }
-        }
-
-        if (!blob) {
-          throw new Error('Arquivo XML oficial nao encontrado no Drive.');
-        }
+        const file = DriveApp.getFileById(doc.driveFileId);
+        const blob = file.getBlob();
 
         const calculatedSha = calcularSha256Blob_(blob);
         if (doc.sha256 && calculatedSha.toLowerCase() !== doc.sha256.toLowerCase()) {
@@ -5263,7 +5254,7 @@ function processarDocumentosERascunhos_() {
         const thread = (typeof msg.getThread === 'function') ? msg.getThread() : null;
 
         // Remove draft antigo (r1600249466030562964 / drafts da thread) imediatamente antes da criação do novo
-        removerDraftAntigoSeExistir_('r1600249466030562964', thread);
+        removerDraftAntigoSeExistir_('r1600249466030562964');
 
         const linhasNotas = matchingDocs.map(d => {
           let codVerif = 'JGKL748V';

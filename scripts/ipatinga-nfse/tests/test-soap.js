@@ -18,6 +18,9 @@ const largeInnerXml = `<ConsultarNfseFaixaResposta>${'<CompNfse><Nfse/></CompNfs
 const largeEscaped = largeInnerXml.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 const largeEnvelope = `<Envelope><Body><ConsultarNfseFaixaResponse><outputXML>${largeEscaped}</outputXML></ConsultarNfseFaixaResponse></Body></Envelope>`;
 assert.strictEqual(extractSoapOutput(largeEnvelope, 'ConsultarNfseFaixa'), largeInnerXml);
+const spacedInnerXml = `\n  ${abrXml}\n`;
+const spacedEnvelope = `<Envelope><Body><ConsultarNfseFaixaResponse><outputXML>${spacedInnerXml.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')}</outputXML></ConsultarNfseFaixaResponse></Body></Envelope>`;
+assert.strictEqual(extractSoapOutput(spacedEnvelope, 'ConsultarNfseFaixa'), spacedInnerXml, 'bytes lógicos do outputXML não podem ser trimados');
 
 function transportFor({ status = 200, body = okEnvelope, error = null, timeout = false, checkOptions = null }) {
   return {
@@ -65,6 +68,8 @@ async function run() {
   });
   const res = await invoke(transportSuccess);
   assert.strictEqual(res.statusCode, 200);
+  assert.ok(Buffer.isBuffer(res.outputXmlBytes));
+  assert.strictEqual(res.outputXmlBytes.toString('utf8'), abrXml);
   assert.strictEqual(tlsChecked, true);
 
   // 2. Erros de transporte e validação

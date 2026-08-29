@@ -94,7 +94,8 @@ async function runDocumentsTests() {
       soapCalls.push(args);
       return {
         statusCode: 200,
-        outputXml: sampleOfficialXml
+        outputXml: sampleOfficialXml,
+        outputXmlBytes: Buffer.from(sampleOfficialXml, 'utf8')
       };
     },
     uploadDriveBuffer: async (buffer, fileName, mimeType, folderId) => {
@@ -168,6 +169,40 @@ async function runDocumentsTests() {
   assert.strictEqual(appendedRow[6], 'drive_doc_official_18_id');
   assert.strictEqual(appendedRow[7], expectedSha256);
   assert.strictEqual(appendedRow[8], 'READY');
+
+  // Falha de upload deve ser fail-closed: status ERROR, sem ID sintético e sem READY.
+  sheetAppends = [];
+  let recoveryArtifacts = [];
+  const failingUploadDependencies = {
+    ...dependencies,
+    persistOfficialRecoveryArtifact: async (artifact) => {
+      recoveryArtifacts.push(artifact);
+      return { xmlPath: '/private/artifact.xml', metadataPath: '/private/artifact.xml.json' };
+    },
+    uploadDriveBuffer: async () => {
+      throw new Error('storage quota exceeded');
+    }
+  };
+  await assert.rejects(
+    fetchOfficialNfseDocument({
+      requestId: '1a03eb59b2dd3e5f',
+      itemIndex: 1,
+      environment: 'production',
+      certData: mockCertData
+    }, failingUploadDependencies),
+    /DRIVE_UPLOAD_FAILED/
+  );
+  assert.strictEqual(sheetAppends.length, 1);
+  const errorRow = sheetAppends[0].values[0];
+  assert.strictEqual(errorRow[6], '');
+  assert.strictEqual(errorRow[8], 'ERROR');
+  assert.ok(errorRow[10].includes('DRIVE_UPLOAD_FAILED'));
+  assert.ok(errorRow[10].includes('RECOVERY_ARTIFACT_AVAILABLE'));
+  assert.ok(!errorRow.join('|').includes('OFFICIAL_BYTES_VALIDATED_'));
+  assert.strictEqual(recoveryArtifacts.length, 1);
+  assert.strictEqual(recoveryArtifacts[0].fileName, 'NFSE-18-DEXMED-JGKL748V-OFFICIAL.xml');
+  assert.strictEqual(recoveryArtifacts[0].buffer.toString('utf8'), sampleOfficialXml);
+  assert.strictEqual(recoveryArtifacts[0].metadata.sha256, expectedSha256);
 
   console.log('✓ test-documents.js PASSED');
 }

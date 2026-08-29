@@ -1,12 +1,26 @@
 'use strict';
 
 const crypto = require('crypto');
+const fs = require('fs');
+const path = require('path');
 const { CONFIG } = require('./config');
 const { readSheetValues, appendSheetValues, updateSheetValues, getSpreadsheetMetadata, createSheetIfNotExists, uploadDriveBuffer } = require('./google');
 const { ensureLedgerSheet, loadLedger, findLedgerEntry } = require('./ledger');
 const { buildCabecalho, parseConsultarNfseResposta } = require('./abrasf');
 const { callSoapOperation } = require('./soap');
 const { buildConsultarNfsePorRpsEnvio } = require('./issue');
+
+function persistOfficialRecoveryArtifact({ buffer, fileName, metadata }) {
+  if (process.env.GITHUB_ACTIONS !== 'true') return null;
+
+  const outputDir = path.join(__dirname, 'report', 'official-documents');
+  fs.mkdirSync(outputDir, { recursive: true });
+  const xmlPath = path.join(outputDir, fileName);
+  const metadataPath = path.join(outputDir, `${fileName}.json`);
+  fs.writeFileSync(xmlPath, buffer, { mode: 0o600 });
+  fs.writeFileSync(metadataPath, JSON.stringify(metadata, null, 2) + '\n', { mode: 0o600 });
+  return { xmlPath, metadataPath };
+}
 
 /**
  * Garante a existência da aba Documentos na planilha com o cabeçalho correto.
@@ -15,10 +29,9 @@ async function ensureDocumentosSheet(dependencies = {}) {
   const spreadsheetId = dependencies.spreadsheetId || CONFIG.SHEETS.SPREADSHEET_ID;
   const tabName = CONFIG.SHEETS.TABS.DOCUMENTOS || 'Documentos';
   const meta = await (dependencies.getSpreadsheetMetadata || getSpreadsheetMetadata)(spreadsheetId);
-  const exists = (meta.sheets || []).some(s => {
-    const title = (s.properties?.title || '').toLowerCase();
-    return title === tabName.toLowerCase() || title === 'documentos' || title === 'documentos nfs-e';
-  });
+  const exists = (meta.sheets || []).some(s =>
+    (s.properties?.title || '').toLowerCase() === tabName.toLowerCase()
+  );
 
   if (!exists) {
     await (dependencies.createSheetIfNotExists || createSheetIfNotExists)(spreadsheetId, tabName);
@@ -37,7 +50,6 @@ async function fetchOfficialNfseDocument({
   requestId,
   itemIndex = 1,
   environment = 'production',
-  fromNumber = null,
   certData = null,
   dryRun = false
 }, dependencies = {}) {
@@ -57,12 +69,46 @@ async function fetchOfficialNfseDocument({
   const ledgerEntries = await (dependencies.loadLedger || loadLedger)(dependencies);
   const ledgerEntry = findLedgerEntry(ledgerEntries, { environment, requestId, itemIndex });
 
-  const targetRpsNum = ledgerEntry ? ledgerEntry.rps_numero : (fromNumber || null);
-  const targetRpsSer = ledgerEntry ? ledgerEntry.rps_serie : 'A';
-  const targetRpsTip = ledgerEntry ? ledgerEntry.rps_tipo : '1';
-
-  if (!targetRpsNum) {
+  if (!ledgerEntry || !ledgerEntry.rps_numero) {
     throw new Error(`RPS_NOT_FOUND_FOR_DEMAND: Nenhum RPS resolvido no Ledger para request_id=${requestId}, item_index=${itemIndex}`);
+  }
+
+  const targetRpsNum = ledgerEntry.rps_numero;
+  const targetRpsSer = ledgerEntry.rps_serie;
+  const targetRpsTip = ledgerEntry.rps_tipo;
+
+  // A chave request_id + item_index + tipo torna tanto a planilha quanto o
+  // artefato idempotentes. Um documento READY nunca é consultado ou enviado
+  // novamente por uma repetição do mesmo workflow.
+  if (!dryRun) {
+    await ensureDocumentosSheet(dependencies);
+    const existingRows = await read(spreadsheetId, `${tabName}!A:K`);
+    for (let idx = 1; idx < (existingRows || []).length; idx++) {
+      const row = existingRows[idx];
+      if (
+        String(row[0] || '').trim() === String(requestId).trim() &&
+        String(row[1] || '1').trim() === String(itemIndex).trim() &&
+        String(row[4] || '').trim() === 'NFSE_XML' &&
+        String(row[8] || '').trim() === 'READY' &&
+        String(row[6] || '').trim() &&
+        !String(row[6]).startsWith('OFFICIAL_BYTES_VALIDATED_')
+      ) {
+        return {
+          success: true,
+          status: 'ALREADY_READY',
+          operation: 'fetch_document',
+          environment,
+          requestId,
+          itemIndex,
+          rpsNumero: String(row[2] || targetRpsNum),
+          nfseNumero: String(row[3] || ''),
+          driveFileId: String(row[6]),
+          sha256: String(row[7] || ''),
+          source: 'CONSULTAR_NFSE_POR_RPS',
+          idempotentReplay: true
+        };
+      }
+    }
   }
 
   // 2. Chamada estrita e exclusiva a ConsultarNfsePorRps
@@ -81,16 +127,19 @@ async function fetchOfficialNfseDocument({
     certData
   });
 
-  if (!queryRes || !queryRes.outputXml) {
+  if (!queryRes || (!queryRes.outputXml && !queryRes.outputXmlBytes)) {
     throw new Error('CONSULTAR_NFSE_POR_RPS_EMPTY_RESPONSE: Provedor retornou resposta vazia.');
   }
 
   // 3. Salvar os BYTES OFICIAIS sem parse->rebuild
-  const rawOfficialBytes = Buffer.from(queryRes.outputXml, 'utf8');
+  const rawOfficialBytes = Buffer.isBuffer(queryRes.outputXmlBytes)
+    ? Buffer.from(queryRes.outputXmlBytes)
+    : Buffer.from(queryRes.outputXml, 'utf8');
+  const officialXml = rawOfficialBytes.toString('utf8');
   const sha256 = crypto.createHash('sha256').update(rawOfficialBytes).digest('hex');
 
   // 4. Parse da resposta apenas para extração de metadados e validação
-  const parsed = parseConsultarNfseResposta(queryRes.outputXml);
+  const parsed = parseConsultarNfseResposta(officialXml);
   if (!parsed.notas || parsed.notas.length === 0) {
     const errorMsg = (parsed.mensagens && parsed.mensagens.map(m => `[${m.codigo}] ${m.mensagem}`).join('; ')) || 'NFS-e não encontrada na resposta do provedor';
     throw new Error(`OFFICIAL_NFSE_NOT_FOUND: ${errorMsg}`);
@@ -128,17 +177,56 @@ async function fetchOfficialNfseDocument({
   // 5. Upload do buffer oficial para o Drive
   const upload = dependencies.uploadDriveBuffer || uploadDriveBuffer;
   const folderId = CONFIG.DRIVE.FOLDER_ID || '16Dw9pUbpv_ViCP6a2MAgUbW1h37t3859';
-  let driveFileId = '';
+  let driveFileId;
   try {
     const driveFile = await upload(rawOfficialBytes, fileName, 'application/xml', folderId);
-    driveFileId = driveFile ? driveFile.id : '';
+    driveFileId = driveFile && driveFile.id;
+    if (!driveFileId) throw new Error('DRIVE_UPLOAD_MISSING_FILE_ID');
   } catch (driveErr) {
-    console.log('[WARN] Falha no upload direto via Service Account (storage quota): ' + driveErr.message);
-    driveFileId = 'OFFICIAL_BYTES_VALIDATED_' + sha256.slice(0, 12);
+    const errorText = `DRIVE_UPLOAD_FAILED: ${String(driveErr.message || driveErr).slice(0, 300)}`;
+    let recoveryArtifact = null;
+    try {
+      recoveryArtifact = await (dependencies.persistOfficialRecoveryArtifact || persistOfficialRecoveryArtifact)({
+        buffer: rawOfficialBytes,
+        fileName,
+        metadata: {
+          request_id: String(requestId),
+          item_index: String(itemIndex),
+          rps_numero: String(targetRpsNum),
+          nfse_numero: String(nfseNumero),
+          codigo_verificacao: String(codigoVerificacao),
+          source: 'CONSULTAR_NFSE_POR_RPS',
+          sha256
+        }
+      });
+    } catch (artifactErr) {
+      console.log('[WARN] Falha ao preservar artefato documental de recuperação: ' + artifactErr.message);
+    }
+    const docRowsOnError = await read(spreadsheetId, `${tabName}!A:K`);
+    let errorRowIndex = -1;
+    for (let idx = 1; idx < (docRowsOnError || []).length; idx++) {
+      const row = docRowsOnError[idx];
+      if (String(row[0] || '').trim() === String(requestId).trim() &&
+          String(row[1] || '1').trim() === String(itemIndex).trim() &&
+          String(row[4] || '').trim() === 'NFSE_XML') {
+        errorRowIndex = idx + 1;
+        break;
+      }
+    }
+    const errorRow = [
+      requestId, String(itemIndex), String(targetRpsNum), String(nfseNumero),
+      'NFSE_XML', 'CONSULTAR_NFSE_POR_RPS', '', sha256, 'ERROR',
+      new Date().toISOString(), errorText + (recoveryArtifact ? ' | RECOVERY_ARTIFACT_AVAILABLE' : '')
+    ];
+    if (errorRowIndex > 0) {
+      await (dependencies.updateSheetValues || updateSheetValues)(spreadsheetId, `${tabName}!A${errorRowIndex}:K${errorRowIndex}`, [errorRow]);
+    } else {
+      await (dependencies.appendSheetValues || appendSheetValues)(spreadsheetId, `${tabName}!A:K`, [errorRow]);
+    }
+    throw new Error(errorText);
   }
 
   // 6. Persistência idempotente na aba Documentos
-  await ensureDocumentosSheet(dependencies);
   const docRows = await read(spreadsheetId, `${tabName}!A:K`);
   let existingRowIndex = -1;
 
@@ -221,5 +309,6 @@ async function fetchOfficialNfseDocument({
 
 module.exports = {
   ensureDocumentosSheet,
-  fetchOfficialNfseDocument
+  fetchOfficialNfseDocument,
+  persistOfficialRecoveryArtifact
 };

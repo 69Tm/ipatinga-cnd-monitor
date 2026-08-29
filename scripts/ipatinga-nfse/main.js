@@ -293,7 +293,6 @@ async function main() {
         requestId,
         itemIndex,
         environment,
-        fromNumber,
         certData,
         dryRun
       });
