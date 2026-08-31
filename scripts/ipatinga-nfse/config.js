@@ -58,6 +58,10 @@ const CONFIG = Object.freeze({
     FILE_ID: process.env.NFE_CERT_DRIVE_FILE_ID || '14TajJJtjSurR2tuYakbdW4dCHPHkqulb',
     LOCAL_PATH: process.env.NFE_CERT_LOCAL_PATH || ''
   },
+  CALLBACK: {
+    URL: process.env.NFSE_DOCUMENT_CALLBACK_URL || '',
+    SECRET: process.env.NFSE_DOCUMENT_CALLBACK_SECRET || ''
+  },
   SYNC: {
     BATCH_SIZE: Number(process.env.NFE_SYNC_BATCH_SIZE || 50),
     OVERLAP: Number(process.env.NFE_SYNC_OVERLAP || 10),
@@ -85,6 +89,7 @@ function sanitize(input) {
   const secretsToRedact = [
     process.env.NFE_CERT_PASSWORD,
     process.env.GOOGLE_SERVICE_ACCOUNT_JSON,
+    process.env.NFSE_DOCUMENT_CALLBACK_SECRET,
     process.env.GEMINI_KEY,
     process.env.BARK_KEY,
     process.env.SMTP_PASSWORD,

@@ -3,6 +3,9 @@
 const crypto = require('crypto');
 const fs = require('fs');
 const path = require('path');
+const https = require('https');
+const http = require('http');
+const { URL } = require('url');
 const { CONFIG } = require('./config');
 const { readSheetValues, appendSheetValues, updateSheetValues, getSpreadsheetMetadata, createSheetIfNotExists, uploadDriveBuffer } = require('./google');
 const { ensureLedgerSheet, loadLedger, findLedgerEntry } = require('./ledger');
@@ -20,6 +23,129 @@ function persistOfficialRecoveryArtifact({ buffer, fileName, metadata }) {
   fs.writeFileSync(xmlPath, buffer, { mode: 0o600 });
   fs.writeFileSync(metadataPath, JSON.stringify(metadata, null, 2) + '\n', { mode: 0o600 });
   return { xmlPath, metadataPath };
+}
+
+/**
+ * Envia requisição HTTP POST seguindo redirects (necessário para Apps Script 302 echo)
+ */
+function httpRequestWithRedirects(targetUrl, options, postData, maxRedirects = 5) {
+  return new Promise((resolve, reject) => {
+    if (maxRedirects < 0) {
+      return reject(new Error('TOO_MANY_REDIRECTS: Limite de redirecionamentos excedido.'));
+    }
+
+    const urlObj = new URL(targetUrl);
+    const client = urlObj.protocol === 'https:' ? https : http;
+    const reqOptions = {
+      protocol: urlObj.protocol,
+      hostname: urlObj.hostname,
+      port: urlObj.port || (urlObj.protocol === 'https:' ? 443 : 80),
+      path: urlObj.pathname + urlObj.search,
+      method: options.method || 'POST',
+      headers: {
+        ...options.headers,
+        ...(options.method === 'POST' ? { 'Content-Length': Buffer.byteLength(postData) } : {})
+      }
+    };
+
+    const req = client.request(reqOptions, (res) => {
+      // Se for redirect 301, 302, 303, 307, 308
+      if ([301, 302, 303, 307, 308].includes(res.statusCode) && res.headers.location) {
+        const redirectUrl = new URL(res.headers.location, targetUrl).toString();
+        // Para 302/303 do Google Apps Script, o redirect para echo deve ser GET sem postData
+        return resolve(httpRequestWithRedirects(redirectUrl, { method: 'GET', headers: {} }, '', maxRedirects - 1));
+      }
+
+      let data = '';
+      res.on('data', chunk => data += chunk);
+      res.on('end', () => {
+        resolve({
+          statusCode: res.statusCode,
+          headers: res.headers,
+          data
+        });
+      });
+    });
+
+    req.on('error', reject);
+    if (options.method === 'POST' && postData) {
+      req.write(postData);
+    }
+    req.end();
+  });
+}
+
+/**
+ * Envia callback autenticado por HMAC-SHA256 para o Apps Script
+ */
+async function sendOfficialDocumentCallback({
+  callbackUrl,
+  callbackSecret,
+  requestId,
+  itemIndex,
+  rpsNumero,
+  nfseNumero,
+  codigoVerificacao,
+  rawOfficialBytes,
+  sha256,
+  fileName
+}, dependencies = {}) {
+  if (!callbackUrl || !callbackSecret) {
+    throw new Error('CALLBACK_CONFIG_MISSING: callbackUrl ou callbackSecret não fornecido.');
+  }
+
+  const timestamp = Date.now().toString();
+  const nonce = crypto.randomUUID ? crypto.randomUUID() : crypto.randomBytes(16).toString('hex');
+  const xmlBase64 = rawOfficialBytes.toString('base64');
+
+  const payload = {
+    action: 'nfse_document_callback',
+    request_id: String(requestId),
+    item_index: String(itemIndex),
+    rps_numero: String(rpsNumero),
+    nfse_numero: String(nfseNumero),
+    codigo_verificacao: String(codigoVerificacao),
+    tipo: 'NFSE_XML',
+    source: 'CONSULTAR_NFSE_POR_RPS',
+    sha256: String(sha256),
+    file_name: fileName,
+    xml_base64: xmlBase64,
+    timestamp,
+    nonce
+  };
+
+  const initialBodyStr = JSON.stringify(payload);
+  const bodySha256 = crypto.createHash('sha256').update(initialBodyStr, 'utf8').digest('hex');
+  payload.body_sha256 = bodySha256;
+
+  const canonicalString = `${timestamp}\n${nonce}\n${bodySha256}`;
+  const signature = crypto.createHmac('sha256', callbackSecret).update(canonicalString, 'utf8').digest('hex');
+  payload.signature = signature;
+
+  const postData = JSON.stringify(payload);
+  const headers = {
+    'Content-Type': 'application/json',
+    'X-NFSE-Timestamp': timestamp,
+    'X-NFSE-Nonce': nonce,
+    'X-NFSE-Signature': signature
+  };
+
+  if (dependencies.httpPost) {
+    return await dependencies.httpPost({ url: callbackUrl, headers, postData, payload });
+  }
+
+  const httpRes = await httpRequestWithRedirects(callbackUrl, { method: 'POST', headers }, postData);
+  let resBody;
+  try {
+    resBody = JSON.parse(httpRes.data);
+  } catch (err) {
+    throw new Error(`CALLBACK_HTTP_RESPONSE_NOT_JSON (Status ${httpRes.statusCode}): ${httpRes.data.slice(0, 200)}`);
+  }
+
+  return {
+    statusCode: httpRes.statusCode,
+    body: resBody
+  };
 }
 
 /**
@@ -44,7 +170,7 @@ async function ensureDocumentosSheet(dependencies = {}) {
 
 /**
  * Busca documento NFS-e oficial via ConsultarNfsePorRps exclusivamente,
- * preserva os bytes oficiais recebidos, calcula SHA-256 e armazena no Drive e Sheets.
+ * preserva os bytes oficiais recebidos, calcula SHA-256 e armazena no Drive e Sheets via Callback Autenticado.
  */
 async function fetchOfficialNfseDocument({
   requestId,
@@ -77,9 +203,7 @@ async function fetchOfficialNfseDocument({
   const targetRpsSer = ledgerEntry.rps_serie;
   const targetRpsTip = ledgerEntry.rps_tipo;
 
-  // A chave request_id + item_index + tipo torna tanto a planilha quanto o
-  // artefato idempotentes. Um documento READY nunca é consultado ou enviado
-  // novamente por uma repetição do mesmo workflow.
+  // Idempotência estrita: se já estiver READY com ID válido, não reprocessa
   if (!dryRun) {
     await ensureDocumentosSheet(dependencies);
     const existingRows = await read(spreadsheetId, `${tabName}!A:K`);
@@ -174,117 +298,198 @@ async function fetchOfficialNfseDocument({
     };
   }
 
-  // 5. Upload do buffer oficial para o Drive
-  const upload = dependencies.uploadDriveBuffer || uploadDriveBuffer;
-  const folderId = CONFIG.DRIVE.FOLDER_ID || '16Dw9pUbpv_ViCP6a2MAgUbW1h37t3859';
-  let driveFileId;
-  try {
-    const driveFile = await upload(rawOfficialBytes, fileName, 'application/xml', folderId);
-    driveFileId = driveFile && driveFile.id;
-    if (!driveFileId) throw new Error('DRIVE_UPLOAD_MISSING_FILE_ID');
-  } catch (driveErr) {
-    const errorText = `DRIVE_UPLOAD_FAILED: ${String(driveErr.message || driveErr).slice(0, 300)}`;
-    let recoveryArtifact = null;
+  // 5. Armazenamento do Documento Oficial
+  // Prioridade: Callback Autenticado Apps Script -> DriveApp (User Quota)
+  const callbackUrl = dependencies.callbackUrl || process.env.NFSE_DOCUMENT_CALLBACK_URL || CONFIG.CALLBACK?.URL;
+  const callbackSecret = dependencies.callbackSecret || process.env.NFSE_DOCUMENT_CALLBACK_SECRET || CONFIG.CALLBACK?.SECRET;
+
+  let driveFileId = '';
+  let callbackResult = null;
+
+  if (callbackUrl && callbackSecret) {
     try {
-      recoveryArtifact = await (dependencies.persistOfficialRecoveryArtifact || persistOfficialRecoveryArtifact)({
-        buffer: rawOfficialBytes,
-        fileName,
-        metadata: {
-          request_id: String(requestId),
-          item_index: String(itemIndex),
-          rps_numero: String(targetRpsNum),
-          nfse_numero: String(nfseNumero),
-          codigo_verificacao: String(codigoVerificacao),
-          source: 'CONSULTAR_NFSE_POR_RPS',
-          sha256
+      const cbRes = await (dependencies.sendOfficialDocumentCallback || sendOfficialDocumentCallback)({
+        callbackUrl,
+        callbackSecret,
+        requestId,
+        itemIndex,
+        rpsNumero: targetRpsNum,
+        nfseNumero,
+        codigoVerificacao,
+        rawOfficialBytes,
+        sha256,
+        fileName
+      }, dependencies);
+
+      if (!cbRes || !cbRes.body || !cbRes.body.ok || cbRes.body.status !== 'READY' || !cbRes.body.drive_file_id) {
+        const errMsg = (cbRes && cbRes.body && cbRes.body.error) || `CALLBACK_INVALID_RESPONSE: Status ${cbRes?.statusCode}`;
+        throw new Error(errMsg);
+      }
+
+      if (cbRes.body.sha256 && cbRes.body.sha256.toLowerCase() !== sha256.toLowerCase()) {
+        throw new Error(`SHA_CALLBACK_MISMATCH: Provedor ${sha256} != Callback ${cbRes.body.sha256}`);
+      }
+
+      driveFileId = cbRes.body.drive_file_id;
+      callbackResult = cbRes.body;
+    } catch (cbErr) {
+      const errorText = `DRIVE_CALLBACK_FAILED: ${String(cbErr.message || cbErr).slice(0, 300)}`;
+      let recoveryArtifact = null;
+      try {
+        recoveryArtifact = await (dependencies.persistOfficialRecoveryArtifact || persistOfficialRecoveryArtifact)({
+          buffer: rawOfficialBytes,
+          fileName,
+          metadata: {
+            request_id: String(requestId),
+            item_index: String(itemIndex),
+            rps_numero: String(targetRpsNum),
+            nfse_numero: String(nfseNumero),
+            codigo_verificacao: String(codigoVerificacao),
+            source: 'CONSULTAR_NFSE_POR_RPS',
+            sha256
+          }
+        });
+      } catch (artifactErr) {
+        console.log('[WARN] Falha ao preservar artefato documental de recuperação: ' + artifactErr.message);
+      }
+
+      const docRowsOnError = await read(spreadsheetId, `${tabName}!A:K`);
+      let errorRowIndex = -1;
+      for (let idx = 1; idx < (docRowsOnError || []).length; idx++) {
+        const row = docRowsOnError[idx];
+        if (String(row[0] || '').trim() === String(requestId).trim() &&
+            String(row[1] || '1').trim() === String(itemIndex).trim() &&
+            String(row[4] || '').trim() === 'NFSE_XML') {
+          errorRowIndex = idx + 1;
+          break;
         }
-      });
-    } catch (artifactErr) {
-      console.log('[WARN] Falha ao preservar artefato documental de recuperação: ' + artifactErr.message);
-    }
-    const docRowsOnError = await read(spreadsheetId, `${tabName}!A:K`);
-    let errorRowIndex = -1;
-    for (let idx = 1; idx < (docRowsOnError || []).length; idx++) {
-      const row = docRowsOnError[idx];
-      if (String(row[0] || '').trim() === String(requestId).trim() &&
-          String(row[1] || '1').trim() === String(itemIndex).trim() &&
-          String(row[4] || '').trim() === 'NFSE_XML') {
-        errorRowIndex = idx + 1;
-        break;
       }
-    }
-    const errorRow = [
-      requestId, String(itemIndex), String(targetRpsNum), String(nfseNumero),
-      'NFSE_XML', 'CONSULTAR_NFSE_POR_RPS', '', sha256, 'ERROR',
-      new Date().toISOString(), errorText + (recoveryArtifact ? ' | RECOVERY_ARTIFACT_AVAILABLE' : '')
-    ];
-    if (errorRowIndex > 0) {
-      await (dependencies.updateSheetValues || updateSheetValues)(spreadsheetId, `${tabName}!A${errorRowIndex}:K${errorRowIndex}`, [errorRow]);
-    } else {
-      await (dependencies.appendSheetValues || appendSheetValues)(spreadsheetId, `${tabName}!A:K`, [errorRow]);
-    }
-    throw new Error(errorText);
-  }
-
-  // 6. Persistência idempotente na aba Documentos
-  const docRows = await read(spreadsheetId, `${tabName}!A:K`);
-  let existingRowIndex = -1;
-
-  if (docRows && docRows.length > 1) {
-    for (let idx = 1; idx < docRows.length; idx++) {
-      const r = docRows[idx];
-      const rReqId = String(r[0] || '').trim();
-      const rItemIdx = String(r[1] || '1').trim();
-      const rTipo = String(r[4] || '').trim();
-      if (rReqId === String(requestId).trim() && rItemIdx === String(itemIndex).trim() && rTipo === 'NFSE_XML') {
-        existingRowIndex = idx + 1; // 1-based row index
-        break;
+      const errorRow = [
+        requestId, String(itemIndex), String(targetRpsNum), String(nfseNumero),
+        'NFSE_XML', 'CONSULTAR_NFSE_POR_RPS', '', sha256, 'ERROR',
+        new Date().toISOString(), errorText + (recoveryArtifact ? ' | RECOVERY_ARTIFACT_AVAILABLE' : '')
+      ];
+      if (errorRowIndex > 0) {
+        await (dependencies.updateSheetValues || updateSheetValues)(spreadsheetId, `${tabName}!A${errorRowIndex}:K${errorRowIndex}`, [errorRow]);
+      } else {
+        await (dependencies.appendSheetValues || appendSheetValues)(spreadsheetId, `${tabName}!A:K`, [errorRow]);
       }
+      throw new Error(errorText);
     }
-  }
-
-  const nowIso = new Date().toISOString();
-  const docDataRow = [
-    requestId,
-    String(itemIndex),
-    String(targetRpsNum),
-    String(nfseNumero),
-    'NFSE_XML',
-    'CONSULTAR_NFSE_POR_RPS',
-    driveFileId,
-    sha256,
-    'READY',
-    nowIso,
-    ''
-  ];
-
-  if (existingRowIndex > 0) {
-    const update = dependencies.updateSheetValues || updateSheetValues;
-    await update(spreadsheetId, `${tabName}!A${existingRowIndex}:K${existingRowIndex}`, [docDataRow]);
   } else {
-    const append = dependencies.appendSheetValues || appendSheetValues;
-    await append(spreadsheetId, `${tabName}!A:K`, [docDataRow]);
+    // Fallback apenas para uploadDriveBuffer direto caso não haja callback configurado
+    const upload = dependencies.uploadDriveBuffer || uploadDriveBuffer;
+    const folderId = CONFIG.DRIVE.FOLDER_ID || '16Dw9pUbpv_ViCP6a2MAgUbW1h37t3859';
+    try {
+      const driveFile = await upload(rawOfficialBytes, fileName, 'application/xml', folderId);
+      driveFileId = driveFile && driveFile.id;
+      if (!driveFileId) throw new Error('DRIVE_UPLOAD_MISSING_FILE_ID');
+    } catch (driveErr) {
+      const errorText = `DRIVE_UPLOAD_FAILED: ${String(driveErr.message || driveErr).slice(0, 300)}`;
+      let recoveryArtifact = null;
+      try {
+        recoveryArtifact = await (dependencies.persistOfficialRecoveryArtifact || persistOfficialRecoveryArtifact)({
+          buffer: rawOfficialBytes,
+          fileName,
+          metadata: {
+            request_id: String(requestId),
+            item_index: String(itemIndex),
+            rps_numero: String(targetRpsNum),
+            nfse_numero: String(nfseNumero),
+            codigo_verificacao: String(codigoVerificacao),
+            source: 'CONSULTAR_NFSE_POR_RPS',
+            sha256
+          }
+        });
+      } catch (artifactErr) {
+        console.log('[WARN] Falha ao preservar artefato documental de recuperação: ' + artifactErr.message);
+      }
+      const docRowsOnError = await read(spreadsheetId, `${tabName}!A:K`);
+      let errorRowIndex = -1;
+      for (let idx = 1; idx < (docRowsOnError || []).length; idx++) {
+        const row = docRowsOnError[idx];
+        if (String(row[0] || '').trim() === String(requestId).trim() &&
+            String(row[1] || '1').trim() === String(itemIndex).trim() &&
+            String(row[4] || '').trim() === 'NFSE_XML') {
+          errorRowIndex = idx + 1;
+          break;
+        }
+      }
+      const errorRow = [
+        requestId, String(itemIndex), String(targetRpsNum), String(nfseNumero),
+        'NFSE_XML', 'CONSULTAR_NFSE_POR_RPS', '', sha256, 'ERROR',
+        new Date().toISOString(), errorText + (recoveryArtifact ? ' | RECOVERY_ARTIFACT_AVAILABLE' : '')
+      ];
+      if (errorRowIndex > 0) {
+        await (dependencies.updateSheetValues || updateSheetValues)(spreadsheetId, `${tabName}!A${errorRowIndex}:K${errorRowIndex}`, [errorRow]);
+      } else {
+        await (dependencies.appendSheetValues || appendSheetValues)(spreadsheetId, `${tabName}!A:K`, [errorRow]);
+      }
+      throw new Error(errorText);
+    }
   }
 
-  // 7. Atualizar Demandas se encontrada
-  try {
-    const demandasRows = await read(spreadsheetId, `${CONFIG.SHEETS.TABS.DEMANDAS}!A:O`);
-    if (demandasRows && demandasRows.length > 1) {
-      for (let dIdx = 1; dIdx < demandasRows.length; dIdx++) {
-        const dRow = demandasRows[dIdx];
-        if (String(dRow[2] || '').trim() === String(requestId).trim()) {
-          const dRowIndex = dIdx + 1;
-          const update = dependencies.updateSheetValues || updateSheetValues;
-          // Col M (13) = DOCUMENTS_READY, Col N (14) = Timestamp
-          await update(spreadsheetId, `${CONFIG.SHEETS.TABS.DEMANDAS}!M${dRowIndex}:N${dRowIndex}`, [
-            ['DOCUMENTS_READY', nowIso]
-          ]);
+  // 6. Se o callback já gravou na aba Documentos e Demandas, apenas confirma;
+  // Caso contrário, persiste diretamente na planilha
+  if (!callbackResult) {
+    const docRows = await read(spreadsheetId, `${tabName}!A:K`);
+    let existingRowIndex = -1;
+
+    if (docRows && docRows.length > 1) {
+      for (let idx = 1; idx < docRows.length; idx++) {
+        const r = docRows[idx];
+        const rReqId = String(r[0] || '').trim();
+        const rItemIdx = String(r[1] || '1').trim();
+        const rTipo = String(r[4] || '').trim();
+        if (rReqId === String(requestId).trim() && rItemIdx === String(itemIndex).trim() && rTipo === 'NFSE_XML') {
+          existingRowIndex = idx + 1; // 1-based row index
           break;
         }
       }
     }
-  } catch (eDem) {
-    console.log('[WARN] Falha ao atualizar estado na aba Demandas: ' + eDem.message);
+
+    const nowIso = new Date().toISOString();
+    const docDataRow = [
+      requestId,
+      String(itemIndex),
+      String(targetRpsNum),
+      String(nfseNumero),
+      'NFSE_XML',
+      'CONSULTAR_NFSE_POR_RPS',
+      driveFileId,
+      sha256,
+      'READY',
+      nowIso,
+      ''
+    ];
+
+    if (existingRowIndex > 0) {
+      const update = dependencies.updateSheetValues || updateSheetValues;
+      await update(spreadsheetId, `${tabName}!A${existingRowIndex}:K${existingRowIndex}`, [docDataRow]);
+    } else {
+      const append = dependencies.appendSheetValues || appendSheetValues;
+      await append(spreadsheetId, `${tabName}!A:K`, [docDataRow]);
+    }
+
+    // 7. Atualizar Demandas se encontrada
+    try {
+      const demandasRows = await read(spreadsheetId, `${CONFIG.SHEETS.TABS.DEMANDAS}!A:O`);
+      if (demandasRows && demandasRows.length > 1) {
+        for (let dIdx = 1; dIdx < demandasRows.length; dIdx++) {
+          const dRow = demandasRows[dIdx];
+          if (String(dRow[2] || '').trim() === String(requestId).trim()) {
+            const dRowIndex = dIdx + 1;
+            const update = dependencies.updateSheetValues || updateSheetValues;
+            await update(spreadsheetId, `${CONFIG.SHEETS.TABS.DEMANDAS}!M${dRowIndex}:N${dRowIndex}`, [
+              ['DOCUMENTS_READY', nowIso]
+            ]);
+            break;
+          }
+        }
+      }
+    } catch (eDem) {
+      console.log('[WARN] Falha ao atualizar estado na aba Demandas: ' + eDem.message);
+    }
   }
 
   return {
@@ -303,12 +508,14 @@ async function fetchOfficialNfseDocument({
     sha256,
     source: 'CONSULTAR_NFSE_POR_RPS',
     fileName,
-    bufferSize: rawOfficialBytes.length
+    bufferSize: rawOfficialBytes.length,
+    callbackExecuted: !!callbackResult
   };
 }
 
 module.exports = {
   ensureDocumentosSheet,
   fetchOfficialNfseDocument,
+  sendOfficialDocumentCallback,
   persistOfficialRecoveryArtifact
 };

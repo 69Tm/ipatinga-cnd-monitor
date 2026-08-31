@@ -2,7 +2,7 @@
 
 const assert = require('assert');
 const crypto = require('crypto');
-const { fetchOfficialNfseDocument, ensureDocumentosSheet } = require('../documents');
+const { fetchOfficialNfseDocument, ensureDocumentosSheet, sendOfficialDocumentCallback } = require('../documents');
 
 console.log('Running test-documents.js...');
 
@@ -56,7 +56,8 @@ async function runDocumentsTests() {
   </CompNfse>
 </ConsultarNfseRpsResposta>`;
 
-  const expectedSha256 = crypto.createHash('sha256').update(Buffer.from(sampleOfficialXml, 'utf8')).digest('hex');
+  const rawOfficialBytes = Buffer.from(sampleOfficialXml, 'utf8');
+  const expectedSha256 = crypto.createHash('sha256').update(rawOfficialBytes).digest('hex');
 
   // Mocks
   let soapCalls = [];
@@ -95,7 +96,7 @@ async function runDocumentsTests() {
       return {
         statusCode: 200,
         outputXml: sampleOfficialXml,
-        outputXmlBytes: Buffer.from(sampleOfficialXml, 'utf8')
+        outputXmlBytes: rawOfficialBytes
       };
     },
     uploadDriveBuffer: async (buffer, fileName, mimeType, folderId) => {
@@ -124,85 +125,179 @@ async function runDocumentsTests() {
     pemKey: '---KEY---'
   };
 
-  // 1. Executa fetchOfficialNfseDocument
-  const res = await fetchOfficialNfseDocument({
+  const testCallbackSecret = 'test_secret_1234567890abcdef1234567890abcdef';
+  const testCallbackUrl = 'https://script.google.com/macros/s/TEST_DEPLOYMENT_ID/exec';
+
+  // 1. Teste de Callback HMAC Válido
+  let callbackInvocations = [];
+  const validCallbackDependencies = {
+    ...dependencies,
+    callbackUrl: testCallbackUrl,
+    callbackSecret: testCallbackSecret,
+    sendOfficialDocumentCallback: async (args) => {
+      callbackInvocations.push(args);
+      return {
+        statusCode: 200,
+        body: {
+          ok: true,
+          request_id: args.requestId,
+          item_index: args.itemIndex,
+          drive_file_id: 'drive_file_via_callback_real_id',
+          sha256: args.sha256,
+          status: 'READY',
+          idempotent: false
+        }
+      };
+    }
+  };
+
+  const resCallback = await fetchOfficialNfseDocument({
     requestId: '1a03eb59b2dd3e5f',
     itemIndex: 1,
     environment: 'production',
     certData: mockCertData
-  }, dependencies);
+  }, validCallbackDependencies);
 
-  // Validações
-  assert.strictEqual(res.success, true);
-  assert.strictEqual(res.status, 'SUCCESS');
-  assert.strictEqual(res.operation, 'fetch_document');
-  assert.strictEqual(res.environment, 'production');
-  assert.strictEqual(res.requestId, '1a03eb59b2dd3e5f');
-  assert.strictEqual(res.itemIndex, 1);
-  assert.strictEqual(res.rpsNumero, '103');
-  assert.strictEqual(res.nfseNumero, '18');
-  assert.strictEqual(res.codigoVerificacao, 'JGKL748V');
-  assert.strictEqual(res.driveFileId, 'drive_doc_official_18_id');
-  assert.strictEqual(res.sha256, expectedSha256);
-  assert.strictEqual(res.source, 'CONSULTAR_NFSE_POR_RPS');
-  assert.strictEqual(res.fileName, 'NFSE-18-DEXMED-JGKL748V-OFFICIAL.xml');
+  assert.strictEqual(resCallback.success, true);
+  assert.strictEqual(resCallback.status, 'SUCCESS');
+  assert.strictEqual(resCallback.driveFileId, 'drive_file_via_callback_real_id');
+  assert.strictEqual(resCallback.sha256, expectedSha256);
+  assert.strictEqual(resCallback.callbackExecuted, true);
+  assert.strictEqual(callbackInvocations.length, 1);
+  assert.strictEqual(callbackInvocations[0].requestId, '1a03eb59b2dd3e5f');
+  assert.strictEqual(callbackInvocations[0].rpsNumero, '103');
+  assert.strictEqual(callbackInvocations[0].nfseNumero, '18');
+  assert.strictEqual(callbackInvocations[0].codigoVerificacao, 'JGKL748V');
+  assert.strictEqual(callbackInvocations[0].sha256, expectedSha256);
+  console.log('✓ Callback HMAC válido executado com sucesso');
 
-  // Valida que apenas ConsultarNfsePorRps foi chamada
-  assert.strictEqual(soapCalls.length, 1);
-  assert.strictEqual(soapCalls[0].operation, 'ConsultarNfsePorRps');
-  assert.ok(soapCalls[0].dadosMsg.includes('<Numero>103</Numero>'));
+  // 2. Teste de Assinatura HMAC e Payload Envelope
+  let capturedPost = null;
+  await sendOfficialDocumentCallback({
+    callbackUrl: testCallbackUrl,
+    callbackSecret: testCallbackSecret,
+    requestId: '1a03eb59b2dd3e5f',
+    itemIndex: 1,
+    rpsNumero: '103',
+    nfseNumero: '18',
+    codigoVerificacao: 'JGKL748V',
+    rawOfficialBytes,
+    sha256: expectedSha256,
+    fileName: 'NFSE-18-DEXMED-JGKL748V-OFFICIAL.xml'
+  }, {
+    httpPost: async (args) => {
+      capturedPost = args;
+      return { statusCode: 200, body: { ok: true, status: 'READY', drive_file_id: 'real_id', sha256: expectedSha256 } };
+    }
+  });
 
-  // Valida upload no Drive
-  assert.strictEqual(driveUploads.length, 1);
-  assert.strictEqual(driveUploads[0].fileName, 'NFSE-18-DEXMED-JGKL748V-OFFICIAL.xml');
-  assert.strictEqual(driveUploads[0].buffer.toString('utf8'), sampleOfficialXml);
+  assert.ok(capturedPost);
+  assert.strictEqual(capturedPost.payload.action, 'nfse_document_callback');
+  assert.strictEqual(capturedPost.payload.tipo, 'NFSE_XML');
+  assert.strictEqual(capturedPost.payload.source, 'CONSULTAR_NFSE_POR_RPS');
+  assert.strictEqual(capturedPost.payload.sha256, expectedSha256);
+  assert.ok(capturedPost.headers['X-NFSE-Signature']);
+  assert.ok(capturedPost.headers['X-NFSE-Timestamp']);
+  assert.ok(capturedPost.headers['X-NFSE-Nonce']);
+  console.log('✓ Headers e envelope HMAC gerados corretamente');
 
-  // Valida append na aba Documentos
-  assert.strictEqual(sheetAppends.length, 1);
-  const appendedRow = sheetAppends[0].values[0];
-  assert.strictEqual(appendedRow[0], '1a03eb59b2dd3e5f');
-  assert.strictEqual(appendedRow[1], '1');
-  assert.strictEqual(appendedRow[2], '103');
-  assert.strictEqual(appendedRow[3], '18');
-  assert.strictEqual(appendedRow[4], 'NFSE_XML');
-  assert.strictEqual(appendedRow[5], 'CONSULTAR_NFSE_POR_RPS');
-  assert.strictEqual(appendedRow[6], 'drive_doc_official_18_id');
-  assert.strictEqual(appendedRow[7], expectedSha256);
-  assert.strictEqual(appendedRow[8], 'READY');
-
-  // Falha de upload deve ser fail-closed: status ERROR, sem ID sintético e sem READY.
-  sheetAppends = [];
+  // 3. Teste de Falha: Callback retorna erro lógico -> Workflow fail-closed
   let recoveryArtifacts = [];
-  const failingUploadDependencies = {
+  const failingCallbackDependencies = {
     ...dependencies,
+    callbackUrl: testCallbackUrl,
+    callbackSecret: testCallbackSecret,
     persistOfficialRecoveryArtifact: async (artifact) => {
       recoveryArtifacts.push(artifact);
-      return { xmlPath: '/private/artifact.xml', metadataPath: '/private/artifact.xml.json' };
+      return { xmlPath: '/tmp/art.xml', metadataPath: '/tmp/art.json' };
     },
-    uploadDriveBuffer: async () => {
-      throw new Error('storage quota exceeded');
+    sendOfficialDocumentCallback: async () => {
+      return {
+        statusCode: 400,
+        body: { ok: false, error: 'INVALID_HMAC_SIGNATURE' }
+      };
     }
   };
+
+  sheetAppends = [];
   await assert.rejects(
     fetchOfficialNfseDocument({
       requestId: '1a03eb59b2dd3e5f',
       itemIndex: 1,
       environment: 'production',
       certData: mockCertData
-    }, failingUploadDependencies),
-    /DRIVE_UPLOAD_FAILED/
+    }, failingCallbackDependencies),
+    /INVALID_HMAC_SIGNATURE/
   );
   assert.strictEqual(sheetAppends.length, 1);
   const errorRow = sheetAppends[0].values[0];
   assert.strictEqual(errorRow[6], '');
   assert.strictEqual(errorRow[8], 'ERROR');
-  assert.ok(errorRow[10].includes('DRIVE_UPLOAD_FAILED'));
-  assert.ok(errorRow[10].includes('RECOVERY_ARTIFACT_AVAILABLE'));
-  assert.ok(!errorRow.join('|').includes('OFFICIAL_BYTES_VALIDATED_'));
+  assert.ok(errorRow[10].includes('INVALID_HMAC_SIGNATURE'));
   assert.strictEqual(recoveryArtifacts.length, 1);
-  assert.strictEqual(recoveryArtifacts[0].fileName, 'NFSE-18-DEXMED-JGKL748V-OFFICIAL.xml');
-  assert.strictEqual(recoveryArtifacts[0].buffer.toString('utf8'), sampleOfficialXml);
-  assert.strictEqual(recoveryArtifacts[0].metadata.sha256, expectedSha256);
+  console.log('✓ Falha de callback gera status ERROR e preserva artefato fail-closed');
+
+  // 4. Teste de Divergência de SHA no retorno do Callback -> Workflow fail-closed
+  const mismatchShaDependencies = {
+    ...dependencies,
+    callbackUrl: testCallbackUrl,
+    callbackSecret: testCallbackSecret,
+    sendOfficialDocumentCallback: async (args) => {
+      return {
+        statusCode: 200,
+        body: {
+          ok: true,
+          status: 'READY',
+          drive_file_id: 'corrupted_file_id',
+          sha256: '0000000000000000000000000000000000000000000000000000000000000000'
+        }
+      };
+    }
+  };
+
+  await assert.rejects(
+    fetchOfficialNfseDocument({
+      requestId: '1a03eb59b2dd3e5f',
+      itemIndex: 1,
+      environment: 'production',
+      certData: mockCertData
+    }, mismatchShaDependencies),
+    /SHA_CALLBACK_MISMATCH/
+  );
+  console.log('✓ Divergência de SHA no callback bloqueada com fail-closed');
+
+  // 5. Teste de Idempotência: Se já estiver READY, retorna sem chamar SOAP ou callback
+  let soapCallsReplay = 0;
+  const replayDependencies = {
+    ...dependencies,
+    callbackUrl: testCallbackUrl,
+    callbackSecret: testCallbackSecret,
+    callSoapOperation: async () => {
+      soapCallsReplay++;
+      return { statusCode: 200, outputXml: sampleOfficialXml, outputXmlBytes: rawOfficialBytes };
+    },
+    readSheetValues: async (ssId, range) => {
+      if (range.startsWith('Documentos')) {
+        return [
+          ['request_id', 'item_index', 'rps_numero', 'nfse_numero', 'tipo', 'source', 'drive_file_id', 'sha256', 'status'],
+          ['1a03eb59b2dd3e5f', '1', '103', '18', 'NFSE_XML', 'CONSULTAR_NFSE_POR_RPS', 'existing_drive_id_18', expectedSha256, 'READY']
+        ];
+      }
+      return [];
+    }
+  };
+
+  const replayRes = await fetchOfficialNfseDocument({
+    requestId: '1a03eb59b2dd3e5f',
+    itemIndex: 1,
+    environment: 'production',
+    certData: mockCertData
+  }, replayDependencies);
+
+  assert.strictEqual(replayRes.status, 'ALREADY_READY');
+  assert.strictEqual(replayRes.driveFileId, 'existing_drive_id_18');
+  assert.strictEqual(soapCallsReplay, 0, 'Não deve fazer chamada SOAP se já estiver READY');
+  console.log('✓ Idempotência validada: documento READY não realiza novas chamadas');
 
   console.log('✓ test-documents.js PASSED');
 }

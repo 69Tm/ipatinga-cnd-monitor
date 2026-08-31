@@ -492,6 +492,299 @@ const EMBEDDED_INDEX_HTML_BASE64 = [
  * WEB APP
  ***************************************************************/
 
+
+function bytesToHex_(bytes) {
+  let hex = '';
+  for (let i = 0; i < bytes.length; i++) {
+    let byteVal = bytes[i];
+    if (byteVal < 0) byteVal += 256;
+    let byteHex = byteVal.toString(16);
+    if (byteHex.length === 1) byteHex = '0' + byteHex;
+    hex += byteHex;
+  }
+  return hex.toLowerCase();
+}
+
+function calcularSha256String_(str) {
+  const bytes = Utilities.computeDigest(Utilities.DigestAlgorithm.SHA_256, String(str || ''), Utilities.Charset.UTF_8);
+  return bytesToHex_(bytes);
+}
+
+function calcularSha256Bytes_(bytes) {
+  const digest = Utilities.computeDigest(Utilities.DigestAlgorithm.SHA_256, bytes);
+  return bytesToHex_(digest);
+}
+
+function constantTimeEquals_(a, b) {
+  if (typeof a !== 'string' || typeof b !== 'string') return false;
+  if (a.length !== b.length) return false;
+  let result = 0;
+  for (let i = 0; i < a.length; i++) {
+    result |= a.charCodeAt(i) ^ b.charCodeAt(i);
+  }
+  return result === 0;
+}
+
+function doPost(e) {
+  try {
+    const rawContent = (e && e.postData && e.postData.contents) ? String(e.postData.contents) : '';
+    if (!rawContent) {
+      return ContentService.createTextOutput(JSON.stringify({ ok: false, error: 'EMPTY_POST_BODY' }))
+        .setMimeType(ContentService.MimeType.JSON);
+    }
+
+    let payload;
+    try {
+      payload = JSON.parse(rawContent);
+    } catch (parseErr) {
+      return ContentService.createTextOutput(JSON.stringify({ ok: false, error: 'INVALID_JSON_BODY: ' + parseErr.message }))
+        .setMimeType(ContentService.MimeType.JSON);
+    }
+
+    const action = payload.action || (e && e.parameter && e.parameter.action);
+    if (action === 'nfse_document_callback') {
+      const result = processarCallbackDocumentoNfse_(e, payload, rawContent);
+      return ContentService.createTextOutput(JSON.stringify(result, null, 2))
+        .setMimeType(ContentService.MimeType.JSON);
+    }
+
+    return ContentService.createTextOutput(JSON.stringify({ ok: false, error: 'UNAUTHORIZED_ACTION: ' + action }))
+      .setMimeType(ContentService.MimeType.JSON);
+  } catch (globalErr) {
+    console.log('[ERROR] doPost exception: ' + globalErr.message);
+    return ContentService.createTextOutput(JSON.stringify({ ok: false, error: globalErr.message, stack: globalErr.stack }))
+      .setMimeType(ContentService.MimeType.JSON);
+  }
+}
+
+function processarCallbackDocumentoNfse_(e, payload, rawContent) {
+  // 1. Obter Secret
+  const secret = String(PropertiesService.getScriptProperties().getProperty(SYSTEM.NFSE_CALLBACK_SECRET_PROPERTY) || '').trim();
+  if (!secret) {
+    throw new Error('CALLBACK_SECRET_NOT_CONFIGURED: NFSE_DOCUMENT_CALLBACK_SECRET ausente nas Script Properties.');
+  }
+
+  // 2. Extrair cabeçalhos e autenticação HMAC
+  const headers = (e && e.headers) ? e.headers : {};
+  const timestamp = String(
+    headers['X-NFSE-Timestamp'] || headers['x-nfse-timestamp'] || payload.timestamp || ''
+  ).trim();
+  const nonce = String(
+    headers['X-NFSE-Nonce'] || headers['x-nfse-nonce'] || payload.nonce || ''
+  ).trim();
+  const signature = String(
+    headers['X-NFSE-Signature'] || headers['x-nfse-signature'] || payload.signature || ''
+  ).trim();
+
+  if (!timestamp || !nonce || !signature) {
+    throw new Error('MISSING_HMAC_AUTH_FIELDS: timestamp, nonce ou signature ausentes.');
+  }
+
+  // 3. Validação de Timestamp (tolerância de 5 min)
+  const reqTimeMs = Number(timestamp);
+  const nowMs = Date.now();
+  if (isNaN(reqTimeMs) || Math.abs(nowMs - reqTimeMs) > 300000) {
+    throw new Error('TIMESTAMP_EXPIRED_OR_OUT_OF_BOUNDS: timestamp fora da janela de 5 minutos.');
+  }
+
+  // 4. Proteção contra Replay de Nonce
+  const cache = CacheService.getScriptCache();
+  const cacheKey = 'NFSE_NONCE_' + nonce;
+  if (cache.get(cacheKey)) {
+    throw new Error('NONCE_REPLAY_DETECTED: nonce já consumido.');
+  }
+  cache.put(cacheKey, '1', 600); // 10 min
+
+  // 5. Validação de Assinatura HMAC-SHA256
+  // Canonical String: timestamp + "\n" + nonce + "\n" + sha256(rawContent)
+  const computedBodySha = calcularSha256String_(rawContent);
+  if (payload.body_sha256 && !constantTimeEquals_(computedBodySha, String(payload.body_sha256).toLowerCase())) {
+    throw new Error('BODY_SHA256_MISMATCH: payload body_sha256 divergente do corpo recebido.');
+  }
+
+  const canonicalString = timestamp + '\n' + nonce + '\n' + computedBodySha;
+  const hmacBytes = Utilities.computeHmacSha256Signature(canonicalString, secret);
+  const computedSignature = bytesToHex_(hmacBytes);
+
+  if (!constantTimeEquals_(computedSignature, signature.toLowerCase())) {
+    throw new Error('INVALID_HMAC_SIGNATURE: Assinatura HMAC rejeitada.');
+  }
+
+  // 6. Validação de Contrato do Payload
+  const requestId = String(payload.request_id || '').trim();
+  const itemIndex = String(payload.item_index || '1').trim();
+  const rpsNumero = String(payload.rps_numero || '').trim();
+  const nfseNumero = String(payload.nfse_numero || '').trim();
+  const codigoVerificacao = String(payload.codigo_verificacao || '').trim();
+  const tipo = String(payload.tipo || '').trim();
+  const source = String(payload.source || '').trim();
+  const sha256Expected = String(payload.sha256 || '').toLowerCase().trim();
+  const xmlBase64 = String(payload.xml_base64 || '').trim();
+
+  if (!requestId || !rpsNumero || !nfseNumero || !xmlBase64 || !sha256Expected) {
+    throw new Error('INVALID_PAYLOAD: campos obrigatórios ausentes.');
+  }
+  if (tipo !== 'NFSE_XML') {
+    throw new Error('INVALID_DOCUMENT_TYPE: tipo deve ser NFSE_XML.');
+  }
+  if (source !== 'CONSULTAR_NFSE_POR_RPS') {
+    throw new Error('INVALID_DOCUMENT_SOURCE: source deve ser CONSULTAR_NFSE_POR_RPS.');
+  }
+
+  // 7. Decodificação Base64 e validação de SHA
+  const rawBytes = Utilities.base64Decode(xmlBase64);
+  const shaCallback = calcularSha256Bytes_(rawBytes);
+  if (shaCallback !== sha256Expected) {
+    throw new Error('SHA_CALLBACK_MISMATCH: SHA do XML decodificado (' + shaCallback + ') não confere com payload.sha256 (' + sha256Expected + ').');
+  }
+
+  // 8. Validação de Domínio com o Ledger (aba RPS)
+  const ssNfse = abrirPlanilhaNfse_();
+  const sheetRps = ssNfse.getSheetByName('RPS');
+  if (sheetRps) {
+    const rpsData = sheetRps.getDataRange().getValues();
+    let ledgerRpsFound = null;
+    for (let r = 1; r < rpsData.length; r++) {
+      const rowReqId = String(rpsData[r][3] || '').trim(); // Col D: request_id
+      const rowItemIdx = String(rpsData[r][4] || '1').trim(); // Col E: item_index
+      if (rowReqId === requestId && rowItemIdx === itemIndex) {
+        ledgerRpsFound = String(rpsData[r][0] || '').trim(); // Col A: rps_numero
+        break;
+      }
+    }
+    if (ledgerRpsFound && ledgerRpsFound !== rpsNumero) {
+      throw new Error('LEDGER_RPS_MISMATCH: RPS da demanda (' + ledgerRpsFound + ') não confere com payload (' + rpsNumero + ').');
+    }
+  }
+
+  // 9. Pasta de Destino no My Drive (executando como proprietário)
+  const targetFolderId = SYSTEM.CND_DRIVE_FOLDER_ID || '16Dw9pUbpv_ViCP6a2MAgUbW1h37t3859';
+  const folder = DriveApp.getFolderById(targetFolderId);
+  const fileName = 'NFSE-' + nfseNumero + '-DEXMED-' + (codigoVerificacao || 'OFFICIAL') + '-OFFICIAL.xml';
+
+  // 10. Idempotência na aba Documentos e Reconciliação
+  const sheetDocumentos = obterAbaDocumentos_(ssNfse);
+  const docRows = sheetDocumentos.getDataRange().getValues();
+  let existingRowIndex = -1;
+  let existingDriveFileId = '';
+  let existingStatus = '';
+
+  for (let idx = 1; idx < docRows.length; idx++) {
+    const row = docRows[idx];
+    const rReqId = String(row[0] || '').trim();
+    const rItemIdx = String(row[1] || '1').trim();
+    const rTipo = String(row[4] || '').trim();
+    if (rReqId === requestId && rItemIdx === itemIndex && rTipo === 'NFSE_XML') {
+      existingRowIndex = idx + 1; // 1-based index
+      existingDriveFileId = String(row[6] || '').trim();
+      existingStatus = String(row[8] || '').trim();
+      break;
+    }
+  }
+
+  // Se já estava READY com arquivo válido e mesmo SHA:
+  if (existingStatus === 'READY' && existingDriveFileId && !existingDriveFileId.startsWith('OFFICIAL_BYTES_VALIDATED_')) {
+    try {
+      const existingFile = DriveApp.getFileById(existingDriveFileId);
+      const existingBytesSha = calcularSha256Blob_(existingFile.getBlob());
+      if (existingBytesSha === sha256Expected) {
+        return {
+          ok: true,
+          request_id: requestId,
+          item_index: itemIndex,
+          drive_file_id: existingDriveFileId,
+          sha256: existingBytesSha,
+          status: 'READY',
+          idempotent: true
+        };
+      } else {
+        throw new Error('CONFLICT_READY_INCOMPATIBLE: Arquivo existente no Drive possui SHA divergente (' + existingBytesSha + ' != ' + sha256Expected + ').');
+      }
+    } catch (eCheck) {
+      if (eCheck.message && eCheck.message.includes('CONFLICT_READY_INCOMPATIBLE')) throw eCheck;
+      // Arquivo foi excluído ou ID corrompido -> permite recriação
+    }
+  }
+
+  // 11. Gravação / Reutilização de Arquivo no Drive
+  let targetFile = null;
+  const existingFilesByName = folder.getFilesByName(fileName);
+  while (existingFilesByName.hasNext()) {
+    const candidateFile = existingFilesByName.next();
+    try {
+      const candSha = calcularSha256Blob_(candidateFile.getBlob());
+      if (candSha === sha256Expected) {
+        targetFile = candidateFile;
+        break;
+      }
+    } catch (_) {}
+  }
+
+  if (!targetFile) {
+    const xmlBlob = Utilities.newBlob(rawBytes, 'application/xml', fileName);
+    targetFile = folder.createFile(xmlBlob);
+  }
+
+  const driveFileId = targetFile.getId();
+  const shaDrive = calcularSha256Blob_(targetFile.getBlob());
+
+  if (shaDrive !== sha256Expected) {
+    throw new Error('SHA_DRIVE_MISMATCH: SHA relido do Drive (' + shaDrive + ') não confere com esperado (' + sha256Expected + ').');
+  }
+
+  // 12. Atualização idempotente na aba Documentos (reconcilia linha ERROR se houver)
+  const nowIso = new Date().toISOString();
+  const docRecord = [
+    requestId,
+    itemIndex,
+    rpsNumero,
+    nfseNumero,
+    'NFSE_XML',
+    'CONSULTAR_NFSE_POR_RPS',
+    driveFileId,
+    shaDrive,
+    'READY',
+    nowIso,
+    ''
+  ];
+
+  if (existingRowIndex > 0) {
+    sheetDocumentos.getRange(existingRowIndex, 1, 1, 11).setValues([docRecord]);
+  } else {
+    sheetDocumentos.appendRow(docRecord);
+  }
+
+  // 13. Atualizar Demanda para DOCUMENTS_READY
+  const sheetDemandas = ssNfse.getSheetByName('Demandas');
+  if (sheetDemandas) {
+    const demData = sheetDemandas.getDataRange().getValues();
+    for (let d = 1; d < demData.length; d++) {
+      if (String(demData[d][2] || '').trim() === requestId) {
+        sheetDemandas.getRange(d + 1, 13).setValue('DOCUMENTS_READY');
+        sheetDemandas.getRange(d + 1, 14).setValue(nowIso);
+        break;
+      }
+    }
+  }
+
+  // 14. Executar ciclo de Rascunhos oficial no Gmail
+  try {
+    processarDocumentosERascunhos_();
+  } catch (eDraft) {
+    console.log('[WARN] processarDocumentosERascunhos_ ao final do callback: ' + eDraft.message);
+  }
+
+  return {
+    ok: true,
+    request_id: requestId,
+    item_index: itemIndex,
+    drive_file_id: driveFileId,
+    sha256: shaDrive,
+    status: 'READY',
+    idempotent: false
+  };
+}
+
 function doGet(e) {
   inicializarSistema_();
 

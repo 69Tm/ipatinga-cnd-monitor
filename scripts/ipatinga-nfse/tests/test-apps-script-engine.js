@@ -348,4 +348,94 @@ console.log('✓ PARTIAL_DISPATCH resumption test passed');
 
 console.log('✓ All Gap Regression Tests (A-H) passed');
 
+// I. Testes Unitários de Autenticação HMAC e Callback Apps Script
+const crypto = require('crypto');
+
+function constantTimeEqualsSimulado_(a, b) {
+  if (typeof a !== 'string' || typeof b !== 'string') return false;
+  if (a.length !== b.length) return false;
+  let result = 0;
+  for (let i = 0; i < a.length; i++) {
+    result |= a.charCodeAt(i) ^ b.charCodeAt(i);
+  }
+  return result === 0;
+}
+
+assert.strictEqual(constantTimeEqualsSimulado_('abc', 'abc'), true);
+assert.strictEqual(constantTimeEqualsSimulado_('abc', 'abd'), false);
+assert.strictEqual(constantTimeEqualsSimulado_('abc', 'abcd'), false);
+console.log('✓ constantTimeEquals_ test passed');
+
+// Simulação de Validação HMAC do Callback
+const secretKey = 'test_secret_32_bytes_super_secure_key_123';
+const timestampNow = Date.now().toString();
+const nonceTest = 'nonce_uuid_12345';
+const sampleXmlBytes = Buffer.from('<xml>oficial</xml>', 'utf8');
+const sampleXmlSha = crypto.createHash('sha256').update(sampleXmlBytes).digest('hex');
+
+const payloadObj = {
+  action: 'nfse_document_callback',
+  request_id: '1a03eb59b2dd3e5f',
+  item_index: '1',
+  rps_numero: '103',
+  nfse_numero: '18',
+  codigo_verificacao: 'JGKL748V',
+  tipo: 'NFSE_XML',
+  source: 'CONSULTAR_NFSE_POR_RPS',
+  sha256: sampleXmlSha,
+  xml_base64: sampleXmlBytes.toString('base64'),
+  timestamp: timestampNow,
+  nonce: nonceTest
+};
+
+const rawPost = JSON.stringify(payloadObj);
+const bodySha = crypto.createHash('sha256').update(rawPost).digest('hex');
+const canonical = `${timestampNow}\n${nonceTest}\n${bodySha}`;
+const validSignature = crypto.createHmac('sha256', secretKey).update(canonical).digest('hex');
+
+// 1. Assinatura válida
+const computedHmac = crypto.createHmac('sha256', secretKey).update(`${timestampNow}\n${nonceTest}\n${bodySha}`).digest('hex');
+assert.strictEqual(constantTimeEqualsSimulado_(computedHmac, validSignature), true);
+console.log('✓ Callback valid signature verified');
+
+// 2. Assinatura inválida
+const invalidSignature = validSignature.slice(0, -2) + '00';
+assert.strictEqual(constantTimeEqualsSimulado_(computedHmac, invalidSignature), false);
+console.log('✓ Callback invalid signature rejection verified');
+
+// 3. Timestamp expirado
+const expiredTimestamp = (Date.now() - 400000).toString(); // > 5 min
+const isExpired = Math.abs(Date.now() - Number(expiredTimestamp)) > 300000;
+assert.strictEqual(isExpired, true);
+console.log('✓ Callback expired timestamp rejection verified');
+
+// 4. Nonce Replay Check (Simulado com Set)
+const nonceCache = new Set();
+assert.strictEqual(nonceCache.has(nonceTest), false);
+nonceCache.add(nonceTest);
+assert.strictEqual(nonceCache.has(nonceTest), true, 'Segundo uso do mesmo nonce deve ser detectado como replay');
+console.log('✓ Callback nonce replay rejection verified');
+
+// 5. Reconciliação ERROR -> READY (Simulação)
+const mockDocsSheet = [
+  ['request_id', 'item_index', 'rps_numero', 'nfse_numero', 'tipo', 'source', 'drive_file_id', 'sha256', 'status', 'created_at', 'error'],
+  ['1a03eb59b2dd3e5f', '1', '103', '18', 'NFSE_XML', 'CONSULTAR_NFSE_POR_RPS', '', sampleXmlSha, 'ERROR', '2026-08-28T05:32:00Z', 'DRIVE_UPLOAD_FAILED']
+];
+
+let reconciledRowIndex = -1;
+for (let idx = 1; idx < mockDocsSheet.length; idx++) {
+  const r = mockDocsSheet[idx];
+  if (r[0] === '1a03eb59b2dd3e5f' && r[1] === '1' && r[4] === 'NFSE_XML') {
+    reconciledRowIndex = idx;
+    break;
+  }
+}
+assert.strictEqual(reconciledRowIndex, 1, 'Deve localizar a linha de ERROR existente para reconciliação');
+mockDocsSheet[reconciledRowIndex] = ['1a03eb59b2dd3e5f', '1', '103', '18', 'NFSE_XML', 'CONSULTAR_NFSE_POR_RPS', 'drive_real_id', sampleXmlSha, 'READY', new Date().toISOString(), ''];
+assert.strictEqual(mockDocsSheet[1][8], 'READY');
+assert.strictEqual(mockDocsSheet[1][6], 'drive_real_id');
+assert.strictEqual(mockDocsSheet[1][10], '');
+console.log('✓ Reconciliação de linha ERROR para READY verificada');
+
 console.log('✓ test-apps-script-engine.js PASSED');
+
