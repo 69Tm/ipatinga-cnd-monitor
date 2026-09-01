@@ -26,6 +26,41 @@ function persistOfficialRecoveryArtifact({ buffer, fileName, metadata }) {
 }
 
 /**
+ * Constrói a representação canônica determinística para assinatura HMAC
+ */
+function buildCanonicalHmacString({
+  timestamp,
+  nonce,
+  action = 'nfse_document_callback',
+  requestId,
+  itemIndex = 1,
+  rpsNumero,
+  nfseNumero,
+  codigoVerificacao,
+  tipo = 'NFSE_XML',
+  source = 'CONSULTAR_NFSE_POR_RPS',
+  sha256,
+  fileName,
+  xmlBytesSha256
+}) {
+  return [
+    String(timestamp || ''),
+    String(nonce || ''),
+    String(action || 'nfse_document_callback'),
+    String(requestId || ''),
+    String(itemIndex || '1'),
+    String(rpsNumero || ''),
+    String(nfseNumero || ''),
+    String(codigoVerificacao || ''),
+    String(tipo || 'NFSE_XML'),
+    String(source || 'CONSULTAR_NFSE_POR_RPS'),
+    String(sha256 || '').toLowerCase(),
+    String(fileName || ''),
+    String(xmlBytesSha256 || '').toLowerCase()
+  ].join('\n');
+}
+
+/**
  * Envia requisição HTTP POST seguindo redirects (necessário para Apps Script 302 echo)
  */
 function httpRequestWithRedirects(targetUrl, options, postData, maxRedirects = 5) {
@@ -82,13 +117,16 @@ async function sendOfficialDocumentCallback({
   callbackUrl,
   callbackSecret,
   requestId,
-  itemIndex,
+  itemIndex = 1,
   rpsNumero,
   nfseNumero,
   codigoVerificacao,
   rawOfficialBytes,
   sha256,
-  fileName
+  fileName,
+  nfseStatus = 'NORMAL',
+  nfseCanceladaAt = '',
+  codigoCancelamento = ''
 }, dependencies = {}) {
   if (!callbackUrl || !callbackSecret) {
     throw new Error('CALLBACK_CONFIG_MISSING: callbackUrl ou callbackSecret não fornecido.');
@@ -97,6 +135,25 @@ async function sendOfficialDocumentCallback({
   const timestamp = Date.now().toString();
   const nonce = crypto.randomUUID ? crypto.randomUUID() : crypto.randomBytes(16).toString('hex');
   const xmlBase64 = rawOfficialBytes.toString('base64');
+  const xmlBytesSha256 = crypto.createHash('sha256').update(rawOfficialBytes).digest('hex');
+
+  const canonicalString = buildCanonicalHmacString({
+    timestamp,
+    nonce,
+    action: 'nfse_document_callback',
+    requestId,
+    itemIndex,
+    rpsNumero,
+    nfseNumero,
+    codigoVerificacao,
+    tipo: 'NFSE_XML',
+    source: 'CONSULTAR_NFSE_POR_RPS',
+    sha256,
+    fileName,
+    xmlBytesSha256
+  });
+
+  const signature = crypto.createHmac('sha256', callbackSecret).update(canonicalString, 'utf8').digest('hex');
 
   const payload = {
     action: 'nfse_document_callback',
@@ -107,20 +164,16 @@ async function sendOfficialDocumentCallback({
     codigo_verificacao: String(codigoVerificacao),
     tipo: 'NFSE_XML',
     source: 'CONSULTAR_NFSE_POR_RPS',
-    sha256: String(sha256),
+    sha256: String(sha256).toLowerCase(),
     file_name: fileName,
     xml_base64: xmlBase64,
     timestamp,
-    nonce
+    nonce,
+    signature,
+    nfse_status: nfseStatus,
+    nfse_cancelada_at: nfseCanceladaAt || '',
+    codigo_cancelamento: codigoCancelamento || ''
   };
-
-  const initialBodyStr = JSON.stringify(payload);
-  const bodySha256 = crypto.createHash('sha256').update(initialBodyStr, 'utf8').digest('hex');
-  payload.body_sha256 = bodySha256;
-
-  const canonicalString = `${timestamp}\n${nonce}\n${bodySha256}`;
-  const signature = crypto.createHmac('sha256', callbackSecret).update(canonicalString, 'utf8').digest('hex');
-  payload.signature = signature;
 
   const postData = JSON.stringify(payload);
   const headers = {
@@ -131,7 +184,7 @@ async function sendOfficialDocumentCallback({
   };
 
   if (dependencies.httpPost) {
-    return await dependencies.httpPost({ url: callbackUrl, headers, postData, payload });
+    return await dependencies.httpPost({ url: callbackUrl, headers, postData, payload, canonicalString });
   }
 
   const httpRes = await httpRequestWithRedirects(callbackUrl, { method: 'POST', headers }, postData);
@@ -149,11 +202,11 @@ async function sendOfficialDocumentCallback({
 }
 
 /**
- * Garante a existência da aba Documentos na planilha com o cabeçalho correto.
+ * Garante a existência da aba canônica Documentos NFS-e na planilha com o cabeçalho correto.
  */
 async function ensureDocumentosSheet(dependencies = {}) {
   const spreadsheetId = dependencies.spreadsheetId || CONFIG.SHEETS.SPREADSHEET_ID;
-  const tabName = CONFIG.SHEETS.TABS.DOCUMENTOS || 'Documentos';
+  const tabName = CONFIG.SHEETS.TABS.DOCUMENTOS || 'Documentos NFS-e';
   const meta = await (dependencies.getSpreadsheetMetadata || getSpreadsheetMetadata)(spreadsheetId);
   const exists = (meta.sheets || []).some(s =>
     (s.properties?.title || '').toLowerCase() === tabName.toLowerCase()
@@ -188,7 +241,7 @@ async function fetchOfficialNfseDocument({
 
   const spreadsheetId = dependencies.spreadsheetId || CONFIG.SHEETS.SPREADSHEET_ID;
   const read = dependencies.readSheetValues || readSheetValues;
-  const tabName = CONFIG.SHEETS.TABS.DOCUMENTOS || 'Documentos';
+  const tabName = CONFIG.SHEETS.TABS.DOCUMENTOS || 'Documentos NFS-e';
 
   // 1. Resolver RPS pelo ledger usando request_id + item_index
   await (dependencies.ensureLedgerSheet || ensureLedgerSheet)(dependencies);
@@ -203,7 +256,7 @@ async function fetchOfficialNfseDocument({
   const targetRpsSer = ledgerEntry.rps_serie;
   const targetRpsTip = ledgerEntry.rps_tipo;
 
-  // Idempotência estrita: se já estiver READY com ID válido, não reprocessa
+  // Idempotência estrita: se já estiver READY com ID válido e mesmo SHA, não reprocessa
   if (!dryRun) {
     await ensureDocumentosSheet(dependencies);
     const existingRows = await read(spreadsheetId, `${tabName}!A:K`);
@@ -262,7 +315,7 @@ async function fetchOfficialNfseDocument({
   const officialXml = rawOfficialBytes.toString('utf8');
   const sha256 = crypto.createHash('sha256').update(rawOfficialBytes).digest('hex');
 
-  // 4. Parse da resposta apenas para extração de metadados e validação
+  // 4. Parse da resposta para extração de metadados e detecção de cancelamento
   const parsed = parseConsultarNfseResposta(officialXml);
   if (!parsed.notas || parsed.notas.length === 0) {
     const errorMsg = (parsed.mensagens && parsed.mensagens.map(m => `[${m.codigo}] ${m.mensagem}`).join('; ')) || 'NFS-e não encontrada na resposta do provedor';
@@ -272,6 +325,8 @@ async function fetchOfficialNfseDocument({
   const nota = parsed.notas[0];
   const nfseNumero = String(nota.numero || '').trim();
   const codigoVerificacao = String(nota.codigoVerificacao || '').trim();
+  const isCancelled = nota.status === 'CANCELADA' || nota.cancelada === true || !!nota.dataCancelamento;
+  const nfseStatus = isCancelled ? 'CANCELADA' : 'NORMAL';
 
   // Validação estrita dos dados oficiais
   if (!nfseNumero) {
@@ -294,6 +349,8 @@ async function fetchOfficialNfseDocument({
       valorServicos: nota.valorServicos,
       sha256,
       fileName,
+      nfseStatus,
+      isCancelled,
       dryRun: true
     };
   }
@@ -318,7 +375,10 @@ async function fetchOfficialNfseDocument({
         codigoVerificacao,
         rawOfficialBytes,
         sha256,
-        fileName
+        fileName,
+        nfseStatus,
+        nfseCanceladaAt: nota.dataCancelamento || '',
+        codigoCancelamento: nota.codigoCancelamento || ''
       }, dependencies);
 
       if (!cbRes || !cbRes.body || !cbRes.body.ok || cbRes.body.status !== 'READY' || !cbRes.body.drive_file_id) {
@@ -346,7 +406,8 @@ async function fetchOfficialNfseDocument({
             nfse_numero: String(nfseNumero),
             codigo_verificacao: String(codigoVerificacao),
             source: 'CONSULTAR_NFSE_POR_RPS',
-            sha256
+            sha256,
+            nfse_status: nfseStatus
           }
         });
       } catch (artifactErr) {
@@ -398,7 +459,8 @@ async function fetchOfficialNfseDocument({
             nfse_numero: String(nfseNumero),
             codigo_verificacao: String(codigoVerificacao),
             source: 'CONSULTAR_NFSE_POR_RPS',
-            sha256
+            sha256,
+            nfse_status: nfseStatus
           }
         });
       } catch (artifactErr) {
@@ -429,8 +491,7 @@ async function fetchOfficialNfseDocument({
     }
   }
 
-  // 6. Se o callback já gravou na aba Documentos e Demandas, apenas confirma;
-  // Caso contrário, persiste diretamente na planilha
+  // 6. Atualização local de planilhas se callback não foi executado remotamente
   if (!callbackResult) {
     const docRows = await read(spreadsheetId, `${tabName}!A:K`);
     let existingRowIndex = -1;
@@ -442,7 +503,7 @@ async function fetchOfficialNfseDocument({
         const rItemIdx = String(r[1] || '1').trim();
         const rTipo = String(r[4] || '').trim();
         if (rReqId === String(requestId).trim() && rItemIdx === String(itemIndex).trim() && rTipo === 'NFSE_XML') {
-          existingRowIndex = idx + 1; // 1-based row index
+          existingRowIndex = idx + 1;
           break;
         }
       }
@@ -471,18 +532,26 @@ async function fetchOfficialNfseDocument({
       await append(spreadsheetId, `${tabName}!A:K`, [docDataRow]);
     }
 
-    // 7. Atualizar Demandas se encontrada
+    // 7. Atualizar Demandas conforme status fiscal da nota
+    const pipelineTargetState = isCancelled ? 'BLOCKED_CANCELLED_NFSE' : 'DOCUMENTS_READY';
     try {
       const demandasRows = await read(spreadsheetId, `${CONFIG.SHEETS.TABS.DEMANDAS}!A:O`);
       if (demandasRows && demandasRows.length > 1) {
+        const headerRow = demandasRows[0];
+        let pipelineColIdx = headerRow.findIndex(h => String(h).toLowerCase().includes('pipeline') || String(h).toLowerCase().includes('estado'));
+        let updatedColIdx = headerRow.findIndex(h => String(h).toLowerCase().includes('atualiza') || String(h).toLowerCase().includes('updated'));
+        if (pipelineColIdx < 0) pipelineColIdx = 12; // Col M (0-indexed 12)
+        if (updatedColIdx < 0) updatedColIdx = 13; // Col N (0-indexed 13)
+
         for (let dIdx = 1; dIdx < demandasRows.length; dIdx++) {
           const dRow = demandasRows[dIdx];
           if (String(dRow[2] || '').trim() === String(requestId).trim()) {
             const dRowIndex = dIdx + 1;
             const update = dependencies.updateSheetValues || updateSheetValues;
-            await update(spreadsheetId, `${CONFIG.SHEETS.TABS.DEMANDAS}!M${dRowIndex}:N${dRowIndex}`, [
-              ['DOCUMENTS_READY', nowIso]
-            ]);
+            const pColLetter = String.fromCharCode(65 + pipelineColIdx);
+            const uColLetter = String.fromCharCode(65 + updatedColIdx);
+            await update(spreadsheetId, `${CONFIG.SHEETS.TABS.DEMANDAS}!${pColLetter}${dRowIndex}`, [[pipelineTargetState]]);
+            await update(spreadsheetId, `${CONFIG.SHEETS.TABS.DEMANDAS}!${uColLetter}${dRowIndex}`, [[nowIso]]);
             break;
           }
         }
@@ -491,6 +560,8 @@ async function fetchOfficialNfseDocument({
       console.log('[WARN] Falha ao atualizar estado na aba Demandas: ' + eDem.message);
     }
   }
+
+  const pipelineState = isCancelled ? 'BLOCKED_CANCELLED_NFSE' : 'DOCUMENTS_READY';
 
   return {
     success: true,
@@ -509,11 +580,16 @@ async function fetchOfficialNfseDocument({
     source: 'CONSULTAR_NFSE_POR_RPS',
     fileName,
     bufferSize: rawOfficialBytes.length,
+    nfseStatus,
+    isCancelled,
+    pipelineState,
+    draftBlocked: isCancelled,
     callbackExecuted: !!callbackResult
   };
 }
 
 module.exports = {
+  buildCanonicalHmacString,
   ensureDocumentosSheet,
   fetchOfficialNfseDocument,
   sendOfficialDocumentCallback,

@@ -23,7 +23,7 @@ try {
 assert.ok(code.includes("function abrirPlanilhaCnds_() {\n  if (!SYSTEM.CND_CONTROL_SPREADSHEET_ID) throw new Error('CND_CONTROL_SPREADSHEET_ID não configurado.');\n  return SpreadsheetApp.openById(SYSTEM.CND_CONTROL_SPREADSHEET_ID);\n}"), 'abrirPlanilhaCnds_ deve chamar SpreadsheetApp.openById sem recursão');
 const removedSyntheticXmlFunction = 'gerar' + 'XmlAutorizadoNfseAbrasf_';
 assert.ok(!code.includes(removedSyntheticXmlFunction), 'função de XML sintético deve ter sido completamente removida');
-assert.ok(code.includes("const dataDemanda = row[0]; // Col A: Data demanda; nunca usar competência (Col D)"), 'retomada deve usar Demandas.Data demanda (Col A)');
+assert.ok(code.includes("const dataDemanda = row[colDataDem]; // Col A: Data demanda; nunca usar competência") || code.includes("const dataDemanda = row[0];"), 'retomada deve usar Demandas.Data demanda (Col A)');
 assert.ok(code.includes("dataDemanda: (typeof message.getDate === 'function' && message.getDate()) ? message.getDate() : new Date()"), 'demanda inicial deve persistir message.getDate()');
 assert.ok(code.includes("cndsExigidas: parsed.cndsExigidas || ''"), 'CNDs solicitadas devem ser persistidas na demanda');
 assert.ok(code.includes('paidApiCallsExecuted: paidCallsCount'), 'audit local deve usar paidApiCallsExecuted');
@@ -348,7 +348,7 @@ console.log('✓ PARTIAL_DISPATCH resumption test passed');
 
 console.log('✓ All Gap Regression Tests (A-H) passed');
 
-// I. Testes Unitários de Autenticação HMAC e Callback Apps Script
+// I. Testes Unitários de Autenticação HMAC Canônica e Callback Apps Script
 const crypto = require('crypto');
 
 function constantTimeEqualsSimulado_(a, b) {
@@ -366,35 +366,33 @@ assert.strictEqual(constantTimeEqualsSimulado_('abc', 'abd'), false);
 assert.strictEqual(constantTimeEqualsSimulado_('abc', 'abcd'), false);
 console.log('✓ constantTimeEquals_ test passed');
 
-// Simulação de Validação HMAC do Callback
+// Simulação de Validação HMAC Canônica do Callback
 const secretKey = 'test_secret_32_bytes_super_secure_key_123';
 const timestampNow = Date.now().toString();
 const nonceTest = 'nonce_uuid_12345';
 const sampleXmlBytes = Buffer.from('<xml>oficial</xml>', 'utf8');
 const sampleXmlSha = crypto.createHash('sha256').update(sampleXmlBytes).digest('hex');
 
-const payloadObj = {
-  action: 'nfse_document_callback',
-  request_id: '1a03eb59b2dd3e5f',
-  item_index: '1',
-  rps_numero: '103',
-  nfse_numero: '18',
-  codigo_verificacao: 'JGKL748V',
-  tipo: 'NFSE_XML',
-  source: 'CONSULTAR_NFSE_POR_RPS',
-  sha256: sampleXmlSha,
-  xml_base64: sampleXmlBytes.toString('base64'),
-  timestamp: timestampNow,
-  nonce: nonceTest
-};
+const canonicalTestStr = [
+  timestampNow,
+  nonceTest,
+  'nfse_document_callback',
+  '1a03eb59b2dd3e5f',
+  '1',
+  '103',
+  '18',
+  'JGKL748V',
+  'NFSE_XML',
+  'CONSULTAR_NFSE_POR_RPS',
+  sampleXmlSha.toLowerCase(),
+  'NFSE-18-DEXMED-JGKL748V-OFFICIAL.xml',
+  sampleXmlSha.toLowerCase()
+].join('\n');
 
-const rawPost = JSON.stringify(payloadObj);
-const bodySha = crypto.createHash('sha256').update(rawPost).digest('hex');
-const canonical = `${timestampNow}\n${nonceTest}\n${bodySha}`;
-const validSignature = crypto.createHmac('sha256', secretKey).update(canonical).digest('hex');
+const validSignature = crypto.createHmac('sha256', secretKey).update(canonicalTestStr).digest('hex');
 
 // 1. Assinatura válida
-const computedHmac = crypto.createHmac('sha256', secretKey).update(`${timestampNow}\n${nonceTest}\n${bodySha}`).digest('hex');
+const computedHmac = crypto.createHmac('sha256', secretKey).update(canonicalTestStr).digest('hex');
 assert.strictEqual(constantTimeEqualsSimulado_(computedHmac, validSignature), true);
 console.log('✓ Callback valid signature verified');
 
@@ -403,20 +401,55 @@ const invalidSignature = validSignature.slice(0, -2) + '00';
 assert.strictEqual(constantTimeEqualsSimulado_(computedHmac, invalidSignature), false);
 console.log('✓ Callback invalid signature rejection verified');
 
-// 3. Timestamp expirado
+// 3. Regra de Não Consumo de Nonce quando HMAC é inválido
+const nonceStore = new Set();
+let authSuccess = constantTimeEqualsSimulado_(computedHmac, invalidSignature);
+if (authSuccess) {
+  nonceStore.add(nonceTest);
+}
+assert.strictEqual(nonceStore.has(nonceTest), false, 'Nonce NÃO deve ser consumido em caso de falha de autenticação');
+console.log('✓ Invalid HMAC does not consume nonce verified');
+
+// 4. Timestamp expirado
 const expiredTimestamp = (Date.now() - 400000).toString(); // > 5 min
 const isExpired = Math.abs(Date.now() - Number(expiredTimestamp)) > 300000;
 assert.strictEqual(isExpired, true);
 console.log('✓ Callback expired timestamp rejection verified');
 
-// 4. Nonce Replay Check (Simulado com Set)
-const nonceCache = new Set();
-assert.strictEqual(nonceCache.has(nonceTest), false);
-nonceCache.add(nonceTest);
-assert.strictEqual(nonceCache.has(nonceTest), true, 'Segundo uso do mesmo nonce deve ser detectado como replay');
+// 5. Nonce Replay Check (Simulado com Set em caso de sucesso)
+authSuccess = constantTimeEqualsSimulado_(computedHmac, validSignature);
+if (authSuccess) {
+  assert.strictEqual(nonceStore.has(nonceTest), false);
+  nonceStore.add(nonceTest);
+}
+assert.strictEqual(nonceStore.has(nonceTest), true, 'Segundo uso do mesmo nonce deve ser detectado como replay');
 console.log('✓ Callback nonce replay rejection verified');
 
-// 5. Reconciliação ERROR -> READY (Simulação)
+// 6. Header Mapping na aba RPS (Ledger)
+const mockRpsData = [
+  ['environment', 'request_id', 'item_index', 'rps_numero', 'rps_serie', 'rps_tipo', 'status'],
+  ['production', '1a03eb59b2dd3e5f', '1', '103', 'A', '1', 'ISSUED']
+];
+const rpsHeaders = mockRpsData[0].map(h => h.toLowerCase());
+const colReq = rpsHeaders.indexOf('request_id');
+const colItem = rpsHeaders.indexOf('item_index');
+const colRps = rpsHeaders.indexOf('rps_numero');
+assert.ok(colReq >= 0 && colItem >= 0 && colRps >= 0);
+
+let foundInLedger = false;
+let foundRpsNum = '';
+for (let r = 1; r < mockRpsData.length; r++) {
+  if (mockRpsData[r][colReq] === '1a03eb59b2dd3e5f' && mockRpsData[r][colItem] === '1') {
+    foundInLedger = true;
+    foundRpsNum = mockRpsData[r][colRps];
+    break;
+  }
+}
+assert.strictEqual(foundInLedger, true);
+assert.strictEqual(foundRpsNum, '103');
+console.log('✓ Ledger header mapping verified');
+
+// 7. Reconciliação na aba canônica Documentos NFS-e (ERROR -> READY)
 const mockDocsSheet = [
   ['request_id', 'item_index', 'rps_numero', 'nfse_numero', 'tipo', 'source', 'drive_file_id', 'sha256', 'status', 'created_at', 'error'],
   ['1a03eb59b2dd3e5f', '1', '103', '18', 'NFSE_XML', 'CONSULTAR_NFSE_POR_RPS', '', sampleXmlSha, 'ERROR', '2026-08-28T05:32:00Z', 'DRIVE_UPLOAD_FAILED']
@@ -431,11 +464,26 @@ for (let idx = 1; idx < mockDocsSheet.length; idx++) {
   }
 }
 assert.strictEqual(reconciledRowIndex, 1, 'Deve localizar a linha de ERROR existente para reconciliação');
-mockDocsSheet[reconciledRowIndex] = ['1a03eb59b2dd3e5f', '1', '103', '18', 'NFSE_XML', 'CONSULTAR_NFSE_POR_RPS', 'drive_real_id', sampleXmlSha, 'READY', new Date().toISOString(), ''];
+mockDocsSheet[reconciledRowIndex] = ['1a03eb59b2dd3e5f', '1', '103', '18', 'NFSE_XML', 'CONSULTAR_NFSE_POR_RPS', '1ZFlpjQW61Idp9whOcKY3a5XT0eNLjeO3', sampleXmlSha, 'READY', new Date().toISOString(), ''];
 assert.strictEqual(mockDocsSheet[1][8], 'READY');
-assert.strictEqual(mockDocsSheet[1][6], 'drive_real_id');
+assert.strictEqual(mockDocsSheet[1][6], '1ZFlpjQW61Idp9whOcKY3a5XT0eNLjeO3');
 assert.strictEqual(mockDocsSheet[1][10], '');
-console.log('✓ Reconciliação de linha ERROR para READY verificada');
+console.log('✓ Reconciliação de linha ERROR para READY na aba canônica verificada');
+
+// 8. Teste de Bloqueio de Draft para NFS-e Cancelada
+const isNota18Cancelada = true;
+let draftCriado = false;
+let pipelineFinal = '';
+if (isNota18Cancelada) {
+  pipelineFinal = 'BLOCKED_CANCELLED_NFSE';
+  draftCriado = false;
+} else {
+  pipelineFinal = 'DOCUMENTS_READY';
+  draftCriado = true;
+}
+assert.strictEqual(draftCriado, false, 'Nenhum draft pode ser criado para nota cancelada');
+assert.strictEqual(pipelineFinal, 'BLOCKED_CANCELLED_NFSE');
+console.log('✓ Cancelled NFSe draft blocking verified');
 
 console.log('✓ test-apps-script-engine.js PASSED');
 

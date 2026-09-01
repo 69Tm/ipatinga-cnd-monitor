@@ -43,7 +43,7 @@ const CONFIG = Object.freeze({
       TOMADORES: 'Tomadores',
       API: 'API Ipatinga',
       DEMANDAS: 'Demandas',
-      DOCUMENTOS: 'Documentos',
+      DOCUMENTOS: 'Documentos NFS-e',
       RPS: 'RPS'
     }
   },

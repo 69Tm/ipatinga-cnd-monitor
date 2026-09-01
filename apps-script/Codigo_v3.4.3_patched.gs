@@ -564,63 +564,27 @@ function processarCallbackDocumentoNfse_(e, payload, rawContent) {
     throw new Error('CALLBACK_SECRET_NOT_CONFIGURED: NFSE_DOCUMENT_CALLBACK_SECRET ausente nas Script Properties.');
   }
 
-  // 2. Extrair cabeçalhos e autenticação HMAC
-  const headers = (e && e.headers) ? e.headers : {};
-  const timestamp = String(
-    headers['X-NFSE-Timestamp'] || headers['x-nfse-timestamp'] || payload.timestamp || ''
-  ).trim();
-  const nonce = String(
-    headers['X-NFSE-Nonce'] || headers['x-nfse-nonce'] || payload.nonce || ''
-  ).trim();
-  const signature = String(
-    headers['X-NFSE-Signature'] || headers['x-nfse-signature'] || payload.signature || ''
-  ).trim();
-
-  if (!timestamp || !nonce || !signature) {
-    throw new Error('MISSING_HMAC_AUTH_FIELDS: timestamp, nonce ou signature ausentes.');
-  }
-
-  // 3. Validação de Timestamp (tolerância de 5 min)
-  const reqTimeMs = Number(timestamp);
-  const nowMs = Date.now();
-  if (isNaN(reqTimeMs) || Math.abs(nowMs - reqTimeMs) > 300000) {
-    throw new Error('TIMESTAMP_EXPIRED_OR_OUT_OF_BOUNDS: timestamp fora da janela de 5 minutos.');
-  }
-
-  // 4. Proteção contra Replay de Nonce
-  const cache = CacheService.getScriptCache();
-  const cacheKey = 'NFSE_NONCE_' + nonce;
-  if (cache.get(cacheKey)) {
-    throw new Error('NONCE_REPLAY_DETECTED: nonce já consumido.');
-  }
-  cache.put(cacheKey, '1', 600); // 10 min
-
-  // 5. Validação de Assinatura HMAC-SHA256
-  // Canonical String: timestamp + "\n" + nonce + "\n" + sha256(rawContent)
-  const computedBodySha = calcularSha256String_(rawContent);
-  if (payload.body_sha256 && !constantTimeEquals_(computedBodySha, String(payload.body_sha256).toLowerCase())) {
-    throw new Error('BODY_SHA256_MISMATCH: payload body_sha256 divergente do corpo recebido.');
-  }
-
-  const canonicalString = timestamp + '\n' + nonce + '\n' + computedBodySha;
-  const hmacBytes = Utilities.computeHmacSha256Signature(canonicalString, secret);
-  const computedSignature = bytesToHex_(hmacBytes);
-
-  if (!constantTimeEquals_(computedSignature, signature.toLowerCase())) {
-    throw new Error('INVALID_HMAC_SIGNATURE: Assinatura HMAC rejeitada.');
-  }
-
-  // 6. Validação de Contrato do Payload
+  // 2. Extrair parâmetros essenciais do payload
+  const timestamp = String(payload.timestamp || '').trim();
+  const nonce = String(payload.nonce || '').trim();
+  const signature = String(payload.signature || '').trim();
+  const action = String(payload.action || 'nfse_document_callback').trim();
   const requestId = String(payload.request_id || '').trim();
   const itemIndex = String(payload.item_index || '1').trim();
   const rpsNumero = String(payload.rps_numero || '').trim();
   const nfseNumero = String(payload.nfse_numero || '').trim();
   const codigoVerificacao = String(payload.codigo_verificacao || '').trim();
-  const tipo = String(payload.tipo || '').trim();
-  const source = String(payload.source || '').trim();
+  const tipo = String(payload.tipo || 'NFSE_XML').trim();
+  const source = String(payload.source || 'CONSULTAR_NFSE_POR_RPS').trim();
   const sha256Expected = String(payload.sha256 || '').toLowerCase().trim();
+  const fileName = String(payload.file_name || ('NFSE-' + nfseNumero + '-DEXMED-' + (codigoVerificacao || 'OFFICIAL') + '-OFFICIAL.xml')).trim();
   const xmlBase64 = String(payload.xml_base64 || '').trim();
+  const nfseStatusPayload = String(payload.nfse_status || 'NORMAL').toUpperCase().trim();
+  const nfseCanceladaAt = String(payload.nfse_cancelada_at || '').trim();
 
+  if (!timestamp || !nonce || !signature) {
+    throw new Error('MISSING_HMAC_AUTH_FIELDS: timestamp, nonce ou signature ausentes.');
+  }
   if (!requestId || !rpsNumero || !nfseNumero || !xmlBase64 || !sha256Expected) {
     throw new Error('INVALID_PAYLOAD: campos obrigatórios ausentes.');
   }
@@ -631,38 +595,102 @@ function processarCallbackDocumentoNfse_(e, payload, rawContent) {
     throw new Error('INVALID_DOCUMENT_SOURCE: source deve ser CONSULTAR_NFSE_POR_RPS.');
   }
 
-  // 7. Decodificação Base64 e validação de SHA
+  // 3. Decodificação Base64 e validação de SHA do XML
   const rawBytes = Utilities.base64Decode(xmlBase64);
-  const shaCallback = calcularSha256Bytes_(rawBytes);
-  if (shaCallback !== sha256Expected) {
-    throw new Error('SHA_CALLBACK_MISMATCH: SHA do XML decodificado (' + shaCallback + ') não confere com payload.sha256 (' + sha256Expected + ').');
+  const xmlBytesSha = calcularSha256Bytes_(rawBytes);
+  if (xmlBytesSha !== sha256Expected) {
+    throw new Error('SHA_CALLBACK_MISMATCH: SHA do XML decodificado (' + xmlBytesSha + ') não confere com payload.sha256 (' + sha256Expected + ').');
   }
 
-  // 8. Validação de Domínio com o Ledger (aba RPS)
+  // 4. Validação Canônica Estrita de Assinatura HMAC ANTES de consumir nonce
+  const canonicalString = [
+    timestamp,
+    nonce,
+    action,
+    requestId,
+    itemIndex,
+    rpsNumero,
+    nfseNumero,
+    codigoVerificacao,
+    tipo,
+    source,
+    sha256Expected,
+    fileName,
+    xmlBytesSha
+  ].join('\n');
+
+  const hmacBytes = Utilities.computeHmacSha256Signature(canonicalString, secret);
+  const computedSignature = bytesToHex_(hmacBytes);
+
+  if (!constantTimeEquals_(computedSignature, signature.toLowerCase())) {
+    throw new Error('INVALID_HMAC_SIGNATURE: Assinatura HMAC rejeitada.');
+  }
+
+  // 5. Validação de Timestamp (tolerância de 5 min)
+  const reqTimeMs = Number(timestamp);
+  const nowMs = Date.now();
+  if (isNaN(reqTimeMs) || Math.abs(nowMs - reqTimeMs) > 300000) {
+    throw new Error('TIMESTAMP_EXPIRED_OR_OUT_OF_BOUNDS: timestamp fora da janela de 5 minutos.');
+  }
+
+  // 6. Proteção contra Replay de Nonce
+  const cache = CacheService.getScriptCache();
+  const cacheKey = 'NFSE_NONCE_' + nonce;
+  if (cache.get(cacheKey)) {
+    throw new Error('NONCE_REPLAY_DETECTED: nonce já consumido.');
+  }
+  cache.put(cacheKey, '1', 600); // 10 min
+
+  // 7. Validação de Domínio com o Ledger (aba RPS) via Header Mapping
   const ssNfse = abrirPlanilhaNfse_();
   const sheetRps = ssNfse.getSheetByName('RPS');
-  if (sheetRps) {
-    const rpsData = sheetRps.getDataRange().getValues();
-    let ledgerRpsFound = null;
-    for (let r = 1; r < rpsData.length; r++) {
-      const rowReqId = String(rpsData[r][3] || '').trim(); // Col D: request_id
-      const rowItemIdx = String(rpsData[r][4] || '1').trim(); // Col E: item_index
-      if (rowReqId === requestId && rowItemIdx === itemIndex) {
-        ledgerRpsFound = String(rpsData[r][0] || '').trim(); // Col A: rps_numero
-        break;
-      }
-    }
-    if (ledgerRpsFound && ledgerRpsFound !== rpsNumero) {
-      throw new Error('LEDGER_RPS_MISMATCH: RPS da demanda (' + ledgerRpsFound + ') não confere com payload (' + rpsNumero + ').');
+  if (!sheetRps) {
+    throw new Error('LEDGER_RPS_SHEET_MISSING: Aba RPS não encontrada.');
+  }
+
+  const rpsData = sheetRps.getDataRange().getValues();
+  if (rpsData.length < 2) {
+    throw new Error('LEDGER_RPS_EMPTY: Nenhum dado na aba RPS.');
+  }
+
+  const rpsHeaders = rpsData[0].map(h => String(h || '').toLowerCase().trim());
+  const colReqId = rpsHeaders.indexOf('request_id');
+  const colItemIdx = rpsHeaders.indexOf('item_index');
+  const colRpsNum = rpsHeaders.indexOf('rps_numero');
+  const colEnv = rpsHeaders.indexOf('environment');
+
+  if (colReqId < 0 || colRpsNum < 0) {
+    throw new Error('LEDGER_RPS_HEADERS_INVALID: Cabeçalhos obrigatórios ausentes na aba RPS.');
+  }
+
+  let ledgerEntryFound = null;
+  for (let r = 1; r < rpsData.length; r++) {
+    const row = rpsData[r];
+    const rowReqId = String(row[colReqId] || '').trim();
+    const rowItemIdx = colItemIdx >= 0 ? String(row[colItemIdx] || '1').trim() : '1';
+    const rowEnv = colEnv >= 0 ? String(row[colEnv] || '').trim().toLowerCase() : 'production';
+
+    if (rowReqId === requestId && rowItemIdx === itemIndex) {
+      ledgerEntryFound = {
+        rpsNumero: String(row[colRpsNum] || '').trim(),
+        environment: rowEnv
+      };
+      break;
     }
   }
 
-  // 9. Pasta de Destino no My Drive (executando como proprietário)
+  if (!ledgerEntryFound) {
+    throw new Error('LEDGER_ENTRY_NOT_FOUND: Demanda ' + requestId + ' (item ' + itemIndex + ') não encontrada no Ledger RPS.');
+  }
+  if (ledgerEntryFound.rpsNumero !== rpsNumero) {
+    throw new Error('LEDGER_RPS_MISMATCH: RPS no Ledger (' + ledgerEntryFound.rpsNumero + ') diverge do payload (' + rpsNumero + ').');
+  }
+
+  // 8. Pasta de Destino no My Drive (executando como proprietário)
   const targetFolderId = SYSTEM.CND_DRIVE_FOLDER_ID || '16Dw9pUbpv_ViCP6a2MAgUbW1h37t3859';
   const folder = DriveApp.getFolderById(targetFolderId);
-  const fileName = 'NFSE-' + nfseNumero + '-DEXMED-' + (codigoVerificacao || 'OFFICIAL') + '-OFFICIAL.xml';
 
-  // 10. Idempotência na aba Documentos e Reconciliação
+  // 9. Idempotência na aba canônica Documentos NFS-e e Reconciliação
   const sheetDocumentos = obterAbaDocumentos_(ssNfse);
   const docRows = sheetDocumentos.getDataRange().getValues();
   let existingRowIndex = -1;
@@ -695,6 +723,7 @@ function processarCallbackDocumentoNfse_(e, payload, rawContent) {
           drive_file_id: existingDriveFileId,
           sha256: existingBytesSha,
           status: 'READY',
+          nfse_status: nfseStatusPayload,
           idempotent: true
         };
       } else {
@@ -706,7 +735,7 @@ function processarCallbackDocumentoNfse_(e, payload, rawContent) {
     }
   }
 
-  // 11. Gravação / Reutilização de Arquivo no Drive
+  // 10. Gravação / Reutilização de Arquivo no Drive
   let targetFile = null;
   const existingFilesByName = folder.getFilesByName(fileName);
   while (existingFilesByName.hasNext()) {
@@ -732,7 +761,7 @@ function processarCallbackDocumentoNfse_(e, payload, rawContent) {
     throw new Error('SHA_DRIVE_MISMATCH: SHA relido do Drive (' + shaDrive + ') não confere com esperado (' + sha256Expected + ').');
   }
 
-  // 12. Atualização idempotente na aba Documentos (reconcilia linha ERROR se houver)
+  // 11. Atualização idempotente na aba canônica Documentos NFS-e (reconcilia linha ERROR se houver)
   const nowIso = new Date().toISOString();
   const docRecord = [
     requestId,
@@ -754,24 +783,80 @@ function processarCallbackDocumentoNfse_(e, payload, rawContent) {
     sheetDocumentos.appendRow(docRecord);
   }
 
-  // 13. Atualizar Demanda para DOCUMENTS_READY
-  const sheetDemandas = ssNfse.getSheetByName('Demandas');
-  if (sheetDemandas) {
-    const demData = sheetDemandas.getDataRange().getValues();
-    for (let d = 1; d < demData.length; d++) {
-      if (String(demData[d][2] || '').trim() === requestId) {
-        sheetDemandas.getRange(d + 1, 13).setValue('DOCUMENTS_READY');
-        sheetDemandas.getRange(d + 1, 14).setValue(nowIso);
-        break;
+  // 12. Atualização da aba Notas se a NFS-e estiver cancelada
+  const isCancelled = nfseStatusPayload === 'CANCELADA' || Boolean(nfseCanceladaAt);
+  const sheetNotas = ssNfse.getSheetByName('Notas');
+  if (sheetNotas && isCancelled) {
+    const notasData = sheetNotas.getDataRange().getValues();
+    if (notasData.length > 1) {
+      const notasHeaders = notasData[0].map(h => String(h || '').toLowerCase().trim());
+      const colNumNota = notasHeaders.indexOf('número') >= 0 ? notasHeaders.indexOf('número') : 0;
+      const colStatusNota = notasHeaders.indexOf('status') >= 0 ? notasHeaders.indexOf('status') : 7;
+      const colSitApi = notasHeaders.indexOf('situação api') >= 0 ? notasHeaders.indexOf('situação api') : 18;
+      const colSyncApi = notasHeaders.indexOf('última sincronização api') >= 0 ? notasHeaders.indexOf('última sincronização api') : 19;
+      const colObsNota = notasHeaders.indexOf('observações') >= 0 ? notasHeaders.indexOf('observações') : 11;
+
+      for (let n = 1; n < notasData.length; n++) {
+        if (String(notasData[n][colNumNota] || '').trim() === nfseNumero) {
+          const nRow = n + 1;
+          if (colStatusNota >= 0) sheetNotas.getRange(nRow, colStatusNota + 1).setValue('CANCELADA');
+          if (colSitApi >= 0) sheetNotas.getRange(nRow, colSitApi + 1).setValue('Cancelada');
+          if (colSyncApi >= 0) sheetNotas.getRange(nRow, colSyncApi + 1).setValue(nowIso);
+          if (colObsNota >= 0) {
+            const prevObs = String(notasData[n][colObsNota] || '').trim();
+            const cancelAudit = 'Cancelamento confirmado via ConsultarNfsePorRps em ' + (nfseCanceladaAt || nowIso);
+            sheetNotas.getRange(nRow, colObsNota + 1).setValue(prevObs ? (prevObs + ' | ' + cancelAudit) : cancelAudit);
+          }
+          break;
+        }
       }
     }
   }
 
-  // 14. Executar ciclo de Rascunhos oficial no Gmail
+  // 13. Atualizar Demanda via Header Mapping sem sobrescrever Observações
+  const sheetDemandas = ssNfse.getSheetByName('Demandas');
+  const targetPipelineState = isCancelled ? 'BLOCKED_CANCELLED_NFSE' : 'DOCUMENTS_READY';
+  if (sheetDemandas) {
+    const demData = sheetDemandas.getDataRange().getValues();
+    if (demData.length > 1) {
+      const demHeaders = demData[0].map(h => String(h || '').toLowerCase().trim());
+      const colDemReqId = demHeaders.indexOf('id') >= 0 ? demHeaders.indexOf('id') : 2;
+      let colPipeline = demHeaders.findIndex(h => h.includes('pipeline') || h.includes('estado'));
+      let colUpdated = demHeaders.findIndex(h => h.includes('atualiza') || h.includes('updated'));
+      let colErro = demHeaders.findIndex(h => h.includes('erro') || h.includes('pend'));
+
+      if (colPipeline < 0) colPipeline = 12; // Col M
+      if (colUpdated < 0) colUpdated = 13;   // Col N
+      if (colErro < 0) colErro = 14;         // Col O
+
+      for (let d = 1; d < demData.length; d++) {
+        if (String(demData[d][colDemReqId] || '').trim() === requestId) {
+          const dRow = d + 1;
+          sheetDemandas.getRange(dRow, colPipeline + 1).setValue(targetPipelineState);
+          sheetDemandas.getRange(dRow, colUpdated + 1).setValue(nowIso);
+          if (isCancelled && colErro >= 0) {
+            sheetDemandas.getRange(dRow, colErro + 1).setValue('NFSE_CANCELADA_OFICIAL');
+          }
+          break;
+        }
+      }
+    }
+  }
+
+  // 14. Remoção de draft antigo se existir
   try {
-    processarDocumentosERascunhos_();
-  } catch (eDraft) {
-    console.log('[WARN] processarDocumentosERascunhos_ ao final do callback: ' + eDraft.message);
+    removerDraftAntigoSeExistir_('r1600249466030562964');
+  } catch (eDraftClean) {
+    console.log('[WARN] Falha ao remover rascunho antigo: ' + eDraftClean.message);
+  }
+
+  // 15. Se NÃO for cancelada, executa ciclo de Rascunhos oficial no Gmail
+  if (!isCancelled) {
+    try {
+      processarDocumentosERascunhos_();
+    } catch (eDraft) {
+      console.log('[WARN] processarDocumentosERascunhos_ ao final do callback: ' + eDraft.message);
+    }
   }
 
   return {
@@ -781,6 +866,9 @@ function processarCallbackDocumentoNfse_(e, payload, rawContent) {
     drive_file_id: driveFileId,
     sha256: shaDrive,
     status: 'READY',
+    nfse_status: nfseStatusPayload,
+    pipeline_state: targetPipelineState,
+    draft_created: false,
     idempotent: false
   };
 }
@@ -5407,6 +5495,22 @@ function processarDocumentosERascunhos_() {
   const notasData = sheetNotas.getDataRange().getValues();
   const docsData = sheetDocumentos ? sheetDocumentos.getDataRange().getValues() : [];
 
+  if (demandasData.length < 2) return { ok: true, processed: 0 };
+
+  const demHeaders = demandasData[0].map(h => String(h || '').toLowerCase().trim());
+  const colDataDem = demHeaders.indexOf('data demanda') >= 0 ? demHeaders.indexOf('data demanda') : 0;
+  const colReqId = demHeaders.indexOf('id') >= 0 ? demHeaders.indexOf('id') : 2;
+  const colCnds = demHeaders.indexOf('cnds') >= 0 ? demHeaders.indexOf('cnds') : 6;
+  const colStatus = demHeaders.indexOf('status') >= 0 ? demHeaders.indexOf('status') : 8;
+  const colNfse = demHeaders.indexOf('nfs-e') >= 0 ? demHeaders.indexOf('nfs-e') : (demHeaders.indexOf('notas') >= 0 ? demHeaders.indexOf('notas') : 9);
+  let colPipeline = demHeaders.findIndex(h => h.includes('pipeline') || h.includes('estado'));
+  let colUpdated = demHeaders.findIndex(h => h.includes('atualiza') || h.includes('updated'));
+  let colErro = demHeaders.findIndex(h => h.includes('erro') || h.includes('pend'));
+
+  if (colPipeline < 0) colPipeline = 12;
+  if (colUpdated < 0) colUpdated = 13;
+  if (colErro < 0) colErro = 14;
+
   let processedCount = 0;
   let draftsCreated = 0;
   const logs = [];
@@ -5414,20 +5518,42 @@ function processarDocumentosERascunhos_() {
   for (let i = 1; i < demandasData.length; i++) {
     const row = demandasData[i];
     const rowNum = i + 1;
-    const reqId = String(row[2] || '').trim();
-    const dataDemanda = row[0]; // Col A: Data demanda; nunca usar competência (Col D)
-    const status = String(row[8] || '').trim();
-    let pipelineState = String(row[12] || '').trim();
-    const nfseStr = String(row[9] || '').trim();
-    const cndsExigidas = String(row[6] || '').trim();
+    const reqId = String(row[colReqId] || '').trim();
+    const dataDemanda = row[colDataDem]; // Col A: Data demanda; nunca usar competência
+    const status = String(row[colStatus] || '').trim();
+    let pipelineState = String(row[colPipeline] || '').trim();
+    const nfseStr = String(row[colNfse] || '').trim();
+    const cndsExigidas = String(row[colCnds] || '').trim();
 
-    if (!reqId || status !== 'ISSUED' || pipelineState === 'DRAFT_CREATED' || pipelineState === 'LEGACY_TEST_INVALID') {
+    if (!reqId || status !== 'ISSUED' || pipelineState === 'DRAFT_CREATED' || pipelineState === 'LEGACY_TEST_INVALID' || pipelineState === 'BLOCKED_CANCELLED_NFSE') {
+      continue;
+    }
+
+    // Verificar se a nota fiscal está CANCELADA
+    let isNotaCancelada = false;
+    for (let n = 1; n < notasData.length; n++) {
+      if (String(notasData[n][0] || '').trim() === nfseStr) {
+        const nStatus = String(notasData[n][7] || '').toUpperCase().trim();
+        const nSit = String(notasData[n][18] || '').toUpperCase().trim();
+        if (nStatus === 'CANCELADA' || nSit.includes('CANCEL')) {
+          isNotaCancelada = true;
+          break;
+        }
+      }
+    }
+
+    if (isNotaCancelada) {
+      removerDraftAntigoSeExistir_('r1600249466030562964');
+      sheetDemandas.getRange(rowNum, colPipeline + 1).setValue('BLOCKED_CANCELLED_NFSE');
+      sheetDemandas.getRange(rowNum, colUpdated + 1).setValue(new Date().toISOString());
+      sheetDemandas.getRange(rowNum, colErro + 1).setValue('NFS-e ' + nfseStr + ' cancelada. Rascunho bloqueado.');
+      logs.push('Demanda ' + reqId + ': NFS-e ' + nfseStr + ' cancelada. Draft bloqueado.');
       continue;
     }
 
     logs.push('Demanda ' + reqId + ': processando documentos para NFS-e ' + nfseStr);
 
-    // 1. Localizar documentos oficiais na aba Documentos
+    // 1. Localizar documentos oficiais na aba canônica Documentos NFS-e
     const matchingDocs = [];
     if (docsData && docsData.length > 1) {
       for (let d = 1; d < docsData.length; d++) {
@@ -5463,13 +5589,13 @@ function processarDocumentosERascunhos_() {
             request_id: reqId,
             item_index: '1'
           });
-          sheetDemandas.getRange(rowNum, 13).setValue('DOCUMENT_FETCH_DISPATCHED');
-          sheetDemandas.getRange(rowNum, 14).setValue(new Date().toISOString());
-          sheetDemandas.getRange(rowNum, 15).setValue('FETCH_DOCUMENT_DISPATCHED');
+          sheetDemandas.getRange(rowNum, colPipeline + 1).setValue('DOCUMENT_FETCH_DISPATCHED');
+          sheetDemandas.getRange(rowNum, colUpdated + 1).setValue(new Date().toISOString());
+          sheetDemandas.getRange(rowNum, colErro + 1).setValue('FETCH_DOCUMENT_DISPATCHED');
           logs.push('Workflow fetch_document disparado para demanda: ' + reqId);
         } catch (eDispatch) {
-          sheetDemandas.getRange(rowNum, 13).setValue('DOCUMENT_PENDING');
-          sheetDemandas.getRange(rowNum, 15).setValue('FETCH_DISPATCH_ERROR: ' + limitarTexto_(eDispatch.message, 200));
+          sheetDemandas.getRange(rowNum, colPipeline + 1).setValue('DOCUMENT_PENDING');
+          sheetDemandas.getRange(rowNum, colErro + 1).setValue('FETCH_DISPATCH_ERROR: ' + limitarTexto_(eDispatch.message, 200));
           logs.push('Falha no dispatch fetch_document: ' + eDispatch.message);
         }
       }
@@ -5499,7 +5625,7 @@ function processarDocumentosERascunhos_() {
         logs.push('XML Oficial validado com SHA-256: ' + calculatedSha);
       } catch (eFile) {
         allShasValid = false;
-        sheetDemandas.getRange(rowNum, 15).setValue('FILE_LOAD_ERROR: ' + limitarTexto_(eFile.message, 200));
+        sheetDemandas.getRange(rowNum, colErro + 1).setValue('FILE_LOAD_ERROR: ' + limitarTexto_(eFile.message, 200));
         logs.push('Erro ao carregar arquivo oficial: ' + eFile.message);
         break;
       }
@@ -5510,14 +5636,14 @@ function processarDocumentosERascunhos_() {
     }
 
     // 4. Marca estado DOCUMENTS_READY
-    sheetDemandas.getRange(rowNum, 13).setValue('DOCUMENTS_READY');
-    sheetDemandas.getRange(rowNum, 14).setValue(new Date().toISOString());
+    sheetDemandas.getRange(rowNum, colPipeline + 1).setValue('DOCUMENTS_READY');
+    sheetDemandas.getRange(rowNum, colUpdated + 1).setValue(new Date().toISOString());
     pipelineState = 'DOCUMENTS_READY';
 
     // 5. Verificar CNDs solicitadas para criação do rascunho com a Data da Demanda
     const cndCheck = verificarCndsSolicitadasParaDemanda_(cndsExigidas, dataDemanda);
     if (!cndCheck.todasValidas) {
-      sheetDemandas.getRange(rowNum, 15).setValue('CND_PENDING: ' + cndCheck.pendencias.map(p => p.tipo).join(', '));
+      sheetDemandas.getRange(rowNum, colErro + 1).setValue('CND_PENDING: ' + cndCheck.pendencias.map(p => p.tipo).join(', '));
       continue;
     }
 
@@ -5584,9 +5710,9 @@ function processarDocumentosERascunhos_() {
         const draftId = draft ? draft.getId() : 'DRAFT_OK';
         const draftThreadId = thread ? thread.getId() : (msg.getThreadId ? msg.getThreadId() : reqId);
 
-        sheetDemandas.getRange(rowNum, 13).setValue('DRAFT_CREATED');
-        sheetDemandas.getRange(rowNum, 14).setValue(new Date().toISOString());
-        sheetDemandas.getRange(rowNum, 15).setValue('DRAFT_ID:' + draftId + ' | THREAD_ID:' + draftThreadId + ' | ATTACHMENT_SHA256:' + officialAttachmentSha);
+        sheetDemandas.getRange(rowNum, colPipeline + 1).setValue('DRAFT_CREATED');
+        sheetDemandas.getRange(rowNum, colUpdated + 1).setValue(new Date().toISOString());
+        sheetDemandas.getRange(rowNum, colErro + 1).setValue('DRAFT_ID:' + draftId + ' | THREAD_ID:' + draftThreadId + ' | ATTACHMENT_SHA256:' + officialAttachmentSha);
         draftsCreated++;
         logs.push('Novo rascunho oficial criado: ' + draftId + ' na thread: ' + draftThreadId);
 
@@ -5603,7 +5729,7 @@ function processarDocumentosERascunhos_() {
       }
     } catch (draftErr) {
       logs.push('Erro ao criar draft: ' + draftErr.message);
-      sheetDemandas.getRange(rowNum, 15).setValue('DRAFT_ERROR: ' + limitarTexto_(draftErr.message, 200));
+      sheetDemandas.getRange(rowNum, colErro + 1).setValue('DRAFT_ERROR: ' + limitarTexto_(draftErr.message, 200));
     }
     processedCount++;
   }

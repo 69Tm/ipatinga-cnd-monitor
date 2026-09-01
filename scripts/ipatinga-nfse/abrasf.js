@@ -61,8 +61,14 @@ function extractNfseData(compNfseNode) {
                   getXmlNode(compNfseNode, ['InfNfse', 'tc:InfNfse']) ||
                   nfseNode;
 
-  const cancelamentoNode = getXmlNode(compNfseNode, ['NfseCancelamento', 'tc:NfseCancelamento', 'Cancelamento', 'tc:Cancelamento']);
-  const substituicaoNode = getXmlNode(compNfseNode, ['NfseSubstituicao', 'tc:NfseSubstituicao', 'Substituicao', 'tc:Substituicao']);
+  const cancelamentoNode = getXmlNode(compNfseNode, ['NfseCancelamento', 'tc:NfseCancelamento', 'Cancelamento', 'tc:Cancelamento']) ||
+                           findXmlNode(compNfseNode, 'NfseCancelamento') ||
+                           findXmlNode(compNfseNode, 'Cancelamento') ||
+                           findXmlNode(nfseNode, 'NfseCancelamento') ||
+                           findXmlNode(nfseNode, 'Cancelamento');
+  const substituicaoNode = getXmlNode(compNfseNode, ['NfseSubstituicao', 'tc:NfseSubstituicao', 'Substituicao', 'tc:Substituicao']) ||
+                           findXmlNode(compNfseNode, 'NfseSubstituicao') ||
+                           findXmlNode(compNfseNode, 'Substituicao');
 
   // Identificação estrita da Nota a partir de InfNfse (fail-closed contra captura indevida de RPS)
   const numero = getXmlValue(infNfse, ['Numero', 'tc:Numero', 'NumeroNfse', 'tc:NumeroNfse']);
@@ -151,13 +157,15 @@ function extractNfseData(compNfseNode) {
   let status = 'NORMAL';
   let situacaoDetalhe = 'Normal';
   let dataCancelamento = null;
+  let codigoCancelamento = null;
 
   if (cancelamentoNode) {
     status = 'CANCELADA';
     situacaoDetalhe = 'Cancelada';
-    const confCanc = getXmlNode(cancelamentoNode, ['Confirmacao', 'tc:Confirmacao']);
-    const infCanc = confCanc ? getXmlNode(confCanc, ['InfConfirmacaoCancelamento', 'tc:InfConfirmacaoCancelamento']) : null;
-    dataCancelamento = infCanc ? getXmlValue(infCanc, ['DataHora', 'tc:DataHora']) : null;
+    const confCanc = getXmlNode(cancelamentoNode, ['Confirmacao', 'tc:Confirmacao']) || cancelamentoNode;
+    const infCanc = getXmlNode(confCanc, ['InfConfirmacaoCancelamento', 'tc:InfConfirmacaoCancelamento']) || confCanc;
+    dataCancelamento = getXmlValue(infCanc, ['DataHora', 'tc:DataHora', 'DataHoraCancelamento']) || findXmlValue(infCanc, 'DataHora') || findXmlValue(cancelamentoNode, 'DataHora') || null;
+    codigoCancelamento = getXmlValue(infCanc, ['CodigoCancelamento', 'tc:CodigoCancelamento']) || findXmlValue(infCanc, 'CodigoCancelamento') || findXmlValue(cancelamentoNode, 'CodigoCancelamento') || null;
   } else if (substituicaoNode !== null && substituicaoNode !== undefined) {
     status = 'SUBSTITUIDA';
     situacaoDetalhe = 'Substituída';
@@ -193,7 +201,9 @@ function extractNfseData(compNfseNode) {
     nbs,
     status,
     situacaoDetalhe,
+    cancelada: status === 'CANCELADA',
     dataCancelamento,
+    codigoCancelamento,
     outrasInformacoes: String(outrasInformacoes || '').trim()
   };
 }
