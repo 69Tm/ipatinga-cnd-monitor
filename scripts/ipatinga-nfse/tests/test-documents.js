@@ -230,7 +230,7 @@ async function runDocumentsTests() {
   assert.strictEqual(callbackInvocations[0].nfseStatus, 'CANCELADA');
   console.log('✓ Cancelamento de NFS-e detectado e bloqueio de draft validado com fail-closed');
 
-  // 2. Teste de Canonical String e Assinatura HMAC Não-Circular
+  // 2. Teste de Canonical String e Assinatura HMAC Não-Circular com 16 campos
   const ts = '1725148800000';
   const nonce = 'test-nonce-123';
   const canonicalStr = buildCanonicalHmacString({
@@ -246,7 +246,10 @@ async function runDocumentsTests() {
     source: 'CONSULTAR_NFSE_POR_RPS',
     sha256: expectedSha256Cancelled,
     fileName: 'NFSE-18-DEXMED-JGKL748V-OFFICIAL.xml',
-    xmlBytesSha256: expectedSha256Cancelled
+    xmlBytesSha256: expectedSha256Cancelled,
+    nfseStatus: 'CANCELADA',
+    nfseCanceladaAt: '2026-08-27T14:16:49-03:00',
+    codigoCancelamento: '1'
   });
 
   const expectedCanonical = [
@@ -262,17 +265,48 @@ async function runDocumentsTests() {
     'CONSULTAR_NFSE_POR_RPS',
     expectedSha256Cancelled.toLowerCase(),
     'NFSE-18-DEXMED-JGKL748V-OFFICIAL.xml',
-    expectedSha256Cancelled.toLowerCase()
+    expectedSha256Cancelled.toLowerCase(),
+    'CANCELADA',
+    '2026-08-27T14:16:49-03:00',
+    '1'
   ].join('\n');
 
   assert.strictEqual(canonicalStr, expectedCanonical);
 
-  // Alteração de qualquer campo invalida a assinatura
+  // Prova de que alteração de QUALQUER campo assinado invalida o HMAC
   const sigValid = crypto.createHmac('sha256', testCallbackSecret).update(canonicalStr, 'utf8').digest('hex');
-  const alteredCanonical = canonicalStr.replace('103', '104');
-  const sigAltered = crypto.createHmac('sha256', testCallbackSecret).update(alteredCanonical, 'utf8').digest('hex');
-  assert.notStrictEqual(sigValid, sigAltered, 'Alteração de qualquer campo assinado deve invalidar o HMAC');
-  console.log('✓ Canonical HMAC determinístico e não-circular validado');
+
+  // Adulteração em campo fiscal: nfse_status
+  const tamperStatusCanonical = buildCanonicalHmacString({
+    timestamp: ts, nonce, action: 'nfse_document_callback', requestId: '1a03eb59b2dd3e5f', itemIndex: '1',
+    rpsNumero: '103', nfseNumero: '18', codigoVerificacao: 'JGKL748V', tipo: 'NFSE_XML',
+    source: 'CONSULTAR_NFSE_POR_RPS', sha256: expectedSha256Cancelled, fileName: 'NFSE-18-DEXMED-JGKL748V-OFFICIAL.xml',
+    xmlBytesSha256: expectedSha256Cancelled, nfseStatus: 'NORMAL', nfseCanceladaAt: '2026-08-27T14:16:49-03:00', codigoCancelamento: '1'
+  });
+  const sigTamperStatus = crypto.createHmac('sha256', testCallbackSecret).update(tamperStatusCanonical, 'utf8').digest('hex');
+  assert.notStrictEqual(sigValid, sigTamperStatus, 'Alteração em nfse_status deve invalidar o HMAC');
+
+  // Adulteração em campo fiscal: nfse_cancelada_at
+  const tamperDateCanonical = buildCanonicalHmacString({
+    timestamp: ts, nonce, action: 'nfse_document_callback', requestId: '1a03eb59b2dd3e5f', itemIndex: '1',
+    rpsNumero: '103', nfseNumero: '18', codigoVerificacao: 'JGKL748V', tipo: 'NFSE_XML',
+    source: 'CONSULTAR_NFSE_POR_RPS', sha256: expectedSha256Cancelled, fileName: 'NFSE-18-DEXMED-JGKL748V-OFFICIAL.xml',
+    xmlBytesSha256: expectedSha256Cancelled, nfseStatus: 'CANCELADA', nfseCanceladaAt: '2026-08-28T00:00:00-03:00', codigoCancelamento: '1'
+  });
+  const sigTamperDate = crypto.createHmac('sha256', testCallbackSecret).update(tamperDateCanonical, 'utf8').digest('hex');
+  assert.notStrictEqual(sigValid, sigTamperDate, 'Alteração em nfse_cancelada_at deve invalidar o HMAC');
+
+  // Adulteração em campo fiscal: codigo_cancelamento
+  const tamperCodeCanonical = buildCanonicalHmacString({
+    timestamp: ts, nonce, action: 'nfse_document_callback', requestId: '1a03eb59b2dd3e5f', itemIndex: '1',
+    rpsNumero: '103', nfseNumero: '18', codigoVerificacao: 'JGKL748V', tipo: 'NFSE_XML',
+    source: 'CONSULTAR_NFSE_POR_RPS', sha256: expectedSha256Cancelled, fileName: 'NFSE-18-DEXMED-JGKL748V-OFFICIAL.xml',
+    xmlBytesSha256: expectedSha256Cancelled, nfseStatus: 'CANCELADA', nfseCanceladaAt: '2026-08-27T14:16:49-03:00', codigoCancelamento: '2'
+  });
+  const sigTamperCode = crypto.createHmac('sha256', testCallbackSecret).update(tamperCodeCanonical, 'utf8').digest('hex');
+  assert.notStrictEqual(sigValid, sigTamperCode, 'Alteração em codigo_cancelamento deve invalidar o HMAC');
+
+  console.log('✓ Canonical HMAC com 16 campos e proteção anti-adulteração de status fiscal validada');
 
   // 3. Teste de Falha: Callback retorna erro -> Fail closed com persistência de artefato
   let recoveryArtifacts = [];

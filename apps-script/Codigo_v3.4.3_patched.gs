@@ -616,7 +616,10 @@ function processarCallbackDocumentoNfse_(e, payload, rawContent) {
     source,
     sha256Expected,
     fileName,
-    xmlBytesSha
+    xmlBytesSha,
+    nfseStatusPayload,
+    nfseCanceladaAt,
+    codigoCancelamento
   ].join('\n');
 
   const hmacBytes = Utilities.computeHmacSha256Signature(canonicalString, secret);
@@ -5443,10 +5446,10 @@ function verificarCndsSolicitadasParaDemanda_(cndsExigidasStr, dataDemanda) {
 }
 
 function obterAbaDocumentos_(ss) {
-  let sheet = ss.getSheetByName('Documentos');
-  if (!sheet) sheet = ss.getSheetByName('Documentos NFS-e');
+  const CANONICAL_TAB_NAME = 'Documentos NFS-e';
+  let sheet = ss.getSheetByName(CANONICAL_TAB_NAME);
   if (!sheet) {
-    sheet = ss.insertSheet('Documentos');
+    sheet = ss.insertSheet(CANONICAL_TAB_NAME);
     sheet.appendRow(['request_id', 'item_index', 'rps_numero', 'nfse_numero', 'tipo', 'source', 'drive_file_id', 'sha256', 'status', 'created_at', 'error']);
   }
   return sheet;
@@ -5529,15 +5532,24 @@ function processarDocumentosERascunhos_() {
       continue;
     }
 
-    // Verificar se a nota fiscal está CANCELADA
+    // Verificar se a nota fiscal está CANCELADA resolvendo colunas por cabeçalhos reais
     let isNotaCancelada = false;
-    for (let n = 1; n < notasData.length; n++) {
-      if (String(notasData[n][0] || '').trim() === nfseStr) {
-        const nStatus = String(notasData[n][7] || '').toUpperCase().trim();
-        const nSit = String(notasData[n][18] || '').toUpperCase().trim();
-        if (nStatus === 'CANCELADA' || nSit.includes('CANCEL')) {
-          isNotaCancelada = true;
-          break;
+    if (notasData && notasData.length > 1) {
+      const nHeaders = notasData[0].map(h => String(h || '').toLowerCase().trim());
+      const cNum = nHeaders.findIndex(h => h.includes('número') || h.includes('numero') || h.includes('nfs-e') || h.includes('nº'));
+      const cStatus = nHeaders.findIndex(h => h === 'status');
+      const cSit = nHeaders.findIndex(h => h.includes('situação') || h.includes('situacao'));
+
+      for (let n = 1; n < notasData.length; n++) {
+        const nRow = notasData[n];
+        const numVal = String(cNum >= 0 ? nRow[cNum] : nRow[0] || '').trim();
+        if (numVal === nfseStr) {
+          const nStatus = String(cStatus >= 0 ? nRow[cStatus] : nRow[7] || '').toUpperCase().trim();
+          const nSit = String(cSit >= 0 ? nRow[cSit] : nRow[18] || '').toUpperCase().trim();
+          if (nStatus === 'CANCELADA' || nSit.includes('CANCEL')) {
+            isNotaCancelada = true;
+            break;
+          }
         }
       }
     }

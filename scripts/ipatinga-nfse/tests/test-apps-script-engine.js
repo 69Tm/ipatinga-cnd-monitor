@@ -348,6 +348,11 @@ console.log('✓ PARTIAL_DISPATCH resumption test passed');
 
 console.log('✓ All Gap Regression Tests (A-H) passed');
 
+// Verificação de uso EXCLUSIVO de Documentos NFS-e em obterAbaDocumentos_
+assert.ok(code.includes("const CANONICAL_TAB_NAME = 'Documentos NFS-e';"), 'obterAbaDocumentos_ deve definir CANONICAL_TAB_NAME');
+assert.ok(code.includes("let sheet = ss.getSheetByName(CANONICAL_TAB_NAME);"), 'obterAbaDocumentos_ deve buscar exclusivamente a aba canônica');
+assert.ok(!code.includes("let sheet = ss.getSheetByName('Documentos');\n  if (!sheet)"), 'obterAbaDocumentos_ não pode preferir aba Documentos');
+
 // I. Testes Unitários de Autenticação HMAC Canônica e Callback Apps Script
 const crypto = require('crypto');
 
@@ -366,7 +371,7 @@ assert.strictEqual(constantTimeEqualsSimulado_('abc', 'abd'), false);
 assert.strictEqual(constantTimeEqualsSimulado_('abc', 'abcd'), false);
 console.log('✓ constantTimeEquals_ test passed');
 
-// Simulação de Validação HMAC Canônica do Callback
+// Simulação de Validação HMAC Canônica do Callback com 16 campos
 const secretKey = 'test_secret_32_bytes_super_secure_key_123';
 const timestampNow = Date.now().toString();
 const nonceTest = 'nonce_uuid_12345';
@@ -386,7 +391,10 @@ const canonicalTestStr = [
   'CONSULTAR_NFSE_POR_RPS',
   sampleXmlSha.toLowerCase(),
   'NFSE-18-DEXMED-JGKL748V-OFFICIAL.xml',
-  sampleXmlSha.toLowerCase()
+  sampleXmlSha.toLowerCase(),
+  'CANCELADA',
+  '2026-08-27T14:16:49-03:00',
+  '1'
 ].join('\n');
 
 const validSignature = crypto.createHmac('sha256', secretKey).update(canonicalTestStr).digest('hex');
@@ -401,7 +409,21 @@ const invalidSignature = validSignature.slice(0, -2) + '00';
 assert.strictEqual(constantTimeEqualsSimulado_(computedHmac, invalidSignature), false);
 console.log('✓ Callback invalid signature rejection verified');
 
-// 3. Regra de Não Consumo de Nonce quando HMAC é inválido
+// 3. Prova de que alteração em qualquer campo fiscal invalida o HMAC
+const tamperStatusStr = canonicalTestStr.replace('\nCANCELADA\n', '\nNORMAL\n');
+const computedTamperStatus = crypto.createHmac('sha256', secretKey).update(tamperStatusStr).digest('hex');
+assert.strictEqual(constantTimeEqualsSimulado_(computedTamperStatus, validSignature), false, 'Adulteração de nfse_status deve invalidar HMAC');
+
+const tamperDateStr = canonicalTestStr.replace('\n2026-08-27T14:16:49-03:00\n', '\n2026-08-28T00:00:00-03:00\n');
+const computedTamperDate = crypto.createHmac('sha256', secretKey).update(tamperDateStr).digest('hex');
+assert.strictEqual(constantTimeEqualsSimulado_(computedTamperDate, validSignature), false, 'Adulteração de nfse_cancelada_at deve invalidar HMAC');
+
+const tamperCodeStr = canonicalTestStr.replace('\n1', '\n2');
+const computedTamperCode = crypto.createHmac('sha256', secretKey).update(tamperCodeStr).digest('hex');
+assert.strictEqual(constantTimeEqualsSimulado_(computedTamperCode, validSignature), false, 'Adulteração de codigo_cancelamento deve invalidar HMAC');
+console.log('✓ Fiscal fields tamper rejection verified in Apps Script engine');
+
+// 4. Regra de Não Consumo de Nonce quando HMAC é inválido
 const nonceStore = new Set();
 let authSuccess = constantTimeEqualsSimulado_(computedHmac, invalidSignature);
 if (authSuccess) {
@@ -410,13 +432,13 @@ if (authSuccess) {
 assert.strictEqual(nonceStore.has(nonceTest), false, 'Nonce NÃO deve ser consumido em caso de falha de autenticação');
 console.log('✓ Invalid HMAC does not consume nonce verified');
 
-// 4. Timestamp expirado
+// 5. Timestamp expirado
 const expiredTimestamp = (Date.now() - 400000).toString(); // > 5 min
 const isExpired = Math.abs(Date.now() - Number(expiredTimestamp)) > 300000;
 assert.strictEqual(isExpired, true);
 console.log('✓ Callback expired timestamp rejection verified');
 
-// 5. Nonce Replay Check (Simulado com Set em caso de sucesso)
+// 6. Nonce Replay Check (Simulado com Set em caso de sucesso)
 authSuccess = constantTimeEqualsSimulado_(computedHmac, validSignature);
 if (authSuccess) {
   assert.strictEqual(nonceStore.has(nonceTest), false);
@@ -425,7 +447,7 @@ if (authSuccess) {
 assert.strictEqual(nonceStore.has(nonceTest), true, 'Segundo uso do mesmo nonce deve ser detectado como replay');
 console.log('✓ Callback nonce replay rejection verified');
 
-// 6. Header Mapping na aba RPS (Ledger)
+// 7. Header Mapping na aba RPS (Ledger)
 const mockRpsData = [
   ['environment', 'request_id', 'item_index', 'rps_numero', 'rps_serie', 'rps_tipo', 'status'],
   ['production', '1a03eb59b2dd3e5f', '1', '103', 'A', '1', 'ISSUED']
@@ -449,7 +471,7 @@ assert.strictEqual(foundInLedger, true);
 assert.strictEqual(foundRpsNum, '103');
 console.log('✓ Ledger header mapping verified');
 
-// 7. Reconciliação na aba canônica Documentos NFS-e (ERROR -> READY)
+// 8. Reconciliação na aba canônica Documentos NFS-e (ERROR -> READY)
 const mockDocsSheet = [
   ['request_id', 'item_index', 'rps_numero', 'nfse_numero', 'tipo', 'source', 'drive_file_id', 'sha256', 'status', 'created_at', 'error'],
   ['1a03eb59b2dd3e5f', '1', '103', '18', 'NFSE_XML', 'CONSULTAR_NFSE_POR_RPS', '', sampleXmlSha, 'ERROR', '2026-08-28T05:32:00Z', 'DRIVE_UPLOAD_FAILED']
@@ -470,7 +492,7 @@ assert.strictEqual(mockDocsSheet[1][6], '1ZFlpjQW61Idp9whOcKY3a5XT0eNLjeO3');
 assert.strictEqual(mockDocsSheet[1][10], '');
 console.log('✓ Reconciliação de linha ERROR para READY na aba canônica verificada');
 
-// 8. Teste de Bloqueio de Draft para NFS-e Cancelada
+// 9. Teste de Bloqueio de Draft para NFS-e Cancelada
 const isNota18Cancelada = true;
 let draftCriado = false;
 let pipelineFinal = '';

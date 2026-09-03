@@ -41,7 +41,10 @@ function buildCanonicalHmacString({
   source = 'CONSULTAR_NFSE_POR_RPS',
   sha256,
   fileName,
-  xmlBytesSha256
+  xmlBytesSha256,
+  nfseStatus = 'NORMAL',
+  nfseCanceladaAt = '',
+  codigoCancelamento = ''
 }) {
   return [
     String(timestamp || ''),
@@ -56,7 +59,10 @@ function buildCanonicalHmacString({
     String(source || 'CONSULTAR_NFSE_POR_RPS'),
     String(sha256 || '').toLowerCase(),
     String(fileName || ''),
-    String(xmlBytesSha256 || '').toLowerCase()
+    String(xmlBytesSha256 || '').toLowerCase(),
+    String(nfseStatus || 'NORMAL').toUpperCase().trim(),
+    String(nfseCanceladaAt || '').trim(),
+    String(codigoCancelamento || '').trim()
   ].join('\n');
 }
 
@@ -150,7 +156,10 @@ async function sendOfficialDocumentCallback({
     source: 'CONSULTAR_NFSE_POR_RPS',
     sha256,
     fileName,
-    xmlBytesSha256
+    xmlBytesSha256,
+    nfseStatus,
+    nfseCanceladaAt,
+    codigoCancelamento
   });
 
   const signature = crypto.createHmac('sha256', callbackSecret).update(canonicalString, 'utf8').digest('hex');
