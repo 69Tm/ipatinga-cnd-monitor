@@ -2933,20 +2933,23 @@ function selecionarCndValidaNaData_(historico, tipo, dataReferencia) {
   // Filtrar candidatas estritamente válidas na data de referência:
   // 1. Tipo correspondente
   // 2. ID Drive presente
-  // 3. Validade presente e validade >= dataReferencia
-  // 4. Se emissão informada: emissao <= dataReferencia (NUNCA reutilizar certidão emitida no futuro em relação à demanda)
+  // 3. Validade presente, interpretável e validade >= dataReferencia
+  // 4. Emissão presente, interpretável e emissao <= dataReferencia (FAIL-CLOSED: sem emissão válida -> NÃO REUSE)
   const candidatas = historico.filter(item => {
     if (item.tipo !== tipo) return false;
     if (!item.fileId) return false;
     if (!item.validade) return false;
+    if (!item.emissao) return false;
 
-    const valTime = inicioDoDia_(item.validade).getTime();
+    const valDate = inicioDoDia_(item.validade);
+    if (!valDate || isNaN(valDate.getTime())) return false;
+    const valTime = valDate.getTime();
     if (valTime < refTime) return false;
 
-    if (item.emissao) {
-      const emTime = inicioDoDia_(item.emissao).getTime();
-      if (emTime > refTime) return false;
-    }
+    const emDate = inicioDoDia_(item.emissao);
+    if (!emDate || isNaN(emDate.getTime())) return false;
+    const emTime = emDate.getTime();
+    if (emTime > refTime) return false;
 
     return true;
   });
@@ -2955,15 +2958,15 @@ function selecionarCndValidaNaData_(historico, tipo, dataReferencia) {
 
   // Entre múltiplas candidatas válidas na data:
   // 1. Preferir emissão mais recente que seja <= dataReferencia
-  // 2. Se empate ou sem emissão, preferir maior validade
+  // 2. Se empate, preferir maior validade
   // 3. Se empate, preferir linha mais recente (rowNumber)
   candidatas.sort((a, b) => {
-    const aEm = a.emissao ? inicioDoDia_(a.emissao).getTime() : -Infinity;
-    const bEm = b.emissao ? inicioDoDia_(b.emissao).getTime() : -Infinity;
+    const aEm = inicioDoDia_(a.emissao).getTime();
+    const bEm = inicioDoDia_(b.emissao).getTime();
     if (bEm !== aEm) return bEm - aEm;
 
-    const aVal = a.validade ? inicioDoDia_(a.validade).getTime() : -Infinity;
-    const bVal = b.validade ? inicioDoDia_(b.validade).getTime() : -Infinity;
+    const aVal = inicioDoDia_(a.validade).getTime();
+    const bVal = inicioDoDia_(b.validade).getTime();
     if (bVal !== aVal) return bVal - aVal;
 
     return (b.rowNumber || 0) - (a.rowNumber || 0);
@@ -3393,8 +3396,8 @@ function emitirCndFederalViaSerpro_(cnpj, cfg) {
   let paidCalls = 0;
 
   while (true) {
-    paidCalls++;
     let result = chamarSerproCndComRenovacaoToken_(payload, consumerKey, consumerSecret);
+    paidCalls += Number(result.cndRequestsExecuted || 0);
     const httpCode = Number(result.httpCode);
     const body = result.body || {};
     const status = Number(body.Status);
@@ -3487,16 +3490,23 @@ function emitirCndFederalViaSerpro_(cnpj, cfg) {
 }
 
 function chamarSerproCndComRenovacaoToken_(payload, consumerKey, consumerSecret) {
+  let cndRequestsExecuted = 0;
   let bearer = obterBearerSerproCnd_(consumerKey, consumerSecret, false);
   let response = chamarSerproCnd_(payload, bearer);
+  cndRequestsExecuted++;
 
   if (response.httpCode === 401) {
     CacheService.getScriptCache().remove(SYSTEM.SERPRO_CND_TOKEN_CACHE_KEY);
     bearer = obterBearerSerproCnd_(consumerKey, consumerSecret, true);
     response = chamarSerproCnd_(payload, bearer);
+    cndRequestsExecuted++;
   }
 
-  return response;
+  return {
+    httpCode: response.httpCode,
+    body: response.body,
+    cndRequestsExecuted: cndRequestsExecuted
+  };
 }
 
 function chamarSerproCnd_(payload, bearer) {

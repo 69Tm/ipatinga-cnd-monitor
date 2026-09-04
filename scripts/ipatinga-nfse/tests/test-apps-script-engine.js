@@ -555,6 +555,19 @@ console.log('✓ CASO D: Seleção da CND histórica correta na data da demanda 
 // CASO E: Nenhuma CND solicitada -> 0 renovações e 0 chamadas pagas
 console.log('✓ CASO E: Demanda sem CNDs solicitadas -> Nenhuma ação no gate');
 
+// FAIL-CLOSED: Data de emissão ausente/nula/inválida -> NÃO REUSE
+const sampleHistoricoSemEmissao = [
+  { tipo: 'CRF FGTS', emissao: null, validade: new Date(2026, 8, 30), fileId: 'drive_fgts_no_issue', rowNumber: 10 }
+];
+const selSemEmissao = selecionarCndValidaNaData_(sampleHistoricoSemEmissao, 'CRF FGTS', new Date(2026, 7, 20));
+assert.strictEqual(selSemEmissao, null, 'Certidão sem data de emissão deve falhar closed (não reutilizar)');
+console.log('✓ FAIL-CLOSED: Certidão com emissao=null e validade futura -> selecionarCndValidaNaData_ = null');
+
+// Verificação de auditoria de chamadas SERPRO: cndRequestsExecuted no retry 401
+assert.ok(code.includes('cndRequestsExecuted++'), 'chamarSerproCndComRenovacaoToken_ deve incrementar cndRequestsExecuted a cada chamada');
+assert.ok(code.includes('paidCalls += Number(result.cndRequestsExecuted || 0)'), 'emitirCndFederalViaSerpro_ deve acumular cndRequestsExecuted');
+console.log('✓ Auditoria estrutural SERPRO cndRequestsExecuted verificada');
+
 console.log('✓ test-apps-script-engine.js PASSED');
 
 
