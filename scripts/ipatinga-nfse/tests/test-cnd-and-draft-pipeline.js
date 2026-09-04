@@ -68,6 +68,7 @@ function runTests() {
     let providerHttpAttempts = 0;
     let providerHttpResponses = 0;
     let providerReportedBillable = null;
+    let billingPolicyInference = null;
     const cndsParaAnexo = [];
     const pendencias = [];
 
@@ -93,9 +94,10 @@ function runTests() {
       let responsesThisItem = 0;
       let billableThisItem = null;
       let confirmedThisItem = 0;
+      let metrics = null;
 
       if (options.mockProviderMetrics) {
-        const metrics = options.mockProviderMetrics(tipo, cat);
+        metrics = options.mockProviderMetrics(tipo, cat);
         attemptsThisItem = metrics.attempts !== undefined ? metrics.attempts : 0;
         responsesThisItem = metrics.responses !== undefined ? metrics.responses : 0;
         billableThisItem = metrics.billable !== undefined ? metrics.billable : null;
@@ -131,6 +133,9 @@ function runTests() {
       if (billableThisItem !== null) {
         providerReportedBillable = billableThisItem;
       }
+      if (metrics && metrics.billingPolicyInference) {
+        billingPolicyInference = metrics.billingPolicyInference;
+      }
 
       if (options.mockRenewSuccess) {
         renewalsSucceeded++;
@@ -153,6 +158,7 @@ function runTests() {
       providerHttpAttempts,
       providerHttpResponses,
       providerReportedBillable,
+      billingPolicyInference,
       pendencias
     };
   }
@@ -321,6 +327,36 @@ function runTests() {
   assert.strictEqual(resSerproG.confirmedBillableCalls, 0);
   assert.strictEqual(resSerproG.paidApiCallsExecuted, 0);
   console.log('✅ PASS: SERPRO Caso G — Cooldown ativo -> attempts=0, responses=0, confirmed=0, paidCalls=0');
+
+  // SERPRO Caso H: Status 5 transitório -> providerReportedBillable='UNKNOWN', confirmed=0, billingPolicyInference='non_billable_transient_inferred'
+  const resSerproStatus5 = mockVerificarCndsSolicitadas(mockHistorico, 'CND Federal', '2026-08-10', {
+    mockProviderMetrics: () => ({
+      attempts: 1,
+      responses: 1,
+      billable: 'UNKNOWN',
+      confirmedBillableCalls: 0,
+      billingPolicyInference: 'non_billable_transient_inferred'
+    })
+  });
+  assert.strictEqual(resSerproStatus5.providerReportedBillable, 'UNKNOWN');
+  assert.strictEqual(resSerproStatus5.confirmedBillableCalls, 0);
+  assert.strictEqual(resSerproStatus5.billingPolicyInference, 'non_billable_transient_inferred');
+  console.log('✅ PASS: SERPRO Status 5 -> providerReportedBillable=UNKNOWN, confirmed=0, billingPolicyInference=non_billable_transient_inferred');
+
+  // SERPRO Caso I: HTTP 500 transitório -> providerReportedBillable='UNKNOWN', confirmed=0, billingPolicyInference='non_billable_transient_inferred'
+  const resSerproHttp500 = mockVerificarCndsSolicitadas(mockHistorico, 'CND Federal', '2026-08-10', {
+    mockProviderMetrics: () => ({
+      attempts: 1,
+      responses: 1,
+      billable: 'UNKNOWN',
+      confirmedBillableCalls: 0,
+      billingPolicyInference: 'non_billable_transient_inferred'
+    })
+  });
+  assert.strictEqual(resSerproHttp500.providerReportedBillable, 'UNKNOWN');
+  assert.strictEqual(resSerproHttp500.confirmedBillableCalls, 0);
+  assert.strictEqual(resSerproHttp500.billingPolicyInference, 'non_billable_transient_inferred');
+  console.log('✅ PASS: SERPRO HTTP 500 -> providerReportedBillable=UNKNOWN, confirmed=0, billingPolicyInference=non_billable_transient_inferred');
 
   // 5. Test: State Machine Transition: DOCUMENT_PENDING -> DOCUMENTS_READY -> DRAFT_CREATED
   let pipelineState = 'DOCUMENT_PENDING';

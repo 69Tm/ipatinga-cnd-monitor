@@ -566,7 +566,14 @@ console.log('✓ FAIL-CLOSED: Certidão com emissao=null e validade futura -> se
 // Verificação de auditoria de chamadas SERPRO: providerHttpAttempts e providerHttpResponses
 assert.ok(code.includes('cndAttempts +='), 'chamarSerproCndComRenovacaoToken_ deve incrementar cndAttempts');
 assert.ok(code.includes('providerHttpAttempts') && code.includes('providerHttpResponses'), 'emitirCndFederalViaSerpro_ deve registrar providerHttpAttempts e providerHttpResponses');
-console.log('✓ Auditoria estrutural SERPRO providerHttpAttempts/Responses verificada');
+
+// Verificação de que SERPRO não inventa providerReportedBillable: true ou false
+const serproFunctionCode = code.slice(code.indexOf('function emitirCndFederalViaSerpro_'), code.indexOf('function chamarSerproCndComRenovacaoToken_'));
+assert.ok(!serproFunctionCode.includes("providerReportedBillable: true"), 'SERPRO não pode atribuir providerReportedBillable: true');
+assert.ok(!serproFunctionCode.includes("providerReportedBillable: false"), 'SERPRO não pode atribuir providerReportedBillable: false');
+assert.ok(serproFunctionCode.includes("billingPolicyInference: 'commercial_billable_on_success_inferred'"), 'SERPRO deve usar billingPolicyInference para sucesso');
+assert.ok(serproFunctionCode.includes("billingPolicyInference: isTransientNonBillable ? 'non_billable_transient_inferred'"), 'SERPRO deve usar billingPolicyInference para erro transitório');
+console.log('✓ Auditoria estrutural SERPRO providerReportedBillable estritamente UNKNOWN verificada');
 
 console.log('✓ test-apps-script-engine.js PASSED');
 

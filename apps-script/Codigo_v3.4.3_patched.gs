@@ -3579,13 +3579,16 @@ function emitirCndFederalViaSerpro_(cnpj, cfg) {
       continue;
     }
 
+    const isTransientNonBillable = (status === 5 || status === 6 || httpCode >= 500);
+
     return {
       success: false,
       confirmedBillableCalls: 0,
       paidApiCallsExecuted: 0,
       providerHttpAttempts: providerHttpAttempts,
       providerHttpResponses: providerHttpResponses,
-      providerReportedBillable: (status === 5 || status === 6 || httpCode >= 500) ? false : 'UNKNOWN',
+      providerReportedBillable: 'UNKNOWN',
+      billingPolicyInference: isTransientNonBillable ? 'non_billable_transient_inferred' : 'unknown_commercial_policy',
       reason: limitarTexto_(
         'SERPRO status ' + (isNaN(status) ? '?' : status) +
         ' / HTTP ' + httpCode +
