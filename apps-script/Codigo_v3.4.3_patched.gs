@@ -2439,19 +2439,23 @@ function processarCandidato_(candidate, config, processed) {
 /***************************************************************
  * RASCUNHO AUTOMÁTICO + RENOVAÇÃO CONTROLADA DE CNDS
  *
- * Regras operacionais:
+ * Regras operacionais canônicas:
  * - nunca envia o e-mail; apenas cria um rascunho em resposta;
  * - exige remetente institucional conhecido;
  * - valida a mensagem individual, não somente o assunto/thread;
- * - renova automaticamente APENAS certidões já vencidas;
- * - certidão ausente não dispara consulta paga: entra como pendência com link;
- * - CNDs ainda válidas, inclusive "vence em ≤15 dias", NÃO são renovadas;
+ * - para demandas institucionais:
+ *     * CND NÃO solicitada -> nenhuma ação (zero renovação, zero chamadas pagas);
+ *     * CND solicitada + válida na DATA REAL DA DEMANDA -> REUSE do arquivo no Drive;
+ *     * CND solicitada + vencida ou ausente na data da demanda -> RENEW somente da CND requerida;
+ * - CNDs válidas na data da demanda (inclusive "vence em ≤15 dias") NÃO são renovadas;
+ * - nunca renova certidão emitida em data futura em relação à demanda;
  * - Infosimples: token somente em Script Properties; PDFs são baixados imediatamente;
- * - SERPRO Federal: usa OAuth2 e só ativa quando Consumer Key/Secret estiverem configurados;
+ * - SERPRO Federal: usa OAuth2 REST e só ativa quando Consumer Key/Secret estiverem configurados;
  * - protege APIs pagas com cooldown por certidão e limite de retentativas;
  * - cada nova emissão é adicionada como nova linha, preservando histórico;
  * - anexos mantêm exatamente o nome do arquivo salvo no Google Drive;
- * - evita duplicidade de rascunho por Gmail messageId.
+ * - evita duplicidade de rascunho por Gmail messageId;
+ * - paidApiCallsExecuted contabiliza estritamente requisições HTTP pagas efetivamente disparadas.
  ***************************************************************/
 
 function catalogoCnds_() {
@@ -2856,7 +2860,7 @@ function ehSolicitacaoProfissionalDeNotaFiscal_(message) {
   return actionRequest && !passiveReceipt;
 }
 
-function obterSituacaoCndsParaCnpj_(cnpj) {
+function carregarHistoricoCndsPlanilha_(cnpj) {
   const ss = abrirPlanilhaCnds_();
   const sheet = ss.getSheetByName(SYSTEM.CND_CONTROL_SHEET);
   if (!sheet) throw new Error('Aba de controle de CNDs não encontrada: ' + SYSTEM.CND_CONTROL_SHEET);
@@ -2864,7 +2868,7 @@ function obterSituacaoCndsParaCnpj_(cnpj) {
   garantirCabecalhosCndAutomacao_(sheet);
 
   const values = sheet.getDataRange().getValues();
-  if (values.length < 2) throw new Error('Planilha de CNDs sem registros.');
+  if (values.length < 2) return [];
 
   const headers = values[0].map(value => String(value || '').trim());
   const idx = {};
@@ -2875,10 +2879,8 @@ function obterSituacaoCndsParaCnpj_(cnpj) {
   });
 
   const cnpjAlvo = somenteDigitos_(cnpj);
-  const hoje = inicioDoDia_(new Date());
   const catalogo = catalogoCnds_();
-  const tiposObrigatorios = Object.keys(catalogo);
-  const porTipo = {};
+  const itens = [];
 
   values.slice(1).forEach((row, rowOffset) => {
     if (somenteDigitos_(row[idx['CNPJ']]) !== cnpjAlvo) return;
@@ -2895,7 +2897,7 @@ function obterSituacaoCndsParaCnpj_(cnpj) {
     const ultimaTentativaAutomatica = idx['Última tentativa automática'] !== undefined ? row[idx['Última tentativa automática']] : '';
     const resultadoUltimaTentativa = idx['Resultado última tentativa'] !== undefined ? String(row[idx['Resultado última tentativa']] || '').trim() : '';
 
-    const item = {
+    itens.push({
       tipo: tipo,
       fileId: fileId,
       validade: validade,
@@ -2906,11 +2908,82 @@ function obterSituacaoCndsParaCnpj_(cnpj) {
       providerPlanilha: providerPlanilha,
       ultimaTentativaAutomatica: ultimaTentativaAutomatica,
       resultadoUltimaTentativa: resultadoUltimaTentativa
-    };
+    });
+  });
 
+  return itens;
+}
+
+function selecionarCndValidaNaData_(historico, tipo, dataReferencia) {
+  if (!Array.isArray(historico) || !tipo || !dataReferencia) return null;
+
+  let refDate;
+  if (dataReferencia instanceof Date && !isNaN(dataReferencia.getTime())) {
+    refDate = inicioDoDia_(dataReferencia);
+  } else {
+    const dataTexto = String(dataReferencia || '').trim();
+    const brMatch = dataTexto.match(/^(\d{2})\/(\d{2})\/(\d{4})$/);
+    refDate = brMatch
+      ? inicioDoDia_(new Date(Number(brMatch[3]), Number(brMatch[2]) - 1, Number(brMatch[1])))
+      : inicioDoDia_(new Date(dataTexto));
+  }
+  if (!refDate || isNaN(refDate.getTime())) return null;
+  const refTime = refDate.getTime();
+
+  // Filtrar candidatas estritamente válidas na data de referência:
+  // 1. Tipo correspondente
+  // 2. ID Drive presente
+  // 3. Validade presente e validade >= dataReferencia
+  // 4. Se emissão informada: emissao <= dataReferencia (NUNCA reutilizar certidão emitida no futuro em relação à demanda)
+  const candidatas = historico.filter(item => {
+    if (item.tipo !== tipo) return false;
+    if (!item.fileId) return false;
+    if (!item.validade) return false;
+
+    const valTime = inicioDoDia_(item.validade).getTime();
+    if (valTime < refTime) return false;
+
+    if (item.emissao) {
+      const emTime = inicioDoDia_(item.emissao).getTime();
+      if (emTime > refTime) return false;
+    }
+
+    return true;
+  });
+
+  if (!candidatas.length) return null;
+
+  // Entre múltiplas candidatas válidas na data:
+  // 1. Preferir emissão mais recente que seja <= dataReferencia
+  // 2. Se empate ou sem emissão, preferir maior validade
+  // 3. Se empate, preferir linha mais recente (rowNumber)
+  candidatas.sort((a, b) => {
+    const aEm = a.emissao ? inicioDoDia_(a.emissao).getTime() : -Infinity;
+    const bEm = b.emissao ? inicioDoDia_(b.emissao).getTime() : -Infinity;
+    if (bEm !== aEm) return bEm - aEm;
+
+    const aVal = a.validade ? inicioDoDia_(a.validade).getTime() : -Infinity;
+    const bVal = b.validade ? inicioDoDia_(b.validade).getTime() : -Infinity;
+    if (bVal !== aVal) return bVal - aVal;
+
+    return (b.rowNumber || 0) - (a.rowNumber || 0);
+  });
+
+  return candidatas[0];
+}
+
+function obterSituacaoCndsParaCnpj_(cnpj) {
+  const itens = carregarHistoricoCndsPlanilha_(cnpj);
+  const hoje = inicioDoDia_(new Date());
+  const catalogo = catalogoCnds_();
+  const tiposObrigatorios = Object.keys(catalogo);
+  const porTipo = {};
+
+  itens.forEach(item => {
+    const tipo = item.tipo;
     const atual = porTipo[tipo];
     const atualTime = atual && atual.validade ? atual.validade.getTime() : -Infinity;
-    const itemTime = validade ? validade.getTime() : -Infinity;
+    const itemTime = item.validade ? item.validade.getTime() : -Infinity;
 
     // Na igualdade, a linha mais nova vence para preservar a emissão mais recente.
     if (!atual || itemTime > atualTime || (itemTime === atualTime && item.rowNumber > atual.rowNumber)) {
@@ -2995,6 +3068,7 @@ function renovarCndsVencidasAutomaticamente_(cnpj, vencidas) {
         tipo: item.tipo,
         success: false,
         skipped: true,
+        paidApiCallsExecuted: 0,
         reason: 'renovação gerenciada externamente pelo GitHub Actions; Apps Script apenas valida a planilha'
       });
       return;
@@ -3004,6 +3078,7 @@ function renovarCndsVencidasAutomaticamente_(cnpj, vencidas) {
         tipo: item.tipo,
         success: false,
         skipped: true,
+        paidApiCallsExecuted: 0,
         reason: 'emissão automática não disponível para esta certidão'
       });
       return;
@@ -3015,6 +3090,7 @@ function renovarCndsVencidasAutomaticamente_(cnpj, vencidas) {
         tipo: item.tipo,
         success: false,
         skipped: true,
+        paidApiCallsExecuted: 0,
         reason: providerCheck.reason
       });
       return;
@@ -3026,6 +3102,7 @@ function renovarCndsVencidasAutomaticamente_(cnpj, vencidas) {
         tipo: item.tipo,
         success: false,
         skipped: true,
+        paidApiCallsExecuted: 0,
         reason: 'cooldown',
         retryAfter: gate.retryAfter || null
       });
@@ -3143,6 +3220,7 @@ function emitirCndViaInfosimples_(cnpj, cfg) {
     return {
       success: false,
       skipped: true,
+      paidApiCallsExecuted: 0,
       reason: 'INFOSIMPLES_TOKEN não configurado nas Propriedades do script'
     };
   }
@@ -3157,8 +3235,10 @@ function emitirCndViaInfosimples_(cnpj, cfg) {
 
   let parsed = null;
   let lastReason = '';
+  let paidCalls = 0;
 
   for (let attempt = 1; attempt <= 2; attempt++) {
+    paidCalls++;
     const response = UrlFetchApp.fetch(endpoint, {
       method: 'post',
       payload: payload,
@@ -3184,6 +3264,7 @@ function emitirCndViaInfosimples_(cnpj, cfg) {
       if (!pdf) {
         return {
           success: false,
+          paidApiCallsExecuted: paidCalls,
           reason: 'Infosimples processou a consulta, mas não retornou um PDF utilizável em site_receipts',
           apiCode: apiCode,
           billable: billable
@@ -3198,6 +3279,7 @@ function emitirCndViaInfosimples_(cnpj, cfg) {
       if (!validade) {
         return {
           success: false,
+          paidApiCallsExecuted: paidCalls,
           reason: 'não foi possível determinar a validade da certidão retornada',
           apiCode: apiCode,
           billable: billable
@@ -3217,6 +3299,7 @@ function emitirCndViaInfosimples_(cnpj, cfg) {
 
       return Object.assign({
         success: true,
+        paidApiCallsExecuted: paidCalls,
         reason: 'emitida automaticamente via Infosimples',
         apiCode: apiCode,
         billable: billable
@@ -3234,6 +3317,7 @@ function emitirCndViaInfosimples_(cnpj, cfg) {
 
   return {
     success: false,
+    paidApiCallsExecuted: paidCalls,
     reason: lastReason || 'falha não especificada na Infosimples',
     apiCode: parsed ? Number(parsed.code) : null,
     billable: parsed ? normalizarBooleanoApi_(parsed.header && parsed.header.billable) : null
@@ -3292,6 +3376,7 @@ function emitirCndFederalViaSerpro_(cnpj, cfg) {
     return {
       success: false,
       skipped: true,
+      paidApiCallsExecuted: 0,
       reason: 'credenciais SERPRO Consulta CND não configuradas; informe SERPRO_CND_CONSUMER_KEY e SERPRO_CND_CONSUMER_SECRET'
     };
   }
@@ -3305,8 +3390,10 @@ function emitirCndFederalViaSerpro_(cnpj, cfg) {
   };
 
   let status7Polls = 0;
+  let paidCalls = 0;
 
   while (true) {
+    paidCalls++;
     let result = chamarSerproCndComRenovacaoToken_(payload, consumerKey, consumerSecret);
     const httpCode = Number(result.httpCode);
     const body = result.body || {};
@@ -3318,6 +3405,7 @@ function emitirCndFederalViaSerpro_(cnpj, cfg) {
       if (!pdf64) {
         return {
           success: false,
+          paidApiCallsExecuted: paidCalls,
           reason: 'SERPRO retornou certidão sem DocumentoPdf apesar de GerarCertidaoPdf=true',
           apiStatus: status,
           httpCode: httpCode
@@ -3344,6 +3432,7 @@ function emitirCndFederalViaSerpro_(cnpj, cfg) {
 
       return Object.assign({
         success: true,
+        paidApiCallsExecuted: paidCalls,
         reason: status === 2
           ? 'nova CND Federal emitida pela API SERPRO'
           : 'CND Federal válida recuperada pela API SERPRO',
@@ -3356,6 +3445,7 @@ function emitirCndFederalViaSerpro_(cnpj, cfg) {
       if (status7Polls >= Number(SYSTEM.SERPRO_CND_STATUS7_MAX_POLLS || 2)) {
         return {
           success: false,
+          paidApiCallsExecuted: paidCalls,
           reason: 'SERPRO permaneceu em processamento após o limite de consultas de continuação',
           apiStatus: status,
           httpCode: httpCode
@@ -3383,6 +3473,7 @@ function emitirCndFederalViaSerpro_(cnpj, cfg) {
 
     return {
       success: false,
+      paidApiCallsExecuted: paidCalls,
       reason: limitarTexto_(
         'SERPRO status ' + (isNaN(status) ? '?' : status) +
         ' / HTTP ' + httpCode +
@@ -5363,7 +5454,6 @@ function verificarCndsSolicitadasParaDemanda_(cndsExigidasStr, dataDemanda) {
   }
 
   const cnpj = '31.302.407/0001-05';
-  const situacao = obterSituacaoCndsParaCnpj_(cnpj);
   let dataReferencia;
   if (dataDemanda instanceof Date && !isNaN(dataDemanda.getTime())) {
     dataReferencia = new Date(dataDemanda.getTime());
@@ -5377,7 +5467,10 @@ function verificarCndsSolicitadasParaDemanda_(cndsExigidasStr, dataDemanda) {
   if (isNaN(dataReferencia.getTime())) {
     throw new Error('DATA_REFERENCIA_DEMANDA_INVALIDA');
   }
-  const refTime = inicioDoDia_(dataReferencia).getTime();
+
+  // Carrega histórico completo para seleção determinística na data da demanda
+  const historico = carregarHistoricoCndsPlanilha_(cnpj);
+  const situacao = obterSituacaoCndsParaCnpj_(cnpj);
 
   let renewalsCount = 0;
   let renewalsSucceeded = 0;
@@ -5387,41 +5480,41 @@ function verificarCndsSolicitadasParaDemanda_(cndsExigidasStr, dataDemanda) {
   const pendencias = [];
 
   for (const tipo of cndsSolicitadas) {
-    // 1. Localiza a CND na situação atual
-    const cndValida = (situacao.validas || []).find(c => c.tipo === tipo);
-    
-    // 2. Se VÁLIDA (com validade >= dataReferencia e ID Drive disponível)
-    if (cndValida && cndValida.validade && cndValida.validade.getTime() >= refTime && cndValida.fileId) {
-      // Regra absoluta: Validade curta NÃO justifica renovação. Reutilizar existente.
+    // 1. Seleciona deterministamente CND válida na data da demanda
+    // Regra: emissao <= dataDemanda AND validade >= dataDemanda AND fileId presente
+    const cndValidaNaData = selecionarCndValidaNaData_(historico, tipo, dataReferencia);
+
+    // 2. Se VÁLIDA NA DATA DA DEMANDA -> REUSE do arquivo existente
+    if (cndValidaNaData && cndValidaNaData.fileId) {
       cndsParaAnexo.push({
         tipo: tipo,
-        fileId: cndValida.fileId,
-        validade: cndValida.validade,
+        fileId: cndValidaNaData.fileId,
+        validade: cndValidaNaData.validade,
+        emissao: cndValidaNaData.emissao,
         status: 'VALIDA_REUTILIZADA'
       });
       continue;
     }
 
-    // 3. Se VENCIDA ou AUSENTE e FOI SOLICITADA -> Renovar SOMENTE esta CND
-    const cndVencida = (situacao.vencidas || []).find(c => c.tipo === tipo) ||
-                       (situacao.ausentes || []).find(c => c.tipo === tipo);
-    
-    const itemParaRenovar = cndVencida || { tipo: tipo };
+    // 3. Se VENCIDA ou AUSENTE NA DATA DA DEMANDA e FOI SOLICITADA -> RENEW SOMENTE desta CND
+    const cndVencidaOuAusente = (situacao.vencidas || []).find(c => c.tipo === tipo) ||
+                                (situacao.ausentes || []).find(c => c.tipo === tipo);
+
+    const itemParaRenovar = cndVencidaOuAusente || { tipo: tipo };
     const resRenovacao = renovarCndsVencidasAutomaticamente_(cnpj, [itemParaRenovar]);
     renewalsCount++;
 
-    const cat = catalogoCnds_()[tipo];
-    if (cat && (cat.provider === 'infosimples' || cat.provider === 'serpro')) {
-      paidCallsCount++;
-    }
-
     const resultado = resRenovacao && resRenovacao[0];
+    const paidCalls = Number(resultado && resultado.paidApiCallsExecuted || 0);
+    paidCallsCount += paidCalls;
+
     if (resultado && resultado.success && resultado.fileId) {
       renewalsSucceeded++;
       cndsParaAnexo.push({
         tipo: tipo,
         fileId: resultado.fileId,
         validade: resultado.validade,
+        emissao: resultado.emissao,
         status: 'RENOVADA_COM_SUCESSO'
       });
     } else {

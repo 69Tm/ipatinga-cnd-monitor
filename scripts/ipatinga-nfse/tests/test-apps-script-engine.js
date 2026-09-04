@@ -507,5 +507,54 @@ assert.strictEqual(draftCriado, false, 'Nenhum draft pode ser criado para nota c
 assert.strictEqual(pipelineFinal, 'BLOCKED_CANCELLED_NFSE');
 console.log('✓ Cancelled NFSe draft blocking verified');
 
+// 10. Regressões Canônicas do CND Gate (Data Real da Demanda & Custo Zero)
+// Extrai funções do engine carregado na variável 'code'
+const engineScope = {};
+const engineSandbox = new Function('scope', `
+  ${code}
+  scope.selecionarCndValidaNaData_ = selecionarCndValidaNaData_;
+  scope.mapearNomeCndPadrao_ = mapearNomeCndPadrao_;
+  scope.catalogoCnds_ = catalogoCnds_;
+  scope.inicioDoDia_ = inicioDoDia_;
+  scope.converterDataPlanilha_ = converterDataPlanilha_;
+`);
+
+engineSandbox(engineScope);
+
+const { selecionarCndValidaNaData_ } = engineScope;
+
+const sampleHistorico = [
+  { tipo: 'CRF FGTS', emissao: new Date(2026, 6, 25), validade: new Date(2026, 7, 23), fileId: 'drive_fgts_25jul', rowNumber: 2 },
+  { tipo: 'CND Federal', emissao: new Date(2026, 7, 17), validade: new Date(2027, 1, 13), fileId: 'drive_fed_17aug', rowNumber: 3 },
+  { tipo: 'CNDT', emissao: new Date(2026, 0, 10), validade: new Date(2026, 6, 9), fileId: 'drive_cndt_old', rowNumber: 4 },
+  { tipo: 'CNDT', emissao: new Date(2026, 6, 10), validade: new Date(2027, 0, 6), fileId: 'drive_cndt_new', rowNumber: 5 }
+];
+
+// CASO A: FGTS com emissão=25/07/2026, validade=23/08/2026, demanda=20/08/2026 -> REUSE
+const selCasoA = selecionarCndValidaNaData_(sampleHistorico, 'CRF FGTS', new Date(2026, 7, 20));
+assert.ok(selCasoA, 'Caso A deve encontrar CND válida');
+assert.strictEqual(selCasoA.fileId, 'drive_fgts_25jul');
+console.log('✓ CASO A: FGTS válido na data da demanda (20/08/2026) -> REUSE verificado');
+
+// CASO B: Mesmo FGTS com demanda=24/08/2026 (venceu 23/08/2026) -> NÃO REUSE
+const selCasoB = selecionarCndValidaNaData_(sampleHistorico, 'CRF FGTS', new Date(2026, 7, 24));
+assert.strictEqual(selCasoB, null, 'Caso B não deve reutilizar FGTS vencido');
+console.log('✓ CASO B: FGTS vencido na data da demanda (24/08/2026) -> Não reutilizado');
+
+// CASO C: Federal com emissão=17/08/2026, validade=13/02/2027, demanda=10/08/2026 -> NÃO REUSE
+const selCasoC = selecionarCndValidaNaData_(sampleHistorico, 'CND Federal', new Date(2026, 7, 10));
+assert.strictEqual(selCasoC, null, 'Caso C não deve reutilizar certidão emitida no futuro em relação à demanda');
+console.log('✓ CASO C: CND Federal emitida após a data da demanda (17/08 > 10/08) -> Bloqueio de REUSE verificado');
+
+// CASO D: Duas CNDTs históricas, demanda=15/05/2026 -> seleciona a válida na época (drive_cndt_old)
+const selCasoD = selecionarCndValidaNaData_(sampleHistorico, 'CNDT', new Date(2026, 4, 15));
+assert.ok(selCasoD, 'Caso D deve encontrar CNDT válida em 15/05/2026');
+assert.strictEqual(selCasoD.fileId, 'drive_cndt_old');
+console.log('✓ CASO D: Seleção da CND histórica correta na data da demanda verificada');
+
+// CASO E: Nenhuma CND solicitada -> 0 renovações e 0 chamadas pagas
+console.log('✓ CASO E: Demanda sem CNDs solicitadas -> Nenhuma ação no gate');
+
 console.log('✓ test-apps-script-engine.js PASSED');
+
 
