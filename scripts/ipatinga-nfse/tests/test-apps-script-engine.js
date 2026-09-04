@@ -26,7 +26,7 @@ assert.ok(!code.includes(removedSyntheticXmlFunction), 'função de XML sintéti
 assert.ok(code.includes("const dataDemanda = row[colDataDem]; // Col A: Data demanda; nunca usar competência") || code.includes("const dataDemanda = row[0];"), 'retomada deve usar Demandas.Data demanda (Col A)');
 assert.ok(code.includes("dataDemanda: (typeof message.getDate === 'function' && message.getDate()) ? message.getDate() : new Date()"), 'demanda inicial deve persistir message.getDate()');
 assert.ok(code.includes("cndsExigidas: parsed.cndsExigidas || ''"), 'CNDs solicitadas devem ser persistidas na demanda');
-assert.ok(code.includes('paidApiCallsExecuted: paidCallsCount'), 'audit local deve usar paidApiCallsExecuted');
+assert.ok(code.includes('confirmedBillableCalls: confirmedBillableCount') && code.includes('paidApiCallsExecuted: confirmedBillableCount'), 'audit local deve mapear confirmedBillableCalls e manter paidApiCallsExecuted como alias');
 assert.ok(code.includes('renewalsSucceeded: renewalsSucceeded'), 'audit local deve registrar renovações bem-sucedidas');
 assert.ok(code.includes('renewalsFailed: renewalsFailed'), 'audit local deve registrar renovações falhas');
 assert.ok(!code.includes("d.getMessage() && d.getMessage().getThread().getId() === '1a03eb59b2dd3e5f'"), 'remoção de draft não pode apagar qualquer rascunho da thread');

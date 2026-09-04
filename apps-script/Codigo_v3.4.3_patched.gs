@@ -3071,7 +3071,11 @@ function renovarCndsVencidasAutomaticamente_(cnpj, vencidas) {
         tipo: item.tipo,
         success: false,
         skipped: true,
+        confirmedBillableCalls: 0,
         paidApiCallsExecuted: 0,
+        providerHttpAttempts: 0,
+        providerHttpResponses: 0,
+        providerReportedBillable: null,
         reason: 'renovação gerenciada externamente pelo GitHub Actions; Apps Script apenas valida a planilha'
       });
       return;
@@ -3081,7 +3085,11 @@ function renovarCndsVencidasAutomaticamente_(cnpj, vencidas) {
         tipo: item.tipo,
         success: false,
         skipped: true,
+        confirmedBillableCalls: 0,
         paidApiCallsExecuted: 0,
+        providerHttpAttempts: 0,
+        providerHttpResponses: 0,
+        providerReportedBillable: null,
         reason: 'emissão automática não disponível para esta certidão'
       });
       return;
@@ -3093,7 +3101,11 @@ function renovarCndsVencidasAutomaticamente_(cnpj, vencidas) {
         tipo: item.tipo,
         success: false,
         skipped: true,
+        confirmedBillableCalls: 0,
         paidApiCallsExecuted: 0,
+        providerHttpAttempts: 0,
+        providerHttpResponses: 0,
+        providerReportedBillable: null,
         reason: providerCheck.reason
       });
       return;
@@ -3105,7 +3117,11 @@ function renovarCndsVencidasAutomaticamente_(cnpj, vencidas) {
         tipo: item.tipo,
         success: false,
         skipped: true,
+        confirmedBillableCalls: 0,
         paidApiCallsExecuted: 0,
+        providerHttpAttempts: 0,
+        providerHttpResponses: 0,
+        providerReportedBillable: null,
         reason: 'cooldown',
         retryAfter: gate.retryAfter || null
       });
@@ -3121,6 +3137,7 @@ function renovarCndsVencidasAutomaticamente_(cnpj, vencidas) {
       } else {
         result = {
           success: false,
+          confirmedBillableCalls: 0,
           paidApiCallsExecuted: 0,
           providerHttpAttempts: 0,
           providerHttpResponses: 0,
@@ -3129,12 +3146,18 @@ function renovarCndsVencidasAutomaticamente_(cnpj, vencidas) {
         };
       }
     } catch (error) {
+      const attempts = (error && error.providerHttpAttempts !== undefined) ? Number(error.providerHttpAttempts) : 0;
+      const responses = (error && error.providerHttpResponses !== undefined) ? Number(error.providerHttpResponses) : 0;
+      const confirmed = (error && error.confirmedBillableCalls !== undefined) ? Number(error.confirmedBillableCalls) : 0;
+      const billable = (error && error.providerReportedBillable !== undefined) ? error.providerReportedBillable : 'UNKNOWN';
+
       result = {
         success: false,
-        paidApiCallsExecuted: (error && error.paidApiCallsExecuted !== undefined) ? error.paidApiCallsExecuted : 1,
-        providerHttpAttempts: (error && error.providerHttpAttempts !== undefined) ? error.providerHttpAttempts : 1,
-        providerHttpResponses: (error && error.providerHttpResponses !== undefined) ? error.providerHttpResponses : 0,
-        providerReportedBillable: (error && error.providerReportedBillable !== undefined) ? error.providerReportedBillable : 'UNKNOWN',
+        confirmedBillableCalls: confirmed,
+        paidApiCallsExecuted: confirmed,
+        providerHttpAttempts: attempts,
+        providerHttpResponses: responses,
+        providerReportedBillable: billable,
         reason: limitarTexto_(String(error && error.message || error), 320)
       };
     }
@@ -3234,6 +3257,7 @@ function emitirCndViaInfosimples_(cnpj, cfg) {
     return {
       success: false,
       skipped: true,
+      confirmedBillableCalls: 0,
       paidApiCallsExecuted: 0,
       providerHttpAttempts: 0,
       providerHttpResponses: 0,
@@ -3254,6 +3278,7 @@ function emitirCndViaInfosimples_(cnpj, cfg) {
   let lastReason = '';
   let providerHttpAttempts = 0;
   let providerHttpResponses = 0;
+  let confirmedBillableCalls = 0;
   let providerReportedBillable = 'UNKNOWN';
 
   for (let attempt = 1; attempt <= 2; attempt++) {
@@ -3284,6 +3309,9 @@ function emitirCndViaInfosimples_(cnpj, cfg) {
     const apiCode = Number(parsed.code);
     const billable = normalizarBooleanoApi_(parsed.header && parsed.header.billable);
     providerReportedBillable = billable !== null ? billable : 'UNKNOWN';
+    if (billable === true) {
+      confirmedBillableCalls++;
+    }
 
     if (apiCode === 200) {
       const data = Array.isArray(parsed.data) && parsed.data.length ? parsed.data[0] : {};
@@ -3291,7 +3319,8 @@ function emitirCndViaInfosimples_(cnpj, cfg) {
       if (!pdf) {
         return {
           success: false,
-          paidApiCallsExecuted: providerHttpAttempts,
+          confirmedBillableCalls: confirmedBillableCalls,
+          paidApiCallsExecuted: confirmedBillableCalls,
           providerHttpAttempts: providerHttpAttempts,
           providerHttpResponses: providerHttpResponses,
           providerReportedBillable: providerReportedBillable,
@@ -3309,7 +3338,8 @@ function emitirCndViaInfosimples_(cnpj, cfg) {
       if (!validade) {
         return {
           success: false,
-          paidApiCallsExecuted: providerHttpAttempts,
+          confirmedBillableCalls: confirmedBillableCalls,
+          paidApiCallsExecuted: confirmedBillableCalls,
           providerHttpAttempts: providerHttpAttempts,
           providerHttpResponses: providerHttpResponses,
           providerReportedBillable: providerReportedBillable,
@@ -3332,7 +3362,8 @@ function emitirCndViaInfosimples_(cnpj, cfg) {
 
       return Object.assign({
         success: true,
-        paidApiCallsExecuted: providerHttpAttempts,
+        confirmedBillableCalls: confirmedBillableCalls,
+        paidApiCallsExecuted: confirmedBillableCalls,
         providerHttpAttempts: providerHttpAttempts,
         providerHttpResponses: providerHttpResponses,
         providerReportedBillable: providerReportedBillable,
@@ -3353,7 +3384,8 @@ function emitirCndViaInfosimples_(cnpj, cfg) {
 
   return {
     success: false,
-    paidApiCallsExecuted: providerHttpAttempts,
+    confirmedBillableCalls: confirmedBillableCalls,
+    paidApiCallsExecuted: confirmedBillableCalls,
     providerHttpAttempts: providerHttpAttempts,
     providerHttpResponses: providerHttpResponses,
     providerReportedBillable: providerReportedBillable,
@@ -3415,7 +3447,11 @@ function emitirCndFederalViaSerpro_(cnpj, cfg) {
     return {
       success: false,
       skipped: true,
+      confirmedBillableCalls: 0,
       paidApiCallsExecuted: 0,
+      providerHttpAttempts: 0,
+      providerHttpResponses: 0,
+      providerReportedBillable: null,
       reason: 'credenciais SERPRO Consulta CND não configuradas; informe SERPRO_CND_CONSUMER_KEY e SERPRO_CND_CONSUMER_SECRET'
     };
   }
@@ -3429,7 +3465,6 @@ function emitirCndFederalViaSerpro_(cnpj, cfg) {
   };
 
   let status7Polls = 0;
-  let paidCalls = 0;
   let providerHttpAttempts = 0;
   let providerHttpResponses = 0;
 
@@ -3437,14 +3472,14 @@ function emitirCndFederalViaSerpro_(cnpj, cfg) {
     let result = chamarSerproCndComRenovacaoToken_(payload, consumerKey, consumerSecret);
     const attemptsThisTurn = Number(result.providerHttpAttempts !== undefined ? result.providerHttpAttempts : (result.cndRequestsExecuted || 0));
     const responsesThisTurn = Number(result.providerHttpResponses !== undefined ? result.providerHttpResponses : 0);
-    paidCalls += attemptsThisTurn;
     providerHttpAttempts += attemptsThisTurn;
     providerHttpResponses += responsesThisTurn;
 
     if (result.transportError) {
       return {
         success: false,
-        paidApiCallsExecuted: paidCalls,
+        confirmedBillableCalls: 0,
+        paidApiCallsExecuted: 0,
         providerHttpAttempts: providerHttpAttempts,
         providerHttpResponses: providerHttpResponses,
         providerReportedBillable: 'UNKNOWN',
@@ -3464,10 +3499,12 @@ function emitirCndFederalViaSerpro_(cnpj, cfg) {
       if (!pdf64) {
         return {
           success: false,
-          paidApiCallsExecuted: paidCalls,
+          confirmedBillableCalls: 0,
+          paidApiCallsExecuted: 0,
           providerHttpAttempts: providerHttpAttempts,
           providerHttpResponses: providerHttpResponses,
-          providerReportedBillable: true,
+          providerReportedBillable: 'UNKNOWN',
+          billingPolicyInference: 'commercial_billable_on_success_inferred',
           reason: 'SERPRO retornou certidão sem DocumentoPdf apesar de GerarCertidaoPdf=true',
           apiStatus: status,
           httpCode: httpCode
@@ -3494,10 +3531,12 @@ function emitirCndFederalViaSerpro_(cnpj, cfg) {
 
       return Object.assign({
         success: true,
-        paidApiCallsExecuted: paidCalls,
+        confirmedBillableCalls: 0,
+        paidApiCallsExecuted: 0,
         providerHttpAttempts: providerHttpAttempts,
         providerHttpResponses: providerHttpResponses,
-        providerReportedBillable: true,
+        providerReportedBillable: 'UNKNOWN',
+        billingPolicyInference: 'commercial_billable_on_success_inferred',
         reason: status === 2
           ? 'nova CND Federal emitida pela API SERPRO'
           : 'CND Federal válida recuperada pela API SERPRO',
@@ -3510,7 +3549,8 @@ function emitirCndFederalViaSerpro_(cnpj, cfg) {
       if (status7Polls >= Number(SYSTEM.SERPRO_CND_STATUS7_MAX_POLLS || 2)) {
         return {
           success: false,
-          paidApiCallsExecuted: paidCalls,
+          confirmedBillableCalls: 0,
+          paidApiCallsExecuted: 0,
           providerHttpAttempts: providerHttpAttempts,
           providerHttpResponses: providerHttpResponses,
           providerReportedBillable: 'UNKNOWN',
@@ -3541,7 +3581,8 @@ function emitirCndFederalViaSerpro_(cnpj, cfg) {
 
     return {
       success: false,
-      paidApiCallsExecuted: paidCalls,
+      confirmedBillableCalls: 0,
+      paidApiCallsExecuted: 0,
       providerHttpAttempts: providerHttpAttempts,
       providerHttpResponses: providerHttpResponses,
       providerReportedBillable: (status === 5 || status === 6 || httpCode >= 500) ? false : 'UNKNOWN',
@@ -5552,7 +5593,10 @@ function verificarCndsSolicitadasParaDemanda_(cndsExigidasStr, dataDemanda) {
       renewalsAttempted: 0,
       renewalsSucceeded: 0,
       renewalsFailed: 0,
+      confirmedBillableCalls: 0,
       paidApiCallsExecuted: 0,
+      providerHttpAttempts: 0,
+      providerHttpResponses: 0,
       pendencias: []
     };
   }
@@ -5566,7 +5610,10 @@ function verificarCndsSolicitadasParaDemanda_(cndsExigidasStr, dataDemanda) {
       renewalsAttempted: 0,
       renewalsSucceeded: 0,
       renewalsFailed: 0,
+      confirmedBillableCalls: 0,
       paidApiCallsExecuted: 0,
+      providerHttpAttempts: 0,
+      providerHttpResponses: 0,
       pendencias: []
     };
   }
@@ -5593,7 +5640,9 @@ function verificarCndsSolicitadasParaDemanda_(cndsExigidasStr, dataDemanda) {
   let renewalsCount = 0;
   let renewalsSucceeded = 0;
   let renewalsFailed = 0;
-  let paidCallsCount = 0;
+  let confirmedBillableCount = 0;
+  let providerHttpAttempts = 0;
+  let providerHttpResponses = 0;
   const cndsParaAnexo = [];
   const pendencias = [];
 
@@ -5623,8 +5672,10 @@ function verificarCndsSolicitadasParaDemanda_(cndsExigidasStr, dataDemanda) {
     renewalsCount++;
 
     const resultado = resRenovacao && resRenovacao[0];
-    const paidCalls = Number(resultado && resultado.paidApiCallsExecuted || 0);
-    paidCallsCount += paidCalls;
+    const confirmedCalls = Number(resultado && resultado.confirmedBillableCalls !== undefined ? resultado.confirmedBillableCalls : (resultado && resultado.paidApiCallsExecuted || 0));
+    confirmedBillableCount += confirmedCalls;
+    providerHttpAttempts += Number(resultado && resultado.providerHttpAttempts || 0);
+    providerHttpResponses += Number(resultado && resultado.providerHttpResponses || 0);
 
     if (resultado && resultado.success && resultado.fileId) {
       renewalsSucceeded++;
@@ -5651,7 +5702,10 @@ function verificarCndsSolicitadasParaDemanda_(cndsExigidasStr, dataDemanda) {
     renewalsAttempted: renewalsCount,
     renewalsSucceeded: renewalsSucceeded,
     renewalsFailed: renewalsFailed,
-    paidApiCallsExecuted: paidCallsCount,
+    confirmedBillableCalls: confirmedBillableCount,
+    paidApiCallsExecuted: confirmedBillableCount,
+    providerHttpAttempts: providerHttpAttempts,
+    providerHttpResponses: providerHttpResponses,
     pendencias: pendencias
   };
 }
