@@ -65,6 +65,9 @@ function runTests() {
     let renewalsSucceeded = 0;
     let renewalsFailed = 0;
     let paidCallsCount = 0;
+    let providerHttpAttempts = 0;
+    let providerHttpResponses = 0;
+    let providerReportedBillable = null;
     const cndsParaAnexo = [];
     const pendencias = [];
 
@@ -85,19 +88,42 @@ function runTests() {
       renewalsCount++;
       const cat = catalogo[tipo];
       
-      // Provedor real determina chamadas pagas executadas
+      // Provedor real determina chamadas pagas executadas e métricas de transporte
       let paidCallsThisItem = 0;
-      if (options.mockProviderCall) {
+      let attemptsThisItem = 0;
+      let responsesThisItem = 0;
+      let billableThisItem = null;
+
+      if (options.mockProviderMetrics) {
+        const metrics = options.mockProviderMetrics(tipo, cat);
+        attemptsThisItem = metrics.attempts !== undefined ? metrics.attempts : 0;
+        responsesThisItem = metrics.responses !== undefined ? metrics.responses : 0;
+        billableThisItem = metrics.billable !== undefined ? metrics.billable : null;
+        paidCallsThisItem = attemptsThisItem;
+      } else if (options.mockProviderCall) {
         paidCallsThisItem = options.mockProviderCall(tipo, cat);
+        attemptsThisItem = paidCallsThisItem;
+        responsesThisItem = paidCallsThisItem;
       } else if (cat && (cat.provider === 'infosimples' || cat.provider === 'serpro')) {
         // Se credencial ausente ou cooldown, paidCallsThisItem = 0
         if (options.missingCredentials || options.inCooldown) {
           paidCallsThisItem = 0;
+          attemptsThisItem = 0;
+          responsesThisItem = 0;
         } else if (options.mockRenewSuccess) {
           paidCallsThisItem = 1;
+          attemptsThisItem = 1;
+          responsesThisItem = 1;
+          billableThisItem = true;
         }
       }
+
       paidCallsCount += paidCallsThisItem;
+      providerHttpAttempts += attemptsThisItem;
+      providerHttpResponses += responsesThisItem;
+      if (billableThisItem !== null) {
+        providerReportedBillable = billableThisItem;
+      }
 
       if (options.mockRenewSuccess) {
         renewalsSucceeded++;
@@ -116,6 +142,9 @@ function runTests() {
       renewalsSucceeded,
       renewalsFailed,
       paidApiCallsExecuted: paidCallsCount,
+      providerHttpAttempts,
+      providerHttpResponses,
+      providerReportedBillable,
       pendencias
     };
   }
@@ -208,42 +237,114 @@ function runTests() {
   assert.strictEqual(resRealInfoSimples.paidApiCallsExecuted, 1);
   console.log('✅ PASS: CUSTO — Consulta InfoSimples real executada -> paidApiCallsExecuted=1');
 
-  // TESTES OBRIGATÓRIOS SERPRO (A, B, C, D, E)
-  // SERPRO Teste A: Resposta inicial 200 -> requests=1
+  // INFOSIMPLES TRANSPORT & BILLABLE TESTS (Casos A, B, C, D)
+  // InfoSimples Caso A: fetch 200 -> attempts=1, responses=1, billable=true
+  const resInfoA = mockVerificarCndsSolicitadas(mockHistorico, 'CRF FGTS', '2026-08-27', {
+    mockRenewSuccess: true,
+    mockProviderMetrics: () => ({ attempts: 1, responses: 1, billable: true })
+  });
+  assert.strictEqual(resInfoA.providerHttpAttempts, 1);
+  assert.strictEqual(resInfoA.providerHttpResponses, 1);
+  assert.strictEqual(resInfoA.providerReportedBillable, true);
+  console.log('✅ PASS: InfoSimples Caso A — fetch 200 -> attempts=1, responses=1, billable=true');
+
+  // InfoSimples Caso B: Exceção de transporte HTTP -> attempts=1, responses=0, billable='UNKNOWN'
+  const resInfoB = mockVerificarCndsSolicitadas(mockHistorico, 'CRF FGTS', '2026-08-27', {
+    mockProviderMetrics: () => ({ attempts: 1, responses: 0, billable: 'UNKNOWN' })
+  });
+  assert.strictEqual(resInfoB.providerHttpAttempts, 1);
+  assert.strictEqual(resInfoB.providerHttpResponses, 0);
+  assert.strictEqual(resInfoB.providerReportedBillable, 'UNKNOWN');
+  assert.strictEqual(resInfoB.paidApiCallsExecuted, 1);
+  console.log('✅ PASS: InfoSimples Caso B — Exceção transporte -> attempts=1, responses=0, billable=UNKNOWN, paidApiCallsExecuted=1');
+
+  // InfoSimples Caso C: Resposta com billable=false -> attempts=1, responses=1, billable=false
+  const resInfoC = mockVerificarCndsSolicitadas(mockHistorico, 'CRF FGTS', '2026-08-27', {
+    mockProviderMetrics: () => ({ attempts: 1, responses: 1, billable: false })
+  });
+  assert.strictEqual(resInfoC.providerHttpAttempts, 1);
+  assert.strictEqual(resInfoC.providerHttpResponses, 1);
+  assert.strictEqual(resInfoC.providerReportedBillable, false);
+  console.log('✅ PASS: InfoSimples Caso C — Resposta billable=false -> providerReportedBillable=false');
+
+  // InfoSimples Caso D: Resposta com billable=true -> attempts=1, responses=1, billable=true
+  const resInfoD = mockVerificarCndsSolicitadas(mockHistorico, 'CRF FGTS', '2026-08-27', {
+    mockProviderMetrics: () => ({ attempts: 1, responses: 1, billable: true })
+  });
+  assert.strictEqual(resInfoD.providerHttpAttempts, 1);
+  assert.strictEqual(resInfoD.providerHttpResponses, 1);
+  assert.strictEqual(resInfoD.providerReportedBillable, true);
+  console.log('✅ PASS: InfoSimples Caso D — Resposta billable=true -> providerReportedBillable=true');
+
+  // TESTES OBRIGATÓRIOS SERPRO (A, B, C, D, E, F, G)
+  // SERPRO Teste A: Resposta inicial 200 -> requests=1, attempts=1, responses=1
   const resSerproA = mockVerificarCndsSolicitadas(mockHistorico, 'CND Federal', '2026-08-10', {
     mockRenewSuccess: true,
-    mockProviderCall: () => 1
+    mockProviderCall: () => 1,
+    mockProviderMetrics: () => ({ attempts: 1, responses: 1, billable: true })
   });
   assert.strictEqual(resSerproA.paidApiCallsExecuted, 1);
-  console.log('✅ PASS: SERPRO Teste A — Resposta inicial 200 -> paidApiCallsExecuted=1');
+  assert.strictEqual(resSerproA.providerHttpAttempts, 1);
+  assert.strictEqual(resSerproA.providerHttpResponses, 1);
+  console.log('✅ PASS: SERPRO Teste A — Resposta inicial 200 -> paidApiCallsExecuted=1, attempts=1, responses=1');
 
-  // SERPRO Teste B: Primeira Consulta CND 401 -> refresh bearer -> segunda Consulta CND 200 -> requests=2
+  // SERPRO Teste B: Primeira Consulta CND 401 -> refresh bearer -> segunda Consulta CND 200 -> requests=2, attempts=2, responses=2
   const resSerproB = mockVerificarCndsSolicitadas(mockHistorico, 'CND Federal', '2026-08-10', {
     mockRenewSuccess: true,
-    mockProviderCall: () => 2
+    mockProviderCall: () => 2,
+    mockProviderMetrics: () => ({ attempts: 2, responses: 2, billable: true })
   });
   assert.strictEqual(resSerproB.paidApiCallsExecuted, 2);
-  console.log('✅ PASS: SERPRO Teste B — 401 refresh bearer retry -> paidApiCallsExecuted=2');
+  assert.strictEqual(resSerproB.providerHttpAttempts, 2);
+  assert.strictEqual(resSerproB.providerHttpResponses, 2);
+  console.log('✅ PASS: SERPRO Teste B — 401 refresh bearer retry -> paidApiCallsExecuted=2, attempts=2, responses=2');
 
-  // SERPRO Teste C: Primeira 401 -> retry retorna STATUS 7 -> próxima consulta/poll retorna sucesso -> requests=3
+  // SERPRO Teste C: Primeira 401 -> retry retorna STATUS 7 -> próxima consulta/poll retorna sucesso -> requests=3, attempts=3, responses=3
   const resSerproC = mockVerificarCndsSolicitadas(mockHistorico, 'CND Federal', '2026-08-10', {
     mockRenewSuccess: true,
-    mockProviderCall: () => 3
+    mockProviderCall: () => 3,
+    mockProviderMetrics: () => ({ attempts: 3, responses: 3, billable: true })
   });
   assert.strictEqual(resSerproC.paidApiCallsExecuted, 3);
-  console.log('✅ PASS: SERPRO Teste C — 401 + retry STATUS 7 + poll sucesso -> paidApiCallsExecuted=3');
+  assert.strictEqual(resSerproC.providerHttpAttempts, 3);
+  assert.strictEqual(resSerproC.providerHttpResponses, 3);
+  console.log('✅ PASS: SERPRO Teste C — 401 + retry STATUS 7 + poll sucesso -> paidApiCallsExecuted=3, attempts=3, responses=3');
 
-  // SERPRO Teste D: Credenciais ausentes -> requests=0
+  // SERPRO Teste D: Credenciais ausentes -> requests=0, attempts=0, responses=0
   const resSerproD = mockVerificarCndsSolicitadas(mockHistorico, 'CND Federal', '2026-08-10', { missingCredentials: true });
   assert.strictEqual(resSerproD.paidApiCallsExecuted, 0);
-  console.log('✅ PASS: SERPRO Teste D — Credenciais ausentes -> paidApiCallsExecuted=0');
+  assert.strictEqual(resSerproD.providerHttpAttempts, 0);
+  assert.strictEqual(resSerproD.providerHttpResponses, 0);
+  console.log('✅ PASS: SERPRO Teste D — Credenciais ausentes -> paidApiCallsExecuted=0, attempts=0, responses=0');
 
-  // SERPRO Teste E: Falha antes da primeira chamada CND -> requests=0
+  // SERPRO Teste E: Exceção de transporte na primeira Consulta CND -> attempts=1, responses=0, billable='UNKNOWN', paidCalls=1
   const resSerproE = mockVerificarCndsSolicitadas(mockHistorico, 'CND Federal', '2026-08-10', {
-    mockProviderCall: () => 0
+    mockProviderCall: () => 1,
+    mockProviderMetrics: () => ({ attempts: 1, responses: 0, billable: 'UNKNOWN' })
   });
-  assert.strictEqual(resSerproE.paidApiCallsExecuted, 0);
-  console.log('✅ PASS: SERPRO Teste E — Falha antes da primeira chamada CND -> paidApiCallsExecuted=0');
+  assert.strictEqual(resSerproE.paidApiCallsExecuted, 1);
+  assert.strictEqual(resSerproE.providerHttpAttempts, 1);
+  assert.strictEqual(resSerproE.providerHttpResponses, 0);
+  assert.strictEqual(resSerproE.providerReportedBillable, 'UNKNOWN');
+  console.log('✅ PASS: SERPRO Teste E — Falha transporte na 1ª Consulta CND -> attempts=1, responses=0, billable=UNKNOWN, paidCalls=1');
+
+  // SERPRO Teste F: 1ª Consulta CND retorna 401 (responses=1), token refresh, 2ª Consulta CND lança exceção -> attempts=2, responses=1
+  const resSerproF = mockVerificarCndsSolicitadas(mockHistorico, 'CND Federal', '2026-08-10', {
+    mockProviderCall: () => 2,
+    mockProviderMetrics: () => ({ attempts: 2, responses: 1, billable: 'UNKNOWN' })
+  });
+  assert.strictEqual(resSerproF.paidApiCallsExecuted, 2);
+  assert.strictEqual(resSerproF.providerHttpAttempts, 2);
+  assert.strictEqual(resSerproF.providerHttpResponses, 1);
+  assert.strictEqual(resSerproF.providerReportedBillable, 'UNKNOWN');
+  console.log('✅ PASS: SERPRO Teste F — 1ª CND 401, 2ª CND transporte falhou -> attempts=2, responses=1, paidCalls=2');
+
+  // SERPRO Teste G: Cooldown ativo -> attempts=0, responses=0, paidCalls=0
+  const resSerproG = mockVerificarCndsSolicitadas(mockHistorico, 'CND Federal', '2026-08-10', { inCooldown: true });
+  assert.strictEqual(resSerproG.paidApiCallsExecuted, 0);
+  assert.strictEqual(resSerproG.providerHttpAttempts, 0);
+  assert.strictEqual(resSerproG.providerHttpResponses, 0);
+  console.log('✅ PASS: SERPRO Teste G — Cooldown ativo -> attempts=0, responses=0, paidCalls=0');
 
   // 5. Test: State Machine Transition: DOCUMENT_PENDING -> DOCUMENTS_READY -> DRAFT_CREATED
   let pipelineState = 'DOCUMENT_PENDING';

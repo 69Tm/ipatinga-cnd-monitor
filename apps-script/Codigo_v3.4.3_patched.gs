@@ -3119,11 +3119,22 @@ function renovarCndsVencidasAutomaticamente_(cnpj, vencidas) {
       } else if (cfg.provider === 'serpro') {
         result = emitirCndFederalViaSerpro_(cnpj, cfg);
       } else {
-        result = { success: false, reason: 'provedor não suportado: ' + cfg.provider };
+        result = {
+          success: false,
+          paidApiCallsExecuted: 0,
+          providerHttpAttempts: 0,
+          providerHttpResponses: 0,
+          providerReportedBillable: null,
+          reason: 'provedor não suportado: ' + cfg.provider
+        };
       }
     } catch (error) {
       result = {
         success: false,
+        paidApiCallsExecuted: (error && error.paidApiCallsExecuted !== undefined) ? error.paidApiCallsExecuted : 1,
+        providerHttpAttempts: (error && error.providerHttpAttempts !== undefined) ? error.providerHttpAttempts : 1,
+        providerHttpResponses: (error && error.providerHttpResponses !== undefined) ? error.providerHttpResponses : 0,
+        providerReportedBillable: (error && error.providerReportedBillable !== undefined) ? error.providerReportedBillable : 'UNKNOWN',
         reason: limitarTexto_(String(error && error.message || error), 320)
       };
     }
@@ -3224,6 +3235,9 @@ function emitirCndViaInfosimples_(cnpj, cfg) {
       success: false,
       skipped: true,
       paidApiCallsExecuted: 0,
+      providerHttpAttempts: 0,
+      providerHttpResponses: 0,
+      providerReportedBillable: null,
       reason: 'INFOSIMPLES_TOKEN não configurado nas Propriedades do script'
     };
   }
@@ -3238,16 +3252,25 @@ function emitirCndViaInfosimples_(cnpj, cfg) {
 
   let parsed = null;
   let lastReason = '';
-  let paidCalls = 0;
+  let providerHttpAttempts = 0;
+  let providerHttpResponses = 0;
+  let providerReportedBillable = 'UNKNOWN';
 
   for (let attempt = 1; attempt <= 2; attempt++) {
-    paidCalls++;
-    const response = UrlFetchApp.fetch(endpoint, {
-      method: 'post',
-      payload: payload,
-      muteHttpExceptions: true,
-      followRedirects: true
-    });
+    providerHttpAttempts++;
+    let response;
+    try {
+      response = UrlFetchApp.fetch(endpoint, {
+        method: 'post',
+        payload: payload,
+        muteHttpExceptions: true,
+        followRedirects: true
+      });
+      providerHttpResponses++;
+    } catch (transportError) {
+      lastReason = 'Erro de transporte HTTP ao conectar na Infosimples: ' + (transportError && transportError.message || transportError);
+      break;
+    }
 
     const httpCode = response.getResponseCode();
     const raw = response.getContentText();
@@ -3260,6 +3283,7 @@ function emitirCndViaInfosimples_(cnpj, cfg) {
 
     const apiCode = Number(parsed.code);
     const billable = normalizarBooleanoApi_(parsed.header && parsed.header.billable);
+    providerReportedBillable = billable !== null ? billable : 'UNKNOWN';
 
     if (apiCode === 200) {
       const data = Array.isArray(parsed.data) && parsed.data.length ? parsed.data[0] : {};
@@ -3267,7 +3291,10 @@ function emitirCndViaInfosimples_(cnpj, cfg) {
       if (!pdf) {
         return {
           success: false,
-          paidApiCallsExecuted: paidCalls,
+          paidApiCallsExecuted: providerHttpAttempts,
+          providerHttpAttempts: providerHttpAttempts,
+          providerHttpResponses: providerHttpResponses,
+          providerReportedBillable: providerReportedBillable,
           reason: 'Infosimples processou a consulta, mas não retornou um PDF utilizável em site_receipts',
           apiCode: apiCode,
           billable: billable
@@ -3282,7 +3309,10 @@ function emitirCndViaInfosimples_(cnpj, cfg) {
       if (!validade) {
         return {
           success: false,
-          paidApiCallsExecuted: paidCalls,
+          paidApiCallsExecuted: providerHttpAttempts,
+          providerHttpAttempts: providerHttpAttempts,
+          providerHttpResponses: providerHttpResponses,
+          providerReportedBillable: providerReportedBillable,
           reason: 'não foi possível determinar a validade da certidão retornada',
           apiCode: apiCode,
           billable: billable
@@ -3302,7 +3332,10 @@ function emitirCndViaInfosimples_(cnpj, cfg) {
 
       return Object.assign({
         success: true,
-        paidApiCallsExecuted: paidCalls,
+        paidApiCallsExecuted: providerHttpAttempts,
+        providerHttpAttempts: providerHttpAttempts,
+        providerHttpResponses: providerHttpResponses,
+        providerReportedBillable: providerReportedBillable,
         reason: 'emitida automaticamente via Infosimples',
         apiCode: apiCode,
         billable: billable
@@ -3320,10 +3353,13 @@ function emitirCndViaInfosimples_(cnpj, cfg) {
 
   return {
     success: false,
-    paidApiCallsExecuted: paidCalls,
+    paidApiCallsExecuted: providerHttpAttempts,
+    providerHttpAttempts: providerHttpAttempts,
+    providerHttpResponses: providerHttpResponses,
+    providerReportedBillable: providerReportedBillable,
     reason: lastReason || 'falha não especificada na Infosimples',
     apiCode: parsed ? Number(parsed.code) : null,
-    billable: parsed ? normalizarBooleanoApi_(parsed.header && parsed.header.billable) : null
+    billable: parsed ? normalizarBooleanoApi_(parsed.header && parsed.header.billable) : (providerReportedBillable === 'UNKNOWN' ? null : providerReportedBillable)
   };
 }
 
@@ -3394,10 +3430,30 @@ function emitirCndFederalViaSerpro_(cnpj, cfg) {
 
   let status7Polls = 0;
   let paidCalls = 0;
+  let providerHttpAttempts = 0;
+  let providerHttpResponses = 0;
 
   while (true) {
     let result = chamarSerproCndComRenovacaoToken_(payload, consumerKey, consumerSecret);
-    paidCalls += Number(result.cndRequestsExecuted || 0);
+    const attemptsThisTurn = Number(result.providerHttpAttempts !== undefined ? result.providerHttpAttempts : (result.cndRequestsExecuted || 0));
+    const responsesThisTurn = Number(result.providerHttpResponses !== undefined ? result.providerHttpResponses : 0);
+    paidCalls += attemptsThisTurn;
+    providerHttpAttempts += attemptsThisTurn;
+    providerHttpResponses += responsesThisTurn;
+
+    if (result.transportError) {
+      return {
+        success: false,
+        paidApiCallsExecuted: paidCalls,
+        providerHttpAttempts: providerHttpAttempts,
+        providerHttpResponses: providerHttpResponses,
+        providerReportedBillable: 'UNKNOWN',
+        reason: 'Falha de transporte HTTP na API SERPRO: ' + result.transportError,
+        apiStatus: null,
+        httpCode: null
+      };
+    }
+
     const httpCode = Number(result.httpCode);
     const body = result.body || {};
     const status = Number(body.Status);
@@ -3409,6 +3465,9 @@ function emitirCndFederalViaSerpro_(cnpj, cfg) {
         return {
           success: false,
           paidApiCallsExecuted: paidCalls,
+          providerHttpAttempts: providerHttpAttempts,
+          providerHttpResponses: providerHttpResponses,
+          providerReportedBillable: true,
           reason: 'SERPRO retornou certidão sem DocumentoPdf apesar de GerarCertidaoPdf=true',
           apiStatus: status,
           httpCode: httpCode
@@ -3436,6 +3495,9 @@ function emitirCndFederalViaSerpro_(cnpj, cfg) {
       return Object.assign({
         success: true,
         paidApiCallsExecuted: paidCalls,
+        providerHttpAttempts: providerHttpAttempts,
+        providerHttpResponses: providerHttpResponses,
+        providerReportedBillable: true,
         reason: status === 2
           ? 'nova CND Federal emitida pela API SERPRO'
           : 'CND Federal válida recuperada pela API SERPRO',
@@ -3449,6 +3511,9 @@ function emitirCndFederalViaSerpro_(cnpj, cfg) {
         return {
           success: false,
           paidApiCallsExecuted: paidCalls,
+          providerHttpAttempts: providerHttpAttempts,
+          providerHttpResponses: providerHttpResponses,
+          providerReportedBillable: 'UNKNOWN',
           reason: 'SERPRO permaneceu em processamento após o limite de consultas de continuação',
           apiStatus: status,
           httpCode: httpCode
@@ -3477,6 +3542,9 @@ function emitirCndFederalViaSerpro_(cnpj, cfg) {
     return {
       success: false,
       paidApiCallsExecuted: paidCalls,
+      providerHttpAttempts: providerHttpAttempts,
+      providerHttpResponses: providerHttpResponses,
+      providerReportedBillable: (status === 5 || status === 6 || httpCode >= 500) ? false : 'UNKNOWN',
       reason: limitarTexto_(
         'SERPRO status ' + (isNaN(status) ? '?' : status) +
         ' / HTTP ' + httpCode +
@@ -3490,42 +3558,82 @@ function emitirCndFederalViaSerpro_(cnpj, cfg) {
 }
 
 function chamarSerproCndComRenovacaoToken_(payload, consumerKey, consumerSecret) {
-  let cndRequestsExecuted = 0;
+  let cndAttempts = 0;
+  let cndResponses = 0;
   let bearer = obterBearerSerproCnd_(consumerKey, consumerSecret, false);
-  let response = chamarSerproCnd_(payload, bearer);
-  cndRequestsExecuted++;
+  let res1 = chamarSerproCnd_(payload, bearer);
+  cndAttempts += Number(res1.cndAttempts || 0);
+  cndResponses += Number(res1.cndResponses || 0);
 
-  if (response.httpCode === 401) {
+  if (res1.transportError) {
+    return {
+      httpCode: null,
+      body: {},
+      cndRequestsExecuted: cndAttempts,
+      providerHttpAttempts: cndAttempts,
+      providerHttpResponses: cndResponses,
+      transportError: res1.transportError
+    };
+  }
+
+  if (res1.httpCode === 401) {
     CacheService.getScriptCache().remove(SYSTEM.SERPRO_CND_TOKEN_CACHE_KEY);
     bearer = obterBearerSerproCnd_(consumerKey, consumerSecret, true);
-    response = chamarSerproCnd_(payload, bearer);
-    cndRequestsExecuted++;
+    let res2 = chamarSerproCnd_(payload, bearer);
+    cndAttempts += Number(res2.cndAttempts || 0);
+    cndResponses += Number(res2.cndResponses || 0);
+
+    return {
+      httpCode: res2.httpCode,
+      body: res2.body,
+      cndRequestsExecuted: cndAttempts,
+      providerHttpAttempts: cndAttempts,
+      providerHttpResponses: cndResponses,
+      transportError: res2.transportError || null
+    };
   }
 
   return {
-    httpCode: response.httpCode,
-    body: response.body,
-    cndRequestsExecuted: cndRequestsExecuted
+    httpCode: res1.httpCode,
+    body: res1.body,
+    cndRequestsExecuted: cndAttempts,
+    providerHttpAttempts: cndAttempts,
+    providerHttpResponses: cndResponses
   };
 }
 
 function chamarSerproCnd_(payload, bearer) {
-  const response = UrlFetchApp.fetch(SYSTEM.SERPRO_CND_API_URL, {
-    method: 'post',
-    contentType: 'application/json',
-    headers: {
-      Accept: 'application/json',
-      Authorization: 'Bearer ' + bearer
-    },
-    payload: JSON.stringify(payload),
-    muteHttpExceptions: true,
-    followRedirects: true
-  });
+  let cndAttempts = 1;
+  let cndResponses = 0;
+  try {
+    const response = UrlFetchApp.fetch(SYSTEM.SERPRO_CND_API_URL, {
+      method: 'post',
+      contentType: 'application/json',
+      headers: {
+        Accept: 'application/json',
+        Authorization: 'Bearer ' + bearer
+      },
+      payload: JSON.stringify(payload),
+      muteHttpExceptions: true,
+      followRedirects: true
+    });
+    cndResponses = 1;
 
-  return {
-    httpCode: response.getResponseCode(),
-    body: parseJson_(response.getContentText(), {}) || {}
-  };
+    return {
+      httpCode: response.getResponseCode(),
+      body: parseJson_(response.getContentText(), {}) || {},
+      cndAttempts: cndAttempts,
+      cndResponses: cndResponses
+    };
+  } catch (transportError) {
+    return {
+      httpCode: null,
+      body: {},
+      cndAttempts: cndAttempts,
+      cndResponses: cndResponses,
+      transportError: transportError && transportError.message || String(transportError)
+    };
+  }
 }
 
 function obterBearerSerproCnd_(consumerKey, consumerSecret, forceRefresh) {

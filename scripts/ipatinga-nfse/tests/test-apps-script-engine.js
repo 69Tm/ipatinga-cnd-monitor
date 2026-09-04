@@ -563,10 +563,10 @@ const selSemEmissao = selecionarCndValidaNaData_(sampleHistoricoSemEmissao, 'CRF
 assert.strictEqual(selSemEmissao, null, 'Certidão sem data de emissão deve falhar closed (não reutilizar)');
 console.log('✓ FAIL-CLOSED: Certidão com emissao=null e validade futura -> selecionarCndValidaNaData_ = null');
 
-// Verificação de auditoria de chamadas SERPRO: cndRequestsExecuted no retry 401
-assert.ok(code.includes('cndRequestsExecuted++'), 'chamarSerproCndComRenovacaoToken_ deve incrementar cndRequestsExecuted a cada chamada');
-assert.ok(code.includes('paidCalls += Number(result.cndRequestsExecuted || 0)'), 'emitirCndFederalViaSerpro_ deve acumular cndRequestsExecuted');
-console.log('✓ Auditoria estrutural SERPRO cndRequestsExecuted verificada');
+// Verificação de auditoria de chamadas SERPRO: providerHttpAttempts e providerHttpResponses
+assert.ok(code.includes('cndAttempts +='), 'chamarSerproCndComRenovacaoToken_ deve incrementar cndAttempts');
+assert.ok(code.includes('providerHttpAttempts') && code.includes('providerHttpResponses'), 'emitirCndFederalViaSerpro_ deve registrar providerHttpAttempts e providerHttpResponses');
+console.log('✓ Auditoria estrutural SERPRO providerHttpAttempts/Responses verificada');
 
 console.log('✓ test-apps-script-engine.js PASSED');
 
