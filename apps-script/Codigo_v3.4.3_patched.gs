@@ -3075,7 +3075,7 @@ function renovarCndsVencidasAutomaticamente_(cnpj, vencidas) {
         paidApiCallsExecuted: 0,
         providerHttpAttempts: 0,
         providerHttpResponses: 0,
-        providerReportedBillable: null,
+        providerReportedBillable: 'UNKNOWN',
         reason: 'renovação gerenciada externamente pelo GitHub Actions; Apps Script apenas valida a planilha'
       });
       return;
@@ -3089,7 +3089,7 @@ function renovarCndsVencidasAutomaticamente_(cnpj, vencidas) {
         paidApiCallsExecuted: 0,
         providerHttpAttempts: 0,
         providerHttpResponses: 0,
-        providerReportedBillable: null,
+        providerReportedBillable: 'UNKNOWN',
         reason: 'emissão automática não disponível para esta certidão'
       });
       return;
@@ -3105,7 +3105,7 @@ function renovarCndsVencidasAutomaticamente_(cnpj, vencidas) {
         paidApiCallsExecuted: 0,
         providerHttpAttempts: 0,
         providerHttpResponses: 0,
-        providerReportedBillable: null,
+        providerReportedBillable: 'UNKNOWN',
         reason: providerCheck.reason
       });
       return;
@@ -3121,7 +3121,7 @@ function renovarCndsVencidasAutomaticamente_(cnpj, vencidas) {
         paidApiCallsExecuted: 0,
         providerHttpAttempts: 0,
         providerHttpResponses: 0,
-        providerReportedBillable: null,
+        providerReportedBillable: 'UNKNOWN',
         reason: 'cooldown',
         retryAfter: gate.retryAfter || null
       });
@@ -3141,7 +3141,7 @@ function renovarCndsVencidasAutomaticamente_(cnpj, vencidas) {
           paidApiCallsExecuted: 0,
           providerHttpAttempts: 0,
           providerHttpResponses: 0,
-          providerReportedBillable: null,
+          providerReportedBillable: 'UNKNOWN',
           reason: 'provedor não suportado: ' + cfg.provider
         };
       }
@@ -3149,7 +3149,7 @@ function renovarCndsVencidasAutomaticamente_(cnpj, vencidas) {
       const attempts = (error && error.providerHttpAttempts !== undefined) ? Number(error.providerHttpAttempts) : 0;
       const responses = (error && error.providerHttpResponses !== undefined) ? Number(error.providerHttpResponses) : 0;
       const confirmed = (error && error.confirmedBillableCalls !== undefined) ? Number(error.confirmedBillableCalls) : 0;
-      const billable = (error && error.providerReportedBillable !== undefined) ? error.providerReportedBillable : 'UNKNOWN';
+      const billable = (error && error.providerReportedBillable !== undefined && error.providerReportedBillable !== null) ? error.providerReportedBillable : 'UNKNOWN';
 
       result = {
         success: false,
@@ -3261,7 +3261,7 @@ function emitirCndViaInfosimples_(cnpj, cfg) {
       paidApiCallsExecuted: 0,
       providerHttpAttempts: 0,
       providerHttpResponses: 0,
-      providerReportedBillable: null,
+      providerReportedBillable: 'UNKNOWN',
       reason: 'INFOSIMPLES_TOKEN não configurado nas Propriedades do script'
     };
   }
@@ -3308,9 +3308,13 @@ function emitirCndViaInfosimples_(cnpj, cfg) {
 
     const apiCode = Number(parsed.code);
     const billable = normalizarBooleanoApi_(parsed.header && parsed.header.billable);
-    providerReportedBillable = billable !== null ? billable : 'UNKNOWN';
     if (billable === true) {
+      providerReportedBillable = true;
       confirmedBillableCalls++;
+    } else if (billable === false) {
+      if (providerReportedBillable !== true) {
+        providerReportedBillable = false;
+      }
     }
 
     if (apiCode === 200) {
@@ -3451,7 +3455,7 @@ function emitirCndFederalViaSerpro_(cnpj, cfg) {
       paidApiCallsExecuted: 0,
       providerHttpAttempts: 0,
       providerHttpResponses: 0,
-      providerReportedBillable: null,
+      providerReportedBillable: 'UNKNOWN',
       reason: 'credenciais SERPRO Consulta CND não configuradas; informe SERPRO_CND_CONSUMER_KEY e SERPRO_CND_CONSUMER_SECRET'
     };
   }
@@ -3504,7 +3508,6 @@ function emitirCndFederalViaSerpro_(cnpj, cfg) {
           providerHttpAttempts: providerHttpAttempts,
           providerHttpResponses: providerHttpResponses,
           providerReportedBillable: 'UNKNOWN',
-          billingPolicyInference: 'commercial_billable_on_success_inferred',
           reason: 'SERPRO retornou certidão sem DocumentoPdf apesar de GerarCertidaoPdf=true',
           apiStatus: status,
           httpCode: httpCode
@@ -3536,7 +3539,6 @@ function emitirCndFederalViaSerpro_(cnpj, cfg) {
         providerHttpAttempts: providerHttpAttempts,
         providerHttpResponses: providerHttpResponses,
         providerReportedBillable: 'UNKNOWN',
-        billingPolicyInference: 'commercial_billable_on_success_inferred',
         reason: status === 2
           ? 'nova CND Federal emitida pela API SERPRO'
           : 'CND Federal válida recuperada pela API SERPRO',
@@ -3588,7 +3590,6 @@ function emitirCndFederalViaSerpro_(cnpj, cfg) {
       providerHttpAttempts: providerHttpAttempts,
       providerHttpResponses: providerHttpResponses,
       providerReportedBillable: 'UNKNOWN',
-      billingPolicyInference: isTransientNonBillable ? 'non_billable_transient_inferred' : 'unknown_commercial_policy',
       reason: limitarTexto_(
         'SERPRO status ' + (isNaN(status) ? '?' : status) +
         ' / HTTP ' + httpCode +
