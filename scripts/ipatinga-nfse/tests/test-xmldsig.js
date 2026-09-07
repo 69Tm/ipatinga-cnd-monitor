@@ -128,13 +128,13 @@ async function run() {
 
   if (xmlsecExists) {
     // A. XML original -> DEVE PASSAR (FAIL-CLOSED)
-    execSync(`xmlsec1 --verify --pubkey-cert-pem "${certPath}" --id-attr:Id InfDeclaracaoPrestacaoServico "${xmlPath}"`, { stdio: 'pipe' });
+    execSync(`xmlsec1 --verify --trusted-pem "${certPath}" --id-attr:Id InfDeclaracaoPrestacaoServico "${xmlPath}"`, { stdio: 'pipe' });
     console.log('  ✓ [A] Verificação independente nativa xmlsec1 XML ORIGINAL: OK');
 
     // B. Alterar ValorServicos após assinatura -> xmlsec1 DEVE FALHAR
     let valTamperFailed = false;
     try {
-      execSync(`xmlsec1 --verify --pubkey-cert-pem "${certPath}" --id-attr:Id InfDeclaracaoPrestacaoServico "${tamperedValPath}"`, { stdio: 'pipe' });
+      execSync(`xmlsec1 --verify --trusted-pem "${certPath}" --id-attr:Id InfDeclaracaoPrestacaoServico "${tamperedValPath}"`, { stdio: 'pipe' });
     } catch (e) {
       valTamperFailed = true;
     }
@@ -144,7 +144,7 @@ async function run() {
     // C. Alterar SignatureValue -> xmlsec1 DEVE FALHAR
     let sigTamperFailed = false;
     try {
-      execSync(`xmlsec1 --verify --pubkey-cert-pem "${certPath}" --id-attr:Id InfDeclaracaoPrestacaoServico "${tamperedSigPath}"`, { stdio: 'pipe' });
+      execSync(`xmlsec1 --verify --trusted-pem "${certPath}" --id-attr:Id InfDeclaracaoPrestacaoServico "${tamperedSigPath}"`, { stdio: 'pipe' });
     } catch (e) {
       sigTamperFailed = true;
     }

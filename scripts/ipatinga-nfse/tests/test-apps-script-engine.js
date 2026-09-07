@@ -405,7 +405,7 @@ assert.strictEqual(constantTimeEqualsSimulado_(computedHmac, validSignature), tr
 console.log('✓ Callback valid signature verified');
 
 // 2. Assinatura inválida
-const invalidSignature = validSignature.slice(0, -2) + '00';
+const invalidSignature = (validSignature.startsWith('a') ? 'b' : 'a') + validSignature.slice(1);
 assert.strictEqual(constantTimeEqualsSimulado_(computedHmac, invalidSignature), false);
 console.log('✓ Callback invalid signature rejection verified');
 
@@ -572,6 +572,14 @@ const serproFunctionCode = code.slice(code.indexOf('function emitirCndFederalVia
 assert.ok(!serproFunctionCode.includes("providerReportedBillable: true"), 'SERPRO não pode atribuir providerReportedBillable: true');
 assert.ok(!serproFunctionCode.includes("providerReportedBillable: false"), 'SERPRO não pode atribuir providerReportedBillable: false');
 console.log('✓ Auditoria estrutural SERPRO providerReportedBillable estritamente UNKNOWN verificada');
+
+
+// Test: Zero hardcoded JGKL748V or default 08/2026 in production Apps Script code
+const patchedGsContent = fs.readFileSync(path.join(__dirname, '../../../apps-script/Codigo_v3.4.3_patched.gs'), 'utf8');
+assert(!patchedGsContent.includes("codVerif = 'JGKL748V'"), 'Zero hardcoded JGKL748V assignment in Apps Script');
+assert(!patchedGsContent.includes("Competência 08/2026"), 'Zero hardcoded Competência 08/2026 in draft generation');
+assert(!patchedGsContent.includes("args.periodo || '08/2026'"), 'Zero hardcoded default 08/2026 in salvarDemandaEmissao_');
+console.log('✓ Zero hardcoded JGKL748V and default 08/2026 verified in Apps Script');
 
 console.log('✓ test-apps-script-engine.js PASSED');
 

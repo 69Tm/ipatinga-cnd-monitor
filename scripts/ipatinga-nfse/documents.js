@@ -9,6 +9,7 @@ const { URL } = require('url');
 const { CONFIG } = require('./config');
 const { readSheetValues, appendSheetValues, updateSheetValues, getSpreadsheetMetadata, createSheetIfNotExists, uploadDriveBuffer } = require('./google');
 const { ensureLedgerSheet, loadLedger, findLedgerEntry } = require('./ledger');
+const { upsertNotas } = require('./sheets');
 const { buildCabecalho, parseConsultarNfseResposta } = require('./abrasf');
 const { callSoapOperation } = require('./soap');
 const { buildConsultarNfsePorRpsEnvio } = require('./issue');
@@ -343,6 +344,15 @@ async function fetchOfficialNfseDocument({
   }
 
   const fileName = `NFSE-${nfseNumero}-DEXMED-${codigoVerificacao || 'OFFICIAL'}-OFFICIAL.xml`;
+
+  if (!dryRun && environment === 'production') {
+    try {
+      const upsert = dependencies.upsertNotas || upsertNotas;
+      await upsert([nota], spreadsheetId, false, dependencies);
+    } catch (upsertErr) {
+      console.log('[WARN] Falha ao sincronizar nota na aba Notas via upsertNotas: ' + upsertErr.message);
+    }
+  }
 
   if (dryRun) {
     return {
