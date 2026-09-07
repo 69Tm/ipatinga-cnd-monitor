@@ -148,6 +148,7 @@ async function runDocumentsTests() {
 
   const dependencies = {
     ensureLedgerSheet: async () => {},
+    upsertNotas: async (notas) => ({ totalProcessed: (notas || []).length }),
     loadLedger: async () => mockLedger,
     callSoapOperation: async (args) => {
       soapCalls.push(args);
@@ -365,17 +366,65 @@ async function runDocumentsTests() {
     }
   };
 
-  const replayRes = await fetchOfficialNfseDocument({
+  const replayRes18 = await fetchOfficialNfseDocument({
     requestId: '1a03eb59b2dd3e5f',
     itemIndex: 1,
     environment: 'production',
     certData: mockCertData
   }, replayDependencies);
 
-  assert.strictEqual(replayRes.status, 'ALREADY_READY');
-  assert.strictEqual(replayRes.driveFileId, '1ZFlpjQW61Idp9whOcKY3a5XT0eNLjeO3');
+  assert.strictEqual(replayRes18.status, 'ALREADY_READY');
+  assert.strictEqual(replayRes18.driveFileId, '1ZFlpjQW61Idp9whOcKY3a5XT0eNLjeO3');
   assert.strictEqual(soapCallsReplay, 0, 'Não deve fazer chamada SOAP se já estiver READY');
   console.log('✓ Idempotência validada: documento READY não realiza novas chamadas fiscais');
+
+  
+  // 5. BLOQUEADOR C: Falha de upsertNotas em produção DEVE interromper o pipeline (Fail-Closed)
+  let upsertFailedThrew = false;
+  try {
+    await fetchOfficialNfseDocument({
+      requestId: '1a078bf7b4b99f79',
+      itemIndex: 1,
+      environment: 'production',
+      certData: { loaded: true, isValid: true }
+    }, {
+      ensureLedgerSheet: async () => {},
+      loadLedger: async () => [{ environment: 'production', request_id: '1a078bf7b4b99f79', item_index: '1', rps_numero: '104', rps_serie: '1', rps_tipo: '1' }],
+      callSoapOperation: async () => ({ outputXml: sampleOfficialXmlNormal }),
+      upsertNotas: async () => { throw new Error('GOOGLE_SHEETS_API_UNAVAILABLE'); },
+      readSheetValues: async () => [['request_id']],
+      getSpreadsheetMetadata: async () => ({ sheets: [{ properties: { title: 'Documentos NFS-e' } }] })
+    });
+  } catch (err) {
+    if (err.message && err.message.includes('NFSE_NOTAS_SYNC_FAILED')) {
+      upsertFailedThrew = true;
+    }
+  }
+  assert.strictEqual(upsertFailedThrew, true, 'fetchOfficialNfseDocument DEVE lançar NFSE_NOTAS_SYNC_FAILED quando upsertNotas falha em produção');
+  console.log('✓ [BLOQUEADOR C] Falha de upsertNotas interrompe pipeline com erro explícito NFSE_NOTAS_SYNC_FAILED');
+
+  // 6. Exactly Once Replay: Documento já READY não gera novo RPS nem nova consulta SOAP
+  let soapCallsCount = 0;
+  const replayRes19 = await fetchOfficialNfseDocument({
+    requestId: '1a078bf7b4b99f79',
+    itemIndex: 1,
+    environment: 'production',
+    certData: { loaded: true, isValid: true }
+  }, {
+    ensureLedgerSheet: async () => {},
+    loadLedger: async () => [{ environment: 'production', request_id: '1a078bf7b4b99f79', item_index: '1', rps_numero: '104', rps_serie: '1', rps_tipo: '1' }],
+    callSoapOperation: async () => { soapCallsCount++; return { outputXml: sampleOfficialXmlNormal }; },
+    readSheetValues: async () => [
+      ['request_id', 'item_index', 'rps_numero', 'nfse_numero', 'tipo', 'source', 'drive_file_id', 'sha256', 'status', 'created_at', 'error'],
+      ['1a078bf7b4b99f79', '1', '104', '19', 'NFSE_XML', 'CONSULTAR_NFSE_POR_RPS', '147D6hM8V7oYtL2oS5FxnEOIIuTXesKKX', '9f21e2e04aeec8f571c21451ee5db257d546bf28ffbd2770b19eb2252a4070a1', 'READY', '2026-09-07T10:00:00Z', '']
+    ],
+    getSpreadsheetMetadata: async () => ({ sheets: [{ properties: { title: 'Documentos NFS-e' } }] })
+  });
+
+  assert.strictEqual(replayRes19.status, 'ALREADY_READY');
+  assert.strictEqual(replayRes19.idempotentReplay, true);
+  assert.strictEqual(soapCallsCount, 0, 'Replay não deve realizar novas chamadas SOAP');
+  console.log('✓ [EXACTLY-ONCE] Replay de demanda READY preserva idempotência total');
 
   console.log('✓ test-documents.js PASSED');
 }

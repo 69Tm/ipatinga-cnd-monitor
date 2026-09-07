@@ -350,7 +350,7 @@ async function fetchOfficialNfseDocument({
       const upsert = dependencies.upsertNotas || upsertNotas;
       await upsert([nota], spreadsheetId, false, dependencies);
     } catch (upsertErr) {
-      console.log('[WARN] Falha ao sincronizar nota na aba Notas via upsertNotas: ' + upsertErr.message);
+      throw new Error(`NFSE_NOTAS_SYNC_FAILED: Falha ao sincronizar NFS-e ${nfseNumero} na aba Notas: ${upsertErr.message}`);
     }
   }
 

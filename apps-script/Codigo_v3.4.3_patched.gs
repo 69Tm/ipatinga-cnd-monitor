@@ -558,11 +558,11 @@ function doPost(e) {
 }
 
 function extrairDadosOficiaisXmlNfse_(xmlContent) {
-  if (!xmlContent) return {};
+  if (!xmlContent) return null;
   const str = typeof xmlContent === 'string' ? xmlContent : Utilities.newBlob(xmlContent).getDataAsString('utf-8');
   
   const extractTag = (tag) => {
-    const match = str.match(new RegExp('<(?:[a-zA-Z0-9]+:)?' + tag + '[^>]*>([\s\S]*?)<\/(?:[a-zA-Z0-9]+:)?' + tag + '>', 'i'));
+    const match = str.match(new RegExp('<(?:[a-zA-Z0-9]+:)?' + tag + '[^>]*>([\\s\\S]*?)<\\/(?:[a-zA-Z0-9]+:)?' + tag + '>', 'i'));
     return match ? match[1].trim() : '';
   };
 
@@ -573,6 +573,12 @@ function extrairDadosOficiaisXmlNfse_(xmlContent) {
   const valorServicosRaw = extractTag('ValorServicos');
   const discriminacao = extractTag('Discriminacao');
   const itemListaServico = extractTag('ItemListaServico');
+  const codigoTributacaoMunicipio = extractTag('CodigoTributacaoMunicipio');
+  const codigoMunicipio = extractTag('MunicipioIncidencia') || extractTag('CodigoMunicipio');
+  const aliquotaRaw = extractTag('Aliquota');
+  const valorIssRaw = extractTag('ValorIss');
+  const nbs = extractTag('cNBS') || extractTag('Nbs');
+  const chaveAcesso = extractTag('ChaveAcesso');
   const codigoCancelamento = extractTag('CodigoCancelamento');
   const dataCancelamento = extractTag('DataHora');
   
@@ -584,14 +590,14 @@ function extrairDadosOficiaisXmlNfse_(xmlContent) {
 
   let competencia = '';
   if (competenciaRaw) {
-    const dMatch = competenciaRaw.match(/(\d{4})-(\d{2})/);
+    const dMatch = competenciaRaw.match(/^(\d{4})-(\d{2})/);
     if (dMatch) {
       competencia = dMatch[2] + '/' + dMatch[1];
     } else if (competenciaRaw.includes('/')) {
       competencia = competenciaRaw;
     }
   } else if (dataEmissaoRaw) {
-    const dMatch = dataEmissaoRaw.match(/(\d{4})-(\d{2})/);
+    const dMatch = dataEmissaoRaw.match(/^(\d{4})-(\d{2})/);
     if (dMatch) {
       competencia = dMatch[2] + '/' + dMatch[1];
     }
@@ -608,7 +614,23 @@ function extrairDadosOficiaisXmlNfse_(xmlContent) {
     } catch (_) {}
   }
 
-  const valorServicos = parseFloat(valorServicosRaw.replace(',', '.')) || 0;
+  let valorServicos = null;
+  if (valorServicosRaw) {
+    const v = parseFloat(valorServicosRaw.replace(',', '.'));
+    if (!isNaN(v)) valorServicos = v;
+  }
+
+  let aliquota = null;
+  if (aliquotaRaw) {
+    const a = parseFloat(aliquotaRaw.replace(',', '.'));
+    if (!isNaN(a)) aliquota = a;
+  }
+
+  let valorIss = null;
+  if (valorIssRaw) {
+    const i = parseFloat(valorIssRaw.replace(',', '.'));
+    if (!isNaN(i)) valorIss = i;
+  }
 
   return {
     numero,
@@ -616,10 +638,17 @@ function extrairDadosOficiaisXmlNfse_(xmlContent) {
     dataEmissao,
     dataEmissaoRaw,
     competencia,
+    competenciaRaw,
     valorServicos,
     valorServicosRaw,
     discriminacao,
     itemListaServico,
+    codigoTributacaoMunicipio,
+    codigoMunicipio,
+    aliquota,
+    valorIss,
+    nbs,
+    chaveAcesso,
     cnpjTomador: (cnpjTomador || cpfTomador).trim(),
     razaoSocialTomador: razaoSocialTomador.trim(),
     codigoCancelamento,
@@ -857,92 +886,127 @@ function processarCallbackDocumentoNfse_(e, payload, rawContent) {
     sheetDocumentos.appendRow(docRecord);
   }
 
-  // 12. Atualização ou inserção da nota na aba Notas (NORMAL ou CANCELADA)
+  // 12. Sincronização canônica da aba Notas (FAIL-CLOSED com cabeçalhos reais)
   const isCancelled = nfseStatusPayload === 'CANCELADA' || Boolean(nfseCanceladaAt);
   const sheetNotas = ssNfse.getSheetByName('Notas');
-  if (sheetNotas) {
-    const notasData = sheetNotas.getDataRange().getValues();
-    const notasHeaders = notasData.length > 0 ? notasData[0].map(h => String(h || '').toLowerCase().trim()) : [];
-    
-    // Extrai dados oficiais do XML recebido
-    const xmlParsed = extrairDadosOficiaisXmlNfse_(Utilities.newBlob(rawBytes).getDataAsString('utf-8'));
-    
-    const colNumNota = notasHeaders.findIndex(h => h.includes('número') || h.includes('numero') || h.includes('nfs-e') || h.includes('nº'));
-    const colComp = notasHeaders.indexOf('competência');
-    const colEmissao = notasHeaders.indexOf('data/hora emissão');
-    const colTomador = notasHeaders.indexOf('tomador');
-    const colCnpj = notasHeaders.indexOf('cnpj/cpf');
-    const colDisc = notasHeaders.indexOf('discriminação dos serviços');
-    const colVal = notasHeaders.indexOf('valor dos serviços');
-    const colChave = notasHeaders.indexOf('chave de acesso');
-    const colStatusNota = notasHeaders.indexOf('status');
-    const colObsNota = notasHeaders.indexOf('observações');
-    const colFonteApi = notasHeaders.indexOf('fonte api');
-    const colSyncApi = notasHeaders.indexOf('última sincronização api');
-    const colCodVerif = notasHeaders.indexOf('código de verificação');
-    const colSitApi = notasHeaders.indexOf('situação api');
+  if (!sheetNotas) {
+    throw new Error('LEDGER_NOTAS_SHEET_MISSING: Aba Notas não encontrada na planilha NFS-e.');
+  }
 
-    let existingNotaRow = -1;
-    for (let n = 1; n < notasData.length; n++) {
-      const rowVal = String(colNumNota >= 0 ? notasData[n][colNumNota] : notasData[n][0] || '').trim();
-      if (rowVal === nfseNumero) {
-        existingNotaRow = n + 1; // 1-based index
-        break;
-      }
+  const notasData = sheetNotas.getDataRange().getValues();
+  if (notasData.length < 1) {
+    throw new Error('LEDGER_NOTAS_EMPTY: Aba Notas sem cabeçalhos.');
+  }
+
+  const notasHeaders = notasData[0].map(h => String(h || '').toLowerCase().trim());
+  const findCol = (predicate) => notasHeaders.findIndex(predicate);
+
+  const colNumNota = findCol(h => h === 'nº' || h === 'nº nfs-e' || h === 'numero' || h === 'número');
+  const colPeriodoRef = findCol(h => h.includes('período') || h.includes('periodo'));
+  const colComp = findCol(h => h.includes('competência') || h.includes('competencia'));
+  const colEmissao = findCol(h => h === 'emissão' || h === 'emissao' || h.includes('data/hora emissão'));
+  const colTomador = findCol(h => h === 'tomador');
+  const colCnpj = findCol(h => h.includes('cnpj') || h.includes('cpf'));
+  const colCategoria = findCol(h => h.includes('categoria'));
+  const colDisc = findCol(h => h.includes('descrição') || h.includes('descricao') || h.includes('discriminação') || h.includes('discriminacao'));
+  const colVal = findCol(h => h.includes('valor'));
+  const colCodTribNac = findCol(h => h.includes('trib. nacional') || h.includes('trib nacional'));
+  const colCodTribMun = findCol(h => h.includes('trib. municipal') || h.includes('trib municipal'));
+  const colLocalPrest = findCol(h => h.includes('local'));
+  const colAliq = findCol(h => h.includes('alíquota') || h.includes('aliquota'));
+  const colIss = findCol(h => h.includes('iss'));
+  const colNbs = findCol(h => h === 'nbs');
+  const colChave = findCol(h => h.includes('chave'));
+  const colFonte = findCol(h => h === 'fonte');
+  const colEmailOrigem = findCol(h => h.includes('e-mail') || h.includes('email'));
+  const colStatusNota = findCol(h => h === 'status');
+  const colObsNota = findCol(h => h.includes('observações') || h.includes('observacoes'));
+  const colFonteApi = findCol(h => h.includes('fonte api'));
+  const colSyncApi = findCol(h => h.includes('última sincronização') || h.includes('sincronizacao'));
+  const colCodVerif = findCol(h => h.includes('verificação') || h.includes('verificacao') || h.includes('código de verificação'));
+  const colSitApi = findCol(h => h.includes('situação api') || h.includes('situacao api'));
+
+  if (colNumNota < 0 || colComp < 0 || colVal < 0 || colStatusNota < 0) {
+    throw new Error('LEDGER_NOTAS_HEADERS_INVALID: Cabeçalhos essenciais ausentes na aba Notas.');
+  }
+
+  // Extrai dados oficiais do XML recebido
+  const xmlParsed = extrairDadosOficiaisXmlNfse_(Utilities.newBlob(rawBytes).getDataAsString('utf-8'));
+  if (!xmlParsed) {
+    throw new Error('NFSE_NOTAS_SYNC_INCOMPLETE: Falha ao interpretar XML oficial recebido.');
+  }
+
+  const finalNumero = xmlParsed.numero || nfseNumero;
+  const finalCodVerif = xmlParsed.codigoVerificacao || codigoVerificacao;
+  const finalComp = xmlParsed.competencia;
+  const finalValServicos = xmlParsed.valorServicos;
+
+  // Validação estrita: dados fiscais obrigatórios NÃO podem ser vazios ou inventados
+  if (!finalNumero || !finalCodVerif || !finalComp || finalValServicos === null || finalValServicos === undefined || isNaN(finalValServicos)) {
+    throw new Error('NFSE_NOTAS_SYNC_INCOMPLETE: Dados fiscais obrigatórios ausentes no XML oficial (numero, codigoVerificacao, competencia, valorServicos).');
+  }
+
+  let existingNotaRow = -1;
+  let existingRowData = null;
+  for (let n = 1; n < notasData.length; n++) {
+    const rowVal = String(notasData[n][colNumNota] || '').trim();
+    if (rowVal === finalNumero) {
+      existingNotaRow = n + 1; // 1-based index
+      existingRowData = notasData[n];
+      break;
     }
+  }
 
-    const valorFormatado = (xmlParsed.valorServicos || 0) > 0 ? xmlParsed.valorServicos : 10.00;
-    const finalComp = xmlParsed.competencia || '09/2026';
-    const finalCodVerif = xmlParsed.codigoVerificacao || codigoVerificacao;
-    const finalEmissao = xmlParsed.dataEmissao || nowIso;
+  const cancelAudit = isCancelled ? ('Cancelamento confirmado via ConsultarNfsePorRps em ' + (nfseCanceladaAt || nowIso)) : '';
 
-    if (existingNotaRow > 0) {
-      if (isCancelled) {
-        if (colStatusNota >= 0) sheetNotas.getRange(existingNotaRow, colStatusNota + 1).setValue('CANCELADA');
-        if (colSitApi >= 0) sheetNotas.getRange(existingNotaRow, colSitApi + 1).setValue('Cancelada');
-        if (colSyncApi >= 0) sheetNotas.getRange(existingNotaRow, colSyncApi + 1).setValue(nowIso);
-        if (colObsNota >= 0) {
-          const prevObs = String(notasData[existingNotaRow - 1][colObsNota] || '').trim();
-          const cancelAudit = 'Cancelamento confirmado via ConsultarNfsePorRps em ' + (nfseCanceladaAt || nowIso);
-          sheetNotas.getRange(existingNotaRow, colObsNota + 1).setValue(prevObs ? (prevObs + ' | ' + cancelAudit) : cancelAudit);
-        }
-      } else {
-        if (colStatusNota >= 0) sheetNotas.getRange(existingNotaRow, colStatusNota + 1).setValue('NORMAL');
-        if (colSitApi >= 0) sheetNotas.getRange(existingNotaRow, colSitApi + 1).setValue('Emitida');
-        if (colSyncApi >= 0) sheetNotas.getRange(existingNotaRow, colSyncApi + 1).setValue(nowIso);
-        if (colCodVerif >= 0 && finalCodVerif) sheetNotas.getRange(existingNotaRow, colCodVerif + 1).setValue(finalCodVerif);
-        if (colComp >= 0 && finalComp) sheetNotas.getRange(existingNotaRow, colComp + 1).setValue(finalComp);
-        if (colVal >= 0 && valorFormatado) sheetNotas.getRange(existingNotaRow, colVal + 1).setValue(valorFormatado);
-      }
-    } else {
-      const newNotaRow = [
-        nfseNumero,
-        finalComp,
-        finalComp,
-        finalEmissao,
-        xmlParsed.razaoSocialTomador || 'Tomador Oficial',
-        xmlParsed.cnpjTomador || '',
-        'Prestação de Serviços',
-        xmlParsed.discriminacao || 'Serviços médicos',
-        valorFormatado,
-        xmlParsed.itemListaServico || '',
-        '',
-        'Ipatinga/MG',
-        0.00,
-        0.00,
-        '',
-        '',
-        'OFFICIAL_WS',
-        '',
-        isCancelled ? 'CANCELADA' : 'NORMAL',
-        isCancelled ? ('Cancelamento confirmado via ConsultarNfsePorRps em ' + (nfseCanceladaAt || nowIso)) : 'Importada via callback oficial ConsultarNfsePorRps',
-        'PROVEDOR_OFICIAL',
-        nowIso,
-        finalCodVerif,
-        isCancelled ? 'Cancelada' : 'Emitida'
-      ];
-      sheetNotas.appendRow(newNotaRow);
+  if (existingNotaRow > 0) {
+    // Atualiza linha existente preservando colunas humanas
+    if (colStatusNota >= 0) sheetNotas.getRange(existingNotaRow, colStatusNota + 1).setValue(isCancelled ? 'CANCELADA' : 'NORMAL');
+    if (colSitApi >= 0) sheetNotas.getRange(existingNotaRow, colSitApi + 1).setValue(isCancelled ? 'Cancelada' : 'Emitida');
+    if (colSyncApi >= 0) sheetNotas.getRange(existingNotaRow, colSyncApi + 1).setValue(nowIso);
+    if (colCodVerif >= 0 && finalCodVerif) sheetNotas.getRange(existingNotaRow, colCodVerif + 1).setValue(finalCodVerif);
+    if (colComp >= 0 && finalComp) sheetNotas.getRange(existingNotaRow, colComp + 1).setValue(finalComp);
+    if (colVal >= 0) sheetNotas.getRange(existingNotaRow, colVal + 1).setValue(finalValServicos);
+    if (colTomador >= 0 && xmlParsed.razaoSocialTomador) sheetNotas.getRange(existingNotaRow, colTomador + 1).setValue(xmlParsed.razaoSocialTomador);
+    if (colCnpj >= 0 && xmlParsed.cnpjTomador) sheetNotas.getRange(existingNotaRow, colCnpj + 1).setValue(xmlParsed.cnpjTomador);
+    if (colDisc >= 0 && xmlParsed.discriminacao) sheetNotas.getRange(existingNotaRow, colDisc + 1).setValue(xmlParsed.discriminacao);
+    if (colEmissao >= 0 && xmlParsed.dataEmissao) sheetNotas.getRange(existingNotaRow, colEmissao + 1).setValue(xmlParsed.dataEmissao);
+    if (colChave >= 0 && xmlParsed.chaveAcesso) sheetNotas.getRange(existingNotaRow, colChave + 1).setValue(xmlParsed.chaveAcesso);
+    if (colFonteApi >= 0) sheetNotas.getRange(existingNotaRow, colFonteApi + 1).setValue('Prefeitura Ipatinga — ABRASF 2.04');
+    if (isCancelled && colObsNota >= 0) {
+      const prevObs = String(existingRowData[colObsNota] || '').trim();
+      sheetNotas.getRange(existingNotaRow, colObsNota + 1).setValue(prevObs ? (prevObs + ' | ' + cancelAudit) : cancelAudit);
     }
+  } else {
+    // Nova Nota -> Constrói linha com 24 colunas respeitando o schema exato A:X sem valores fictícios
+    const numCols = Math.max(24, notasHeaders.length);
+    const newRow = new Array(numCols).fill('');
+    if (colNumNota >= 0) newRow[colNumNota] = finalNumero;
+    if (colPeriodoRef >= 0) newRow[colPeriodoRef] = '';
+    if (colComp >= 0) newRow[colComp] = finalComp;
+    if (colEmissao >= 0) newRow[colEmissao] = xmlParsed.dataEmissao || '';
+    if (colTomador >= 0) newRow[colTomador] = xmlParsed.razaoSocialTomador || '';
+    if (colCnpj >= 0) newRow[colCnpj] = xmlParsed.cnpjTomador || '';
+    if (colCategoria >= 0) newRow[colCategoria] = '';
+    if (colDisc >= 0) newRow[colDisc] = xmlParsed.discriminacao || '';
+    if (colVal >= 0) newRow[colVal] = finalValServicos;
+    if (colCodTribNac >= 0) newRow[colCodTribNac] = xmlParsed.itemListaServico || '';
+    if (colCodTribMun >= 0) newRow[colCodTribMun] = xmlParsed.codigoTributacaoMunicipio || '';
+    if (colLocalPrest >= 0) newRow[colLocalPrest] = xmlParsed.codigoMunicipio || '';
+    if (colAliq >= 0) newRow[colAliq] = xmlParsed.aliquota !== null ? xmlParsed.aliquota : '';
+    if (colIss >= 0) newRow[colIss] = xmlParsed.valorIss !== null ? xmlParsed.valorIss : '';
+    if (colNbs >= 0) newRow[colNbs] = xmlParsed.nbs || '';
+    if (colChave >= 0) newRow[colChave] = xmlParsed.chaveAcesso || '';
+    if (colFonte >= 0) newRow[colFonte] = 'API';
+    if (colEmailOrigem >= 0) newRow[colEmailOrigem] = '';
+    if (colStatusNota >= 0) newRow[colStatusNota] = isCancelled ? 'CANCELADA' : 'NORMAL';
+    if (colObsNota >= 0) newRow[colObsNota] = cancelAudit;
+    if (colFonteApi >= 0) newRow[colFonteApi] = 'Prefeitura Ipatinga — ABRASF 2.04';
+    if (colSyncApi >= 0) newRow[colSyncApi] = nowIso;
+    if (colCodVerif >= 0) newRow[colCodVerif] = finalCodVerif;
+    if (colSitApi >= 0) newRow[colSitApi] = isCancelled ? 'Cancelada' : 'Emitida';
+
+    sheetNotas.appendRow(newRow);
   }
 
   // 13. Atualizar Demanda via Header Mapping sem sobrescrever Observações
@@ -6101,55 +6165,64 @@ function processarDocumentosERascunhos_() {
           let codVerif = '';
           let compNota = '';
           let chaveAcesso = '';
-          let valServicos = 0;
+          let valServicos = null;
 
-          // 1. Tentar obter da aba Notas
+          // 1. Tentar obter da aba Notas usando cabeçalhos reais
           if (notasData && notasData.length > 1) {
             const nHeaders = notasData[0].map(h => String(h || '').toLowerCase().trim());
-            const cNum = nHeaders.findIndex(h => h.includes('número') || h.includes('numero') || h.includes('nfs-e') || h.includes('nº'));
-            const cComp = nHeaders.indexOf('competência');
+            const cNum = nHeaders.findIndex(h => h === 'nº' || h === 'nº nfs-e' || h === 'numero' || h === 'número');
+            const cComp = nHeaders.findIndex(h => h.includes('competência') || h.includes('competencia'));
             const cVal = nHeaders.findIndex(h => h.includes('valor'));
             const cChave = nHeaders.findIndex(h => h.includes('chave'));
-            const cCodVerif = nHeaders.findIndex(h => h.includes('verificação') || h.includes('verificacao') || h.includes('código'));
+            const cCodVerif = nHeaders.findIndex(h => h.includes('verificação') || h.includes('verificacao') || h.includes('código de verificação'));
 
             for (let n = 1; n < notasData.length; n++) {
               const nRow = notasData[n];
               const numVal = String(cNum >= 0 ? nRow[cNum] : nRow[0] || '').trim();
               if (numVal === d.nfseNumero) {
-                codVerif = String(cCodVerif >= 0 ? nRow[cCodVerif] : nRow[22] || '').trim();
-                compNota = String(cComp >= 0 ? nRow[cComp] : nRow[2] || '').trim();
-                chaveAcesso = String(cChave >= 0 ? nRow[cChave] : nRow[15] || '').trim();
-                const rawV = cVal >= 0 ? nRow[cVal] : nRow[8];
-                valServicos = typeof rawV === 'number' ? rawV : parseFloat(String(rawV || '0').replace('R$', '').replace(/\./g, '').replace(',', '.').trim()) || 0;
+                codVerif = String(cCodVerif >= 0 ? nRow[cCodVerif] : '').trim();
+                compNota = String(cComp >= 0 ? nRow[cComp] : '').trim();
+                chaveAcesso = String(cChave >= 0 ? nRow[cChave] : '').trim();
+                const rawV = cVal >= 0 ? nRow[cVal] : null;
+                if (typeof rawV === 'number' && !isNaN(rawV)) {
+                  valServicos = rawV;
+                } else if (rawV) {
+                  const cleaned = String(rawV).replace('R$', '').replace(/\./g, '').replace(',', '.').trim();
+                  const pVal = parseFloat(cleaned);
+                  if (!isNaN(pVal)) valServicos = pVal;
+                }
                 break;
               }
             }
           }
 
           // 2. Fallback: extrair diretamente do arquivo XML oficial no Drive se algum campo estiver ausente
-          if (!codVerif || !compNota || !valServicos) {
+          if (!codVerif || !compNota || valServicos === null) {
             try {
               const f = DriveApp.getFileById(d.driveFileId);
               const xmlContent = f.getBlob().getDataAsString('utf-8');
               const extracted = extrairDadosOficiaisXmlNfse_(xmlContent);
-              if (!codVerif) codVerif = extracted.codigoVerificacao;
-              if (!compNota) compNota = extracted.competencia;
-              if (!valServicos) valServicos = extracted.valorServicos;
+              if (extracted) {
+                if (!codVerif && extracted.codigoVerificacao) codVerif = extracted.codigoVerificacao;
+                if (!compNota && extracted.competencia) compNota = extracted.competencia;
+                if (valServicos === null && extracted.valorServicos !== null) valServicos = extracted.valorServicos;
+                if (!chaveAcesso && extracted.chaveAcesso) chaveAcesso = extracted.chaveAcesso;
+              }
             } catch (eXml) {
               console.log('[WARN] Falha ao ler XML oficial do Drive: ' + eXml.message);
             }
           }
 
-          // Validação fail-closed estrita
-          if (!codVerif || !compNota || !valServicos || isNaN(valServicos) || valServicos <= 0) {
+          // Validação fail-closed estrita: NENHUM fallback inventado
+          if (!codVerif || !compNota || valServicos === null || isNaN(valServicos) || valServicos <= 0) {
             draftDataValid = false;
-            draftDataError = 'NFSE_DRAFT_DATA_INCOMPLETE: codVerif=' + codVerif + ', comp=' + compNota + ', valor=' + valServicos;
+            draftDataError = 'NFSE_DRAFT_DATA_INCOMPLETE: codVerif=' + (codVerif || 'AUSENTE') + ', comp=' + (compNota || 'AUSENTE') + ', valor=' + (valServicos !== null ? valServicos : 'AUSENTE');
             break;
           }
 
           let linha = '• NFS-e nº ' + d.nfseNumero + ' — Competência ' + compNota + ' (R$ ' + Number(valServicos).toFixed(2).replace('.', ',') + ')' +
             '\n  Código de Verificação: ' + codVerif;
-          if (chaveAcesso && chaveAcesso !== 'N/A') {
+          if (chaveAcesso && chaveAcesso !== 'N/A' && chaveAcesso.trim() !== '') {
             linha += '\n  Chave de Acesso: ' + chaveAcesso;
           }
           linhasNotas.push(linha);

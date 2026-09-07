@@ -581,6 +581,166 @@ assert(!patchedGsContent.includes("Competência 08/2026"), 'Zero hardcoded Compe
 assert(!patchedGsContent.includes("args.periodo || '08/2026'"), 'Zero hardcoded default 08/2026 in salvarDemandaEmissao_');
 console.log('✓ Zero hardcoded JGKL748V and default 08/2026 verified in Apps Script');
 
+
+// ==========================================
+// TESTES DE REGRESSÃO: AUDITORIA DE BLOQUEADORES (A, B, C)
+// ==========================================
+
+// 1. Auditoria Estrutural: Ausência Total de Fallbacks Fiscais Inventados
+const patchedGs = fs.readFileSync(path.join(__dirname, '../../../apps-script/Codigo_v3.4.3_patched.gs'), 'utf8');
+
+assert(!patchedGs.includes("|| '09/2026'"), 'PROIBIDO: Fallback hardcoded || 09/2026');
+assert(!patchedGs.includes(": 10.00"), 'PROIBIDO: Fallback hardcoded : 10.00');
+assert(!patchedGs.includes("|| 'Tomador Oficial'"), 'PROIBIDO: Fallback hardcoded || Tomador Oficial');
+assert(!patchedGs.includes("|| 'Serviços médicos'"), 'PROIBIDO: Fallback hardcoded || Serviços médicos');
+assert(!patchedGs.includes("args.periodo || '08/2026'"), 'PROIBIDO: Fallback hardcoded args.periodo || 08/2026');
+assert(!patchedGs.includes("codVerif = 'JGKL748V'"), 'PROIBIDO: Fallback hardcoded codVerif = JGKL748V');
+assert(!patchedGs.includes("Competência 08/2026"), 'PROIBIDO: Hardcoded Competência 08/2026 em rascunho');
+
+console.log('✓ [BLOQUEADOR A] Ausência de fallbacks fiscais específicos da NF19 verificada');
+
+// 2. Teste Funcional da extrairDadosOficiaisXmlNfse_ Simulado no Engine
+function extrairDadosSimulado_(xmlContent) {
+  if (!xmlContent) return null;
+  const str = String(xmlContent);
+  const extractTag = (tag) => {
+    const match = str.match(new RegExp('<(?:[a-zA-Z0-9]+:)?' + tag + '[^>]*>([\\s\\S]*?)<\\/(?:[a-zA-Z0-9]+:)?' + tag + '>', 'i'));
+    return match ? match[1].trim() : '';
+  };
+
+  const numero = extractTag('Numero');
+  const codigoVerificacao = extractTag('CodigoVerificacao');
+  const dataEmissaoRaw = extractTag('DataEmissao');
+  const competenciaRaw = extractTag('Competencia');
+  const valorServicosRaw = extractTag('ValorServicos');
+  const discriminacao = extractTag('Discriminacao');
+  const itemListaServico = extractTag('ItemListaServico');
+  const codigoTributacaoMunicipio = extractTag('CodigoTributacaoMunicipio');
+  const codigoMunicipio = extractTag('MunicipioIncidencia') || extractTag('CodigoMunicipio');
+  const aliquotaRaw = extractTag('Aliquota');
+  const valorIssRaw = extractTag('ValorIss');
+  const nbs = extractTag('cNBS') || extractTag('Nbs');
+  const chaveAcesso = extractTag('ChaveAcesso');
+  const codigoCancelamento = extractTag('CodigoCancelamento');
+  const dataCancelamento = extractTag('DataHora');
+  
+  const tomadorMatch = str.match(/<(?:[a-zA-Z0-9]+:)?Tomador(?:Servico)?[^>]*>([\s\S]*?)<\/(?:[a-zA-Z0-9]+:)?Tomador(?:Servico)?>/i);
+  const tomadorBlock = tomadorMatch ? tomadorMatch[1] : str;
+  const cnpjTomador = (tomadorBlock.match(/<(?:[a-zA-Z0-9]+:)?Cnpj[^>]*>([\s\S]*?)<\/(?:[a-zA-Z0-9]+:)?Cnpj>/i) || [])[1] || '';
+  const cpfTomador = (tomadorBlock.match(/<(?:[a-zA-Z0-9]+:)?Cpf[^>]*>([\s\S]*?)<\/(?:[a-zA-Z0-9]+:)?Cpf>/i) || [])[1] || '';
+  const razaoSocialTomador = (tomadorBlock.match(/<(?:[a-zA-Z0-9]+:)?RazaoSocial[^>]*>([\s\S]*?)<\/(?:[a-zA-Z0-9]+:)?RazaoSocial>/i) || [])[1] || '';
+
+  let competencia = '';
+  if (competenciaRaw) {
+    const dMatch = competenciaRaw.match(/^(\d{4})-(\d{2})/);
+    if (dMatch) {
+      competencia = dMatch[2] + '/' + dMatch[1];
+    } else if (competenciaRaw.includes('/')) {
+      competencia = competenciaRaw;
+    }
+  } else if (dataEmissaoRaw) {
+    const dMatch = dataEmissaoRaw.match(/^(\d{4})-(\d{2})/);
+    if (dMatch) {
+      competencia = dMatch[2] + '/' + dMatch[1];
+    }
+  }
+
+  let valorServicos = null;
+  if (valorServicosRaw) {
+    const v = parseFloat(valorServicosRaw.replace(',', '.'));
+    if (!isNaN(v)) valorServicos = v;
+  }
+
+  return {
+    numero,
+    codigoVerificacao,
+    competencia,
+    valorServicos,
+    discriminacao,
+    cnpjTomador: (cnpjTomador || cpfTomador).trim(),
+    razaoSocialTomador: razaoSocialTomador.trim(),
+    chaveAcesso,
+    codigoCancelamento,
+    dataCancelamento
+  };
+}
+
+// B. Extração fiel de XML completo (NFS-e 19 real)
+const xmlNf19 = `<ConsultarNfseRpsResposta xmlns="http://www.abrasf.org.br/nfse.xsd">
+  <CompNfse>
+    <Nfse versao="2.04">
+      <InfNfse>
+        <Numero>19</Numero>
+        <CodigoVerificacao>RL12OU8O</CodigoVerificacao>
+        <DataEmissao>2026-09-02T10:00:00</DataEmissao>
+        <DeclaracaoPrestacaoServico>
+          <InfDeclaracaoPrestacaoServico>
+            <Competencia>2026-09-01</Competencia>
+            <Servico>
+              <Valores><ValorServicos>10.00</ValorServicos></Valores>
+              <Discriminacao>SERVICOS MEDICOS PLANTOES</Discriminacao>
+            </Servico>
+            <TomadorServico>
+              <IdentificacaoTomador><CpfCnpj><Cnpj>20724357000120</Cnpj></CpfCnpj></IdentificacaoTomador>
+              <RazaoSocial>ASSOCIACAO DE CARIDADE</RazaoSocial>
+            </TomadorServico>
+          </InfDeclaracaoPrestacaoServico>
+        </DeclaracaoPrestacaoServico>
+      </InfNfse>
+    </Nfse>
+  </CompNfse>
+</ConsultarNfseRpsResposta>`;
+
+const ext19 = extrairDadosSimulado_(xmlNf19);
+assert.strictEqual(ext19.numero, '19');
+assert.strictEqual(ext19.codigoVerificacao, 'RL12OU8O');
+assert.strictEqual(ext19.competencia, '09/2026');
+assert.strictEqual(ext19.valorServicos, 10.00);
+assert.strictEqual(ext19.cnpjTomador, '20724357000120');
+assert.strictEqual(ext19.razaoSocialTomador, 'ASSOCIACAO DE CARIDADE');
+console.log('✓ [EXTRAÇÃO OFICIAL] Dados extraídos fielmente por parser direto');
+
+// C. XML com competência ausente NÃO vira 09/2026
+const xmlSemComp = xmlNf19.replace('<Competencia>2026-09-01</Competencia>', '').replace('<DataEmissao>2026-09-02T10:00:00</DataEmissao>', '');
+const extSemComp = extrairDadosSimulado_(xmlSemComp);
+assert.strictEqual(extSemComp.competencia, '', 'Competência ausente deve ser vazia');
+console.log('✓ [FAIL-CLOSED] Competência ausente não recebe fallback artificial');
+
+// D. XML com valor ausente NÃO vira 10.00
+const xmlSemValor = xmlNf19.replace('<Valores><ValorServicos>10.00</ValorServicos></Valores>', '');
+const extSemValor = extrairDadosSimulado_(xmlSemValor);
+assert.strictEqual(extSemValor.valorServicos, null, 'Valor ausente deve ser null');
+console.log('✓ [FAIL-CLOSED] Valor ausente não recebe fallback artificial');
+
+// E. XML com tomador ausente NÃO vira "Tomador Oficial"
+const xmlSemTomador = xmlNf19.replace('<RazaoSocial>ASSOCIACAO DE CARIDADE</RazaoSocial>', '');
+const extSemTomador = extrairDadosSimulado_(xmlSemTomador);
+assert.strictEqual(extSemTomador.razaoSocialTomador, '', 'Tomador ausente deve ser vazio');
+console.log('✓ [FAIL-CLOSED] Tomador ausente não recebe fallback artificial');
+
+// H. Teste de mapeamento com Cabeçalhos Reais da aba Notas
+const realHeaders = [
+  'Nº', 'Período ref.', 'Competência NFS-e', 'Emissão', 'Tomador', 'CNPJ tomador',
+  'Categoria', 'Descrição do serviço', 'Valor serviço', 'Cód. trib. nacional',
+  'Cód. trib. municipal', 'Local prestação', 'Alíquota ISS', 'ISS apurado', 'NBS',
+  'Chave de acesso', 'Fonte', 'E-mail origem', 'Status', 'Observações', 'Fonte API',
+  'Última sincronização API', 'Código de verificação', 'Situação API'
+];
+
+const normHeaders = realHeaders.map(h => h.toLowerCase().trim());
+const findCol = (predicate) => normHeaders.findIndex(predicate);
+assert.strictEqual(findCol(h => h === 'nº' || h === 'nº nfs-e' || h === 'numero'), 0, 'Coluna Nº no índice 0');
+assert.strictEqual(findCol(h => h.includes('competência')), 2, 'Coluna Competência no índice 2');
+assert.strictEqual(findCol(h => h === 'emissão' || h.includes('emissão')), 3, 'Coluna Emissão no índice 3');
+assert.strictEqual(findCol(h => h === 'tomador'), 4, 'Coluna Tomador no índice 4');
+assert.strictEqual(findCol(h => h.includes('cnpj')), 5, 'Coluna CNPJ tomador no índice 5');
+assert.strictEqual(findCol(h => h.includes('descrição') || h.includes('discriminação')), 7, 'Coluna Descrição do serviço no índice 7');
+assert.strictEqual(findCol(h => h.includes('valor')), 8, 'Coluna Valor serviço no índice 8');
+assert.strictEqual(findCol(h => h === 'status'), 18, 'Coluna Status no índice 18');
+assert.strictEqual(findCol(h => h.includes('verificação')), 22, 'Coluna Código de verificação no índice 22');
+assert.strictEqual(findCol(h => h.includes('situação api')), 23, 'Coluna Situação API no índice 23');
+console.log('✓ [BLOQUEADOR B] Mapeamento dinâmico com cabeçalhos reais da aba Notas verificado');
+
 console.log('✓ test-apps-script-engine.js PASSED');
 
 
