@@ -5990,7 +5990,7 @@ function processarDocumentosERascunhos_() {
     const nfseStr = String(row[colNfse] || '').trim();
     const cndsExigidas = String(row[colCnds] || '').trim();
 
-    if (!reqId || status !== 'ISSUED' || pipelineState === 'DRAFT_CREATED' || pipelineState === 'LEGACY_TEST_INVALID' || pipelineState === 'BLOCKED_CANCELLED_NFSE') {
+    if (!reqId || status !== 'ISSUED' || pipelineState === 'LEGACY_TEST_INVALID' || pipelineState === 'BLOCKED_CANCELLED_NFSE') {
       continue;
     }
 
@@ -6146,16 +6146,7 @@ function processarDocumentosERascunhos_() {
       if (msg) {
         const thread = (typeof msg.getThread === 'function') ? msg.getThread() : null;
 
-        // Remove draft antigo / drafts na thread para evitar duplicidade ou dados obsoletos
-        try {
-          if (thread && typeof thread.getDrafts === 'function') {
-            const threadDrafts = thread.getDrafts();
-            for (const td of threadDrafts) {
-              try { td.deleteDraft(); } catch (_) {}
-            }
-          }
-        } catch (_) {}
-        removerDraftAntigoSeExistir_('r1600249466030562964');
+        // Blanket delete removida: a reconciliação inteligente abaixo inspeciona antes de deletar
 
         const linhasNotas = [];
         let draftDataValid = true;
@@ -6243,30 +6234,99 @@ function processarDocumentosERascunhos_() {
           'DEXMED SERVIÇOS MÉDICOS LTDA\n' +
           'Dr. Túlio AS Siman — CRM-MG 76034';
 
-        let draft = null;
-        if (thread && typeof thread.createDraftReply === 'function') {
-          draft = thread.createDraftReply(body, { attachments: attachments });
-        } else {
-          draft = GmailApp.createDraft(msg.getFrom(), 'Re: ' + (msg.getSubject() || 'Nota Fiscal'), body, { attachments: attachments });
+        let existingDraft = null;
+        let draftNeedsUpdate = true;
+        let threadDraftsList = [];
+
+        try {
+          if (thread && typeof thread.getDrafts === 'function') {
+            threadDraftsList = thread.getDrafts() || [];
+          }
+        } catch (_) {}
+
+        if (!threadDraftsList.length && typeof GmailApp.getDrafts === 'function') {
+          try {
+            const allD = GmailApp.getDrafts();
+            for (const d of allD) {
+              try {
+                const dm = d.getMessage();
+                const dt = dm && typeof dm.getThread === 'function' ? dm.getThread() : null;
+                const dtId = dt ? dt.getId() : (dm && typeof dm.getThreadId === 'function' ? dm.getThreadId() : '');
+                if (dtId === (thread ? thread.getId() : reqId)) {
+                  threadDraftsList.push(d);
+                }
+              } catch (_) {}
+            }
+          } catch (_) {}
         }
 
-        const draftId = draft ? draft.getId() : 'DRAFT_OK';
-        const draftThreadId = thread ? thread.getId() : (msg.getThreadId ? msg.getThreadId() : reqId);
+        if (threadDraftsList.length === 1) {
+          try {
+            const cand = threadDraftsList[0];
+            const candMsg = cand.getMessage();
+            const candBody = candMsg ? (candMsg.getPlainBody() || candMsg.getBody() || '') : '';
+            const candAtts = candMsg ? candMsg.getAttachments() : [];
 
-        sheetDemandas.getRange(rowNum, colPipeline + 1).setValue('DRAFT_CREATED');
-        sheetDemandas.getRange(rowNum, colUpdated + 1).setValue(new Date().toISOString());
-        sheetDemandas.getRange(rowNum, colErro + 1).setValue('DRAFT_ID:' + draftId + ' | THREAD_ID:' + draftThreadId + ' | ATTACHMENT_SHA256:' + officialAttachmentSha);
-        draftsCreated++;
-        logs.push('Novo rascunho oficial criado: ' + draftId + ' na thread: ' + draftThreadId);
+            let bodyMatches = true;
+            for (const d of matchingDocs) {
+              if (!candBody.includes(d.nfseNumero)) { bodyMatches = false; break; }
+            }
+            if (candBody.includes('Chave de Acesso: N/A')) bodyMatches = false;
 
-        adicionarHistorico_({
-          status: 'rascunho_nfse_criado',
-          ruleName: 'Emissão NFS-e',
-          subject: msg.getSubject() || '',
-          from: msg.getFrom() || '',
-          priority: 'active',
-          detail: 'Rascunho criado no Gmail para a demanda ' + reqId + ' com NFS-e oficial ' + nfseStr + ' e ' + attachments.length + ' anexo(s).'
-        });
+            let attMatches = candAtts.length >= matchingDocs.length;
+            if (attMatches && officialAttachmentSha) {
+              let hasSha = false;
+              for (const a of candAtts) {
+                try {
+                  if (calcularSha256Blob_(a) === officialAttachmentSha) { hasSha = true; break; }
+                } catch (_) {}
+              }
+              if (!hasSha) attMatches = false;
+            }
+
+            if (bodyMatches && attMatches) {
+              existingDraft = cand;
+              draftNeedsUpdate = false;
+              logs.push('Draft existente na thread ' + (thread ? thread.getId() : reqId) + ' está 100% atualizado e válido. Nenhuma alteração necessária.');
+            }
+          } catch (eCand) {
+            console.log('[WARN] Falha ao verificar draft existente: ' + eCand.message);
+          }
+        }
+
+        if (draftNeedsUpdate) {
+          for (const td of threadDraftsList) {
+            try { td.deleteDraft(); } catch (_) {}
+          }
+          removerDraftAntigoSeExistir_('r1600249466030562964');
+
+          let draft = null;
+          if (thread && typeof thread.createDraftReply === 'function') {
+            draft = thread.createDraftReply(body, { attachments: attachments });
+          } else {
+            draft = GmailApp.createDraft(msg.getFrom(), 'Re: ' + (msg.getSubject() || 'Nota Fiscal'), body, { attachments: attachments });
+          }
+
+          const draftId = draft ? draft.getId() : 'DRAFT_OK';
+          const draftThreadId = thread ? thread.getId() : (msg.getThreadId ? msg.getThreadId() : reqId);
+
+          sheetDemandas.getRange(rowNum, colPipeline + 1).setValue('DRAFT_CREATED');
+          sheetDemandas.getRange(rowNum, colUpdated + 1).setValue(new Date().toISOString());
+          sheetDemandas.getRange(rowNum, colErro + 1).setValue('DRAFT_ID:' + draftId + ' | THREAD_ID:' + draftThreadId + ' | ATTACHMENT_SHA256:' + officialAttachmentSha);
+          draftsCreated++;
+          logs.push('Novo rascunho oficial criado/reconciliado: ' + draftId + ' na thread: ' + draftThreadId);
+
+          adicionarHistorico_({
+            status: 'rascunho_nfse_criado',
+            ruleName: 'Emissão NFS-e',
+            subject: msg.getSubject() || '',
+            from: msg.getFrom() || '',
+            priority: 'active',
+            detail: 'Rascunho criado no Gmail para a demanda ' + reqId + ' com NFS-e oficial ' + nfseStr + ' e ' + attachments.length + ' anexo(s).'
+          });
+        } else {
+          logs.push('Demanda ' + reqId + ': Draft já reconciliado e idempotente.');
+        }
       } else {
         logs.push('Mensagem nao encontrada: ' + reqId);
       }
