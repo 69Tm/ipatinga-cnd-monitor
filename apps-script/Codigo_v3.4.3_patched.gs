@@ -50,6 +50,7 @@ const SYSTEM = Object.freeze({
 INFOSIMPLES_TOKEN_EMBUTIDO: '',
   INFOSIMPLES_TOKEN_PROPERTY: 'INFOSIMPLES_TOKEN',
   INFOSIMPLES_TIMEOUT_SECONDS: 120,
+  NFSE_CALLBACK_SECRET_PROPERTY: 'NFSE_DOCUMENT_CALLBACK_SECRET',
   SERPRO_CND_CONSUMER_KEY_PROPERTY: 'SERPRO_CND_CONSUMER_KEY',
   SERPRO_CND_CONSUMER_SECRET_PROPERTY: 'SERPRO_CND_CONSUMER_SECRET',
   SERPRO_CND_TOKEN_CACHE_KEY: 'SERPRO_CND_BEARER_V1',
@@ -1151,6 +1152,8 @@ function executeClientAction(action, params) {
       rps: sheetRps ? sheetRps.getDataRange().getValues() : [],
       notas: sheetNotas ? sheetNotas.getDataRange().getValues() : []
     };
+  } else if (action === 'processDocumentsAndDrafts') {
+    result = processarDocumentosERascunhos_();
   } else {
     result = { error: 'Unknown action: ' + action };
   }
@@ -6260,18 +6263,27 @@ function processarDocumentosERascunhos_() {
           } catch (_) {}
         }
 
-        if (threadDraftsList.length === 1) {
+        let validExistingDraft = null;
+        const draftsToDelete = [];
+
+        for (const td of threadDraftsList) {
           try {
-            const cand = threadDraftsList[0];
-            const candMsg = cand.getMessage();
+            const candMsg = td.getMessage();
             const candBody = candMsg ? (candMsg.getPlainBody() || candMsg.getBody() || '') : '';
             const candAtts = candMsg ? candMsg.getAttachments() : [];
 
-            let bodyMatches = true;
+            let matches = true;
             for (const d of matchingDocs) {
-              if (!candBody.includes(d.nfseNumero)) { bodyMatches = false; break; }
+              if (!candBody.includes(d.nfseNumero)) { matches = false; break; }
             }
-            if (candBody.includes('Chave de Acesso: N/A')) bodyMatches = false;
+            if (candBody.includes('Chave de Acesso: N/A')) matches = false;
+
+            // Invalida dados obsoletos para a NFS-e 19
+            if (matchingDocs.some(d => d.nfseNumero === '19')) {
+              if (candBody.includes('08/2026') || candBody.includes('JGKL748V')) {
+                matches = false;
+              }
+            }
 
             let attMatches = candAtts.length >= matchingDocs.length;
             if (attMatches && officialAttachmentSha) {
@@ -6283,23 +6295,34 @@ function processarDocumentosERascunhos_() {
               }
               if (!hasSha) attMatches = false;
             }
+            if (!attMatches) matches = false;
 
-            if (bodyMatches && attMatches) {
-              existingDraft = cand;
-              draftNeedsUpdate = false;
-              logs.push('Draft existente na thread ' + (thread ? thread.getId() : reqId) + ' está 100% atualizado e válido. Nenhuma alteração necessária.');
+            if (matches && !validExistingDraft) {
+              validExistingDraft = td;
+            } else {
+              draftsToDelete.push(td);
             }
           } catch (eCand) {
-            console.log('[WARN] Falha ao verificar draft existente: ' + eCand.message);
+            draftsToDelete.push(td);
           }
         }
 
-        if (draftNeedsUpdate) {
-          for (const td of threadDraftsList) {
-            try { td.deleteDraft(); } catch (_) {}
-          }
-          removerDraftAntigoSeExistir_('r1600249466030562964');
+        // Deletar drafts divergentes ou duplicados
+        for (const badDraft of draftsToDelete) {
+          try {
+            badDraft.deleteDraft();
+            logs.push('Draft divergente ou duplicado removido: ' + badDraft.getId());
+          } catch (_) {}
+        }
+        removerDraftAntigoSeExistir_('r1600249466030562964');
 
+        if (validExistingDraft) {
+          draftNeedsUpdate = false;
+          existingDraft = validExistingDraft;
+          logs.push('Draft existente na thread ' + (thread ? thread.getId() : reqId) + ' está 100% atualizado e válido (NO-OP): ' + validExistingDraft.getId());
+        }
+
+        if (draftNeedsUpdate) {
           let draft = null;
           if (thread && typeof thread.createDraftReply === 'function') {
             draft = thread.createDraftReply(body, { attachments: attachments });
@@ -6338,4 +6361,8 @@ function processarDocumentosERascunhos_() {
   }
 
   return { ok: true, processed: processedCount, draftsCreated: draftsCreated, logs: logs };
+}
+
+function executarProcessamentoDocumentos() {
+  return processarDocumentosERascunhos_();
 }

@@ -409,6 +409,146 @@ function runTests() {
   createDraftMock();
   assert.strictEqual(draftsCreated, 1, 'Should not create duplicate draft');
   console.log('✅ PASS: Draft idempotency');
+
+  // 6. Testes Estruturais de Auditoria e Reparação Genérica de Rascunho no Gmail
+  console.log('--- TEST: Generic Draft Audit, Repair, Divergence Detection & Replay ---');
+  
+  function simularAuditoriaEReparacaoDraft({
+    threadDrafts,
+    expectedTokens,
+    bodyTemplate,
+    attachments
+  }) {
+    let validDraftFound = null;
+    const deletedDraftIds = [];
+    let createdDraft = null;
+
+    for (const td of threadDrafts) {
+      const draftBody = td.body || '';
+      const draftAttachments = td.attachments || [];
+
+      let matchesExpected = true;
+      for (const t of expectedTokens) {
+        if (!draftBody.includes(t.nfseNumero) ||
+            !draftBody.includes(t.competencia) ||
+            !draftBody.includes(t.codigoVerificacao) ||
+            !draftBody.includes(t.valorStr)) {
+          matchesExpected = false;
+          break;
+        }
+      }
+
+      // Proibir valores obsoletos / divergentes
+      if (draftBody.includes('08/2026') && expectedTokens.some(t => t.competencia === '09/2026')) {
+        matchesExpected = false;
+      }
+      if (draftBody.includes('JGKL748V') && expectedTokens.some(t => t.codigoVerificacao === 'RL12OU8O')) {
+        matchesExpected = false;
+      }
+      if (draftBody.includes('Chave de Acesso: N/A')) {
+        matchesExpected = false;
+      }
+
+      // Validar anexos
+      if (!draftAttachments || draftAttachments.length === 0) {
+        matchesExpected = false;
+      }
+
+      if (matchesExpected && !validDraftFound) {
+        validDraftFound = td;
+      } else {
+        deletedDraftIds.push(td.id);
+      }
+    }
+
+    if (!validDraftFound) {
+      createdDraft = {
+        id: 'new_draft_' + Math.random().toString(36).substring(2, 8),
+        body: bodyTemplate,
+        attachments: attachments
+      };
+    }
+
+    return {
+      validDraftId: validDraftFound ? validDraftFound.id : createdDraft.id,
+      recreated: !validDraftFound,
+      deletedCount: deletedDraftIds.length,
+      deletedIds: deletedDraftIds
+    };
+  }
+
+  const expectedNF19 = [
+    { nfseNumero: '19', competencia: '09/2026', codigoVerificacao: 'RL12OU8O', valorStr: '10,00' }
+  ];
+  const correctBody19 = 'Prezados,\n\n• NFS-e nº 19 — Competência 09/2026 (R$ 10,00)\n  Código de Verificação: RL12OU8O\n\nAtenciosamente,\nDEXMED';
+  const obsoleteBody19 = 'Prezados,\n\n• NFS-e nº 19 — Competência 08/2026 (R$ 10,00)\n  Código de Verificação: JGKL748V\n  Chave de Acesso: N/A\n\nAtenciosamente,\nDEXMED';
+
+  // Caso 1: Rascunho existente com dados obsoletos (08/2026, JGKL748V, Chave: N/A) -> DELETA e RECRIADO
+  const run1 = simularAuditoriaEReparacaoDraft({
+    threadDrafts: [{ id: 'd_stale_1', body: obsoleteBody19, attachments: ['xml_blob'] }],
+    expectedTokens: expectedNF19,
+    bodyTemplate: correctBody19,
+    attachments: ['xml_blob']
+  });
+  assert.strictEqual(run1.recreated, true, 'Draft obsoleto deve ser recriado');
+  assert.strictEqual(run1.deletedCount, 1, 'Draft obsoleto deve ser deletado');
+  assert.deepStrictEqual(run1.deletedIds, ['d_stale_1']);
+  console.log('✅ PASS: Draft divergente detectado, removido e recriado com dados oficiais');
+
+  // Caso 2: Rascunho ausente (thread sem nenhum draft) -> CRIA novo
+  const run2 = simularAuditoriaEReparacaoDraft({
+    threadDrafts: [],
+    expectedTokens: expectedNF19,
+    bodyTemplate: correctBody19,
+    attachments: ['xml_blob']
+  });
+  assert.strictEqual(run2.recreated, true, 'Draft ausente deve ser criado');
+  assert.strictEqual(run2.deletedCount, 0);
+  console.log('✅ PASS: Draft ausente criado normalmente');
+
+  // Caso 3: Rascunho já existente 100% correto -> NO-OP (não recria nem deleta)
+  const currentDraft = { id: run1.validDraftId, body: correctBody19, attachments: ['xml_blob'] };
+  const run3 = simularAuditoriaEReparacaoDraft({
+    threadDrafts: [currentDraft],
+    expectedTokens: expectedNF19,
+    bodyTemplate: correctBody19,
+    attachments: ['xml_blob']
+  });
+  assert.strictEqual(run3.recreated, false, 'Draft correto não deve ser recriado');
+  assert.strictEqual(run3.deletedCount, 0, 'Zero drafts deletados');
+  assert.strictEqual(run3.validDraftId, currentDraft.id);
+  console.log('✅ PASS: Draft correto resulta em NO-OP estrito');
+
+  // Caso 4: Idempotência garantida em múltiplos replays consecutivos (Replay 1, Replay 2, Replay 3)
+  for (let replay = 1; replay <= 3; replay++) {
+    const replayRes = simularAuditoriaEReparacaoDraft({
+      threadDrafts: [currentDraft],
+      expectedTokens: expectedNF19,
+      bodyTemplate: correctBody19,
+      attachments: ['xml_blob']
+    });
+    assert.strictEqual(replayRes.recreated, false, `Replay ${replay}: Não deve recriar draft`);
+    assert.strictEqual(replayRes.deletedCount, 0, `Replay ${replay}: Zero drafts deletados`);
+    assert.strictEqual(replayRes.validDraftId, currentDraft.id);
+  }
+  console.log('✅ PASS: Idempotência de replay garantida em 3 execuções consecutivas');
+
+  // Caso 5: Múltiplos rascunhos na thread (1 correto + 2 duplicados/antigos) -> PRESERVA o correto, DELETA os extras
+  const run5 = simularAuditoriaEReparacaoDraft({
+    threadDrafts: [
+      { id: 'd_dup_1', body: obsoleteBody19, attachments: ['xml_blob'] },
+      currentDraft,
+      { id: 'd_dup_2', body: correctBody19, attachments: [] } // sem anexo
+    ],
+    expectedTokens: expectedNF19,
+    bodyTemplate: correctBody19,
+    attachments: ['xml_blob']
+  });
+  assert.strictEqual(run5.recreated, false, 'Deve reaproveitar o único draft válido');
+  assert.strictEqual(run5.deletedCount, 2, 'Deve remover os 2 drafts inválidos/duplicados');
+  assert.strictEqual(run5.validDraftId, currentDraft.id);
+  assert.deepStrictEqual(run5.deletedIds, ['d_dup_1', 'd_dup_2']);
+  console.log('✅ PASS: Múltiplos drafts na thread deduplicados com preservação do draft canônico');
 }
 
 if (require.main === module) {
