@@ -5428,7 +5428,7 @@ function processarSolicitacaoNfOperacional_(candidate) {
   });
 
   // Idempotência estrita: se já existir e estiver em processamento ou finalizada, ZERO novo dispatch
-  const nonRedispatchStatuses = ['DISPATCHED', 'WAITING_FISCAL', 'ISSUED', 'WAITING_SYNC', 'DOCUMENT_PENDING', 'DRY_RUN_SUCCESS', 'E2E_DRY_RUN_VALIDATED', 'CONCLUÍDA'];
+  const nonRedispatchStatuses = ['DISPATCHED', 'WAITING_FISCAL', 'ISSUED', 'WAITING_SYNC', 'DOCUMENT_PENDING', 'DRY_RUN_SUCCESS', 'E2E_DRY_RUN_VALIDATED', 'CONCLUÍDA', 'PROVIDER_PREFLIGHT_BLOCKED'];
   if (reg.alreadyExists && (nonRedispatchStatuses.includes(reg.currentStatus) || nonRedispatchStatuses.includes(reg.pipelineState))) {
     return { ok: true, alreadyCompleted: true, existingDemand: true, messageId: messageId, dispatched: false };
   }
@@ -5784,7 +5784,7 @@ function criarMimeSimples_(to, subject, body) {
  * CND CHECK GATE & FISCAL DOCUMENTS / DRAFT PIPELINE
  ***************************************************************/
 
-function verificarCndsSolicitadasParaDemanda_(cndsExigidasStr, dataDemanda) {
+function verificarCndsSolicitadasParaDemanda_(cndsExigidasStr, dataDemanda, options) {
   if (!cndsExigidasStr || !cndsExigidasStr.trim()) {
     return {
       exigidas: [],
@@ -5863,6 +5863,11 @@ function verificarCndsSolicitadasParaDemanda_(cndsExigidasStr, dataDemanda) {
       continue;
     }
 
+    if (options && options.allowRenewals === false) {
+      pendencias.push({ tipo: tipo, motivo: 'CERTIFICATE_RENEWAL_REQUIRES_AUTHORIZATION' });
+      continue;
+    }
+
     // 3. Se VENCIDA ou AUSENTE NA DATA DA DEMANDA e FOI SOLICITADA -> RENEW SOMENTE desta CND
     const cndVencidaOuAusente = (situacao.vencidas || []).find(c => c.tipo === tipo) ||
                                 (situacao.ausentes || []).find(c => c.tipo === tipo);
@@ -5908,6 +5913,49 @@ function verificarCndsSolicitadasParaDemanda_(cndsExigidasStr, dataDemanda) {
     providerHttpResponses: providerHttpResponses,
     pendencias: pendencias
   };
+}
+
+function verificarPacoteCompletoCndsParaRascunho_(dataReferencia) {
+  const tipos = ['CRF FGTS', 'CNDT', 'CND Federal', 'CND Estadual MG', 'CND Municipal', 'Certidão Falência/Concordata'];
+  const props = PropertiesService.getScriptProperties();
+  const result = verificarCndsSolicitadasParaDemanda_(tipos.join('; '), dataReferencia || new Date(), {
+    allowRenewals: props.getProperty('NFE_CND_RENEWAL_AUTHORIZED') === 'true'
+  });
+  result.requiredAttachmentPolicy = 'ALL_SIX_CERTIFICATES';
+  result.providerRenewalPolicy = 'VALIDITY_AWARE_MINIMUM_CALLS';
+  return result;
+}
+
+function anexarPacoteCompletoCnds_(cndCheck, attachments) {
+  const certs = cndCheck.cndsParaAnexo || [];
+  if (!cndCheck.todasValidas || certs.length !== 6 ||
+      new Set(certs.map(c => c.tipo)).size !== 6 || new Set(certs.map(c => c.fileId)).size !== 6) {
+    throw new Error('ALL_SIX_CERTIFICATES_REQUIRED');
+  }
+  const blobs = certs.map(c => {
+    const file = DriveApp.getFileById(c.fileId);
+    const blob = file.getBlob();
+    const bytes = blob.getBytes();
+    const magic = bytes.slice(0, 5).map(b => String.fromCharCode((b + 256) % 256)).join('');
+    if (bytes.length < 5 || magic !== '%PDF-') throw new Error('CERTIFICATE_PDF_INVALID: ' + c.tipo);
+    return blob.setName(file.getName());
+  });
+  blobs.forEach(blob => attachments.push(blob));
+}
+
+function documentosDaDemandaCompletos_(docs, nfseStr, quantidadeSolicitada) {
+  const numeros = String(nfseStr || '').split(/[;,]/).map(n => n.trim()).filter(Boolean);
+  if (!quantidadeSolicitada || numeros.length !== quantidadeSolicitada || docs.length !== quantidadeSolicitada) return false;
+  if (new Set(numeros).size !== quantidadeSolicitada || new Set(docs.map(d => d.itemIndex)).size !== quantidadeSolicitada) return false;
+  if (!docs.every(d => /^\d+$/.test(d.itemIndex) && Number(d.itemIndex) >= 1 && Number(d.itemIndex) <= quantidadeSolicitada)) return false;
+  return docs.every(d => numeros.includes(d.nfseNumero)) &&
+    numeros.every(n => docs.some(d => d.nfseNumero === n));
+}
+
+function anexosCorrespondemAoPacote_(expected, actual) {
+  if (expected.length !== actual.length) return false;
+  const hashes = blobs => blobs.map(calcularSha256Blob_).sort().join('|');
+  return hashes(expected) === hashes(actual);
 }
 
 function obterAbaDocumentos_(ss) {
@@ -5993,7 +6041,7 @@ function processarDocumentosERascunhos_() {
     const nfseStr = String(row[colNfse] || '').trim();
     const cndsExigidas = String(row[colCnds] || '').trim();
 
-    if (!reqId || status !== 'ISSUED' || pipelineState === 'LEGACY_TEST_INVALID' || pipelineState === 'BLOCKED_CANCELLED_NFSE') {
+    if (!reqId || status !== 'ISSUED' || pipelineState === 'LEGACY_TEST_INVALID' || pipelineState === 'BLOCKED_CANCELLED_NFSE' || pipelineState === 'DRAFT_CREATED') {
       continue;
     }
 
@@ -6020,7 +6068,6 @@ function processarDocumentosERascunhos_() {
     }
 
     if (isNotaCancelada) {
-      removerDraftAntigoSeExistir_('r1600249466030562964');
       sheetDemandas.getRange(rowNum, colPipeline + 1).setValue('BLOCKED_CANCELLED_NFSE');
       sheetDemandas.getRange(rowNum, colUpdated + 1).setValue(new Date().toISOString());
       sheetDemandas.getRange(rowNum, colErro + 1).setValue('NFS-e ' + nfseStr + ' cancelada. Rascunho bloqueado.');
@@ -6079,6 +6126,12 @@ function processarDocumentosERascunhos_() {
       return { ok: true, dispatched: true, status: 'DOCUMENT_FETCH_DISPATCHED', logs: logs };
     }
 
+    const quantidadeSolicitada = String(row[4] || '').split(';').filter(s => s.trim()).length;
+    if (!documentosDaDemandaCompletos_(matchingDocs, nfseStr, quantidadeSolicitada)) {
+      sheetDemandas.getRange(rowNum, colErro + 1).setValue('OFFICIAL_DOCUMENT_SET_INCOMPLETE');
+      continue;
+    }
+
     // 3. Documento oficial encontrado -> Carrega do Drive e valida SHA-256
     const attachments = [];
     let allShasValid = true;
@@ -6117,24 +6170,19 @@ function processarDocumentosERascunhos_() {
     sheetDemandas.getRange(rowNum, colUpdated + 1).setValue(new Date().toISOString());
     pipelineState = 'DOCUMENTS_READY';
 
-    // 5. Verificar CNDs solicitadas para criação do rascunho com a Data da Demanda
-    const cndCheck = verificarCndsSolicitadasParaDemanda_(cndsExigidas, dataDemanda);
+    // Política global: seis certidões vigentes na preparação do rascunho.
+    const cndCheck = verificarPacoteCompletoCndsParaRascunho_();
     if (!cndCheck.todasValidas) {
       sheetDemandas.getRange(rowNum, colErro + 1).setValue('CND_PENDING: ' + cndCheck.pendencias.map(p => p.tipo).join(', '));
       continue;
     }
 
-    // Anexa CNDs se houver
-    cndCheck.cndsParaAnexo.forEach(c => {
-      if (c.fileId) {
-        try {
-          const f = DriveApp.getFileById(c.fileId);
-          attachments.push(f.getBlob());
-        } catch (err) {
-          console.log('[WARN] CND anexo Drive nao carregado: ' + c.fileId);
-        }
-      }
-    });
+    try {
+      anexarPacoteCompletoCnds_(cndCheck, attachments);
+    } catch (err) {
+      sheetDemandas.getRange(rowNum, colErro + 1).setValue('CND_ATTACHMENT_ERROR: ' + limitarTexto_(err.message, 200));
+      continue;
+    }
 
     // 6. Criação do Rascunho no Gmail (Idempotente)
     try {
@@ -6277,6 +6325,8 @@ function processarDocumentosERascunhos_() {
               if (!candBody.includes(d.nfseNumero)) { matches = false; break; }
             }
             if (candBody.includes('Chave de Acesso: N/A')) matches = false;
+            if (!linhasNotas.every(linha => candBody.includes(linha))) matches = false;
+            if (!cndCheck.cndsParaAnexo.every(c => candBody.includes(c.tipo))) matches = false;
 
             // Invalida dados obsoletos para a NFS-e 19
             if (matchingDocs.some(d => d.nfseNumero === '19')) {
@@ -6285,7 +6335,7 @@ function processarDocumentosERascunhos_() {
               }
             }
 
-            let attMatches = candAtts.length >= matchingDocs.length;
+            let attMatches = anexosCorrespondemAoPacote_(attachments, candAtts);
             if (attMatches && officialAttachmentSha) {
               let hasSha = false;
               for (const a of candAtts) {
@@ -6314,8 +6364,6 @@ function processarDocumentosERascunhos_() {
             logs.push('Draft divergente ou duplicado removido: ' + badDraft.getId());
           } catch (_) {}
         }
-        removerDraftAntigoSeExistir_('r1600249466030562964');
-
         if (validExistingDraft) {
           draftNeedsUpdate = false;
           existingDraft = validExistingDraft;
