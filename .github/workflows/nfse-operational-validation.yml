@@ -1,0 +1,44 @@
+name: Validação operacional NFS-e (sem emissão)
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'scripts/ipatinga-nfse/**'
+      - 'apps-script/**'
+      - '.github/workflows/*nfse*.yml'
+  pull_request:
+    paths:
+      - 'scripts/ipatinga-nfse/**'
+      - 'apps-script/**'
+      - '.github/workflows/*nfse*.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  validation:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20.x
+      - name: Testar gate REST sem dependências
+        run: node --test scripts/ipatinga-nfse/tests/test-pending-check.cjs
+      - name: Instalar validadores XML nativos
+        run: sudo apt-get update && sudo apt-get install -y xmlsec1 libxml2-utils
+      - name: Instalar dependências fixadas no lockfile
+        working-directory: scripts/ipatinga-nfse
+        run: npm ci
+      - name: Executar suíte fiscal e operacional completa
+        working-directory: scripts/ipatinga-nfse
+        run: node tests/test-runner.js
+      - name: Validar leitura autenticada do ledger de produção
+        if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+        env:
+          GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
+          NFE_SPREADSHEET_ID: ${{ vars.NFE_SPREADSHEET_ID || '1-qnJjv0YuZkrAHnfiyJuyKiU3lR3VzFl76nNQ1DCHWo' }}
+        run: node scripts/ipatinga-nfse/pending-check.js
