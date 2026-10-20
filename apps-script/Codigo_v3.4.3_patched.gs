@@ -6041,7 +6041,7 @@ function processarDocumentosERascunhos_() {
     const nfseStr = String(row[colNfse] || '').trim();
     const cndsExigidas = String(row[colCnds] || '').trim();
 
-    if (!reqId || status !== 'ISSUED' || pipelineState === 'LEGACY_TEST_INVALID' || pipelineState === 'BLOCKED_CANCELLED_NFSE' || pipelineState === 'DRAFT_CREATED') {
+    if (!reqId || status !== 'ISSUED' || pipelineState === 'LEGACY_TEST_INVALID' || pipelineState === 'BLOCKED_CANCELLED_NFSE') {
       continue;
     }
 
@@ -6074,6 +6074,9 @@ function processarDocumentosERascunhos_() {
       logs.push('Demanda ' + reqId + ': NFS-e ' + nfseStr + ' cancelada. Draft bloqueado.');
       continue;
     }
+
+    // Não aplicar a nova política retroativamente a rascunhos já concluídos.
+    if (pipelineState === 'DRAFT_CREATED') continue;
 
     logs.push('Demanda ' + reqId + ': processando documentos para NFS-e ' + nfseStr);
 
