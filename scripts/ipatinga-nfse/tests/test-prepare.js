@@ -18,6 +18,7 @@ const demandasRaw = [
   ['req-hic', '08/2026', 'HIC — Plantões PS SUS; HIC — Produção PS SUS', '1000,00; 200,00', 'Descrição plantões vinda do e-mail || Descrição produção vinda do e-mail', 'PENDENTE', ''],
   ['req-cisurg', '08/2026', 'CISURG — Plantões credenciamento', '4199,40', 'DESCRIÇÃO EXATA DO ESPELHO MENSAL', 'PENDENTE', ''],
   ['req-done', '07/2026', 'CISURG', '4199,40', 'descrição', 'CONCLUÍDA', '15'],
+  ['req-completed-sent', '09/2026', 'HIC — Plantões PS SUS; HIC — Produção PS SUS', '7700,00; 1560,00', 'Plantões || Produção', 'COMPLETED_SENT', '25; 26'],
   ['req-sem-pattern', '08/2026', 'Serviço Médico Desconhecido', '500,00', 'Descrição médica avulsa', 'PENDENTE', '']
 ];
 const tomadoresRaw = [
@@ -71,5 +72,8 @@ assert.strictEqual(cisurg.candidates[0].codigoMunicipioIncidenciaIss, '3131307')
 // 5. Demanda já concluída
 const done = prepareDemand({ requestId: 'req-done', demandas, tomadores, patterns });
 assert.strictEqual(done.validationStatus, 'ALREADY_ISSUED');
+const sent = prepareDemand({ requestId: 'req-completed-sent', demandas, tomadores, patterns });
+assert.strictEqual(sent.validationStatus, 'ALREADY_COMPLETED');
+assert.strictEqual(sent.candidates.length, 0);
 
 console.log('✓ test-prepare.js PASSED');

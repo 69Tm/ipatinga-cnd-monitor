@@ -28,6 +28,9 @@ const { signXmlNode, verifyXmlSignature } = require('./xmldsig');
 const { callSoapOperation } = require('./soap');
 const { buildCabecalho, parseConsultarNfseResposta } = require('./abrasf');
 const { getXmlNode, getXmlValue, findXmlNode, findXmlValue, ensureArray, parseXml } = require('./xml');
+const { routeProvider } = require('./provider-router');
+const { createNationalIssuerProvider } = require('./national-emissor-provider');
+const { LegacyAbrasfProvider } = require('./legacy-abrasf-provider');
 
 function escapeXml(value) {
   return String(value ?? '')
@@ -55,6 +58,37 @@ function isProviderInfraError(err) {
          msg.includes('CERT_HAS_EXPIRED') ||
          msg.includes('DEPTH_ZERO_SELF_SIGNED_CERT') ||
          msg.includes('UNABLE_TO_VERIFY_LEAF_SIGNATURE');
+}
+
+function findRecordedOfficialDocument({ documentsRaw, notesRaw, requestId, itemIndex }) {
+  if (!Array.isArray(documentsRaw) || documentsRaw.length < 2) return { status: 'NONE' };
+  const documentHeaders = (documentsRaw[0] || []).map(value => String(value || '').trim().toLowerCase());
+  const docCol = name => documentHeaders.indexOf(name);
+  const requiredDocumentCols = ['request_id', 'item_index', 'nfse_numero', 'tipo', 'source', 'status'];
+  if (requiredDocumentCols.some(name => docCol(name) < 0)) return { status: 'NONE' };
+  const candidates = documentsRaw.slice(1).filter(row =>
+    String(row[docCol('request_id')] || '').trim() === String(requestId) &&
+    String(row[docCol('item_index')] || '').trim() === String(itemIndex) &&
+    String(row[docCol('tipo')] || '').trim() === 'OFFICIAL_DANFSE_PDF' &&
+    String(row[docCol('source')] || '').trim() === 'GMAIL_SENT_ATTACHMENT' &&
+    String(row[docCol('status')] || '').trim() === 'READY'
+  );
+  if (candidates.length === 0) return { status: 'NONE' };
+  if (candidates.length !== 1) return { status: 'AMBIGUOUS' };
+
+  const nfseNumero = String(candidates[0][docCol('nfse_numero')] || '').trim();
+  if (!nfseNumero || !Array.isArray(notesRaw) || notesRaw.length < 2) return { status: 'INCOMPLETE' };
+  const noteHeaders = (notesRaw[0] || []).map(value => String(value || '').trim().toLowerCase());
+  const numberCol = noteHeaders.findIndex(value => value.includes('nfs-e') || value.includes('numero nfse') || value.includes('número nfse'));
+  const statusCol = noteHeaders.indexOf('status');
+  const sourceCol = noteHeaders.findIndex(value => value.includes('situação api') || value.includes('situacao api'));
+  if (numberCol < 0 || statusCol < 0) return { status: 'INCOMPLETE' };
+  const matchingNotes = notesRaw.slice(1).filter(row => String(row[numberCol] || '').trim() === nfseNumero);
+  if (matchingNotes.length !== 1) return { status: matchingNotes.length > 1 ? 'AMBIGUOUS' : 'INCOMPLETE' };
+  const noteStatus = String(matchingNotes[0][statusCol] || '').trim().toUpperCase();
+  const apiStatus = sourceCol >= 0 ? String(matchingNotes[0][sourceCol] || '').trim().toUpperCase() : '';
+  if (noteStatus !== 'NORMAL' || (apiStatus && !apiStatus.includes('GERADA') && !apiStatus.includes('NORMAL'))) return { status: 'INCOMPLETE' };
+  return { status: 'MATCHED', nfseNumero };
 }
 
 function probeUrl(url, timeoutMs = 10000) {
@@ -377,12 +411,82 @@ async function issueNfse({ requestId, itemIndex = 1, certData, dryRun = false },
     throw new Error('NFE_ISSUE_KILL_SWITCH_ACTIVE: Emissao bloqueada emergencialmente pelo kill switch.');
   }
 
+  const read = dependencies.readSheetValues || readSheetValues;
+  const spreadsheetId = dependencies.spreadsheetId || CONFIG.SHEETS.SPREADSHEET_ID;
+
+  // Check the canonical Demandas row before creating/ensuring the legacy RPS
+  // sheet. Reconciled SENT requests can belong to the national DPS model and
+  // intentionally have no RPS ledger entry.
+  if (!requestId.startsWith('fixture-homologation') && !requestId.startsWith('fixture-controlada')) {
+    const existingDemandRows = demandRows(await read(spreadsheetId, `${CONFIG.SHEETS.TABS.DEMANDAS}!A:Z`));
+    const existingDemand = existingDemandRows.find(d => d.requestId === requestId);
+    if (existingDemand && existingDemand.status === 'COMPLETED_SENT' && existingDemand.nfseResultantes) {
+      const completedNumbers = existingDemand.nfseResultantes.split(';').map(value => value.trim()).filter(Boolean);
+      const nfseNumero = completedNumbers[itemIndex - 1] || '';
+      if (!nfseNumero || completedNumbers.length < existingDemand.notasSolicitadas.length) {
+        return {
+          status: 'RECONCILIATION_REQUIRED', environment, requestId, itemIndex,
+          gerarNfseCalls: 0, newDps: 0, newRps: 0, newNfse: 0,
+          newEmails: 0, newDrafts: 0, newProviderWrites: 0
+        };
+      }
+      return {
+        status: 'ALREADY_COMPLETED', environment, requestId, itemIndex, nfseNumero,
+        gerarNfseCalls: 0, newDps: 0, newRps: 0, newNfse: 0,
+        newEmails: 0, newDrafts: 0, newProviderWrites: 0
+      };
+    }
+
+    const recordedDocument = findRecordedOfficialDocument({
+      documentsRaw: await read(spreadsheetId, `${CONFIG.SHEETS.TABS.DOCUMENTOS}!A:K`),
+      notesRaw: await read(spreadsheetId, `${CONFIG.SHEETS.TABS.NOTAS}!A:X`),
+      requestId,
+      itemIndex
+    });
+    if (recordedDocument.status === 'MATCHED') {
+      return {
+        status: 'ALREADY_COMPLETED', environment, requestId, itemIndex,
+        nfseNumero: recordedDocument.nfseNumero,
+        reconciledFromOfficialDocument: true,
+        gerarNfseCalls: 0, newDps: 0, newRps: 0, newNfse: 0,
+        newEmails: 0, newDrafts: 0, newProviderWrites: 0
+      };
+    }
+    if (recordedDocument.status === 'AMBIGUOUS' || recordedDocument.status === 'INCOMPLETE') {
+      return {
+        status: 'RECONCILIATION_REQUIRED', environment, requestId, itemIndex,
+        gerarNfseCalls: 0, newDps: 0, newRps: 0, newNfse: 0,
+        newEmails: 0, newDrafts: 0, newProviderWrites: 0
+      };
+    }
+  }
+
+  if (requestId.startsWith('fixture-homologation') || requestId.startsWith('fixture-controlada')) {
+    if (environment === 'production' && process.env.NFE_ALLOW_CONTROLLED_PRODUCTION_TEST !== 'true') {
+      throw new Error('CONTROLLED_PRODUCTION_TEST_DISABLED: Fixtures controladas em produção exigem NFE_ALLOW_CONTROLLED_PRODUCTION_TEST=true.');
+    }
+  }
+
+  const route = routeProvider({
+    taxRegime: 'SIMPLES_NACIONAL',
+    emissionDate: dependencies.issueDate || new Date()
+  });
+  if (!route.writeAllowed) {
+    if (route.provider === 'NATIONAL_ISSUER' && !dryRun) await createNationalIssuerProvider().submit();
+    if (route.provider === 'NATIONAL_ISSUER' && dryRun) {
+      return {
+        status: 'DRY_RUN_BLOCKED_PROVIDER_ROUTING', environment, requestId, itemIndex,
+        provider: route.provider, reason: route.reason,
+        gerarNfseCalls: 0, newDps: 0, newRps: 0, newNfse: 0,
+        newEmails: 0, newDrafts: 0, newProviderWrites: 0
+      };
+    }
+    throw new Error(`PROVIDER_ROUTING_BLOCKED: ${route.reason || 'NO_SAFE_PROVIDER_ROUTE'}`);
+  }
+
   if (!certData || !certData.loaded || !certData.isValid) {
     throw new Error('CERT_INVALID: Emissão requer certificado A1 válido.');
   }
-
-  const read = dependencies.readSheetValues || readSheetValues;
-  const spreadsheetId = dependencies.spreadsheetId || CONFIG.SHEETS.SPREADSHEET_ID;
 
   if (!dryRun) {
     await ensureLedgerSheet(dependencies);
@@ -782,7 +886,11 @@ async function issueNfse({ requestId, itemIndex = 1, certData, dryRun = false },
   ledgerEntry = await markSubmitting(ledgerEntry, dependencies);
 
   // 8. Chamada SOAP GerarNfse
-  const soapCall = dependencies.callSoapOperation || callSoapOperation;
+  const legacyProvider = new LegacyAbrasfProvider({
+    issueDate: dependencies.issueDate || new Date(),
+    callSoapOperation: dependencies.callSoapOperation || callSoapOperation
+  });
+  const soapCall = args => legacyProvider.submit(args);
   let responseXml = null;
   let timeoutOccurred = false;
 
@@ -991,6 +1099,7 @@ async function runAutoRecoveryBatch({ certData, dryRun = false } = {}, dependenc
 module.exports = {
   escapeXml,
   isProviderInfraError,
+  findRecordedOfficialDocument,
   probeUrl,
   probeProviderHealth,
   buildConsultarNfsePorRpsEnvio,
