@@ -549,6 +549,12 @@ function doPost(e) {
         .setMimeType(ContentService.MimeType.JSON);
     }
 
+    if (action === 'update_cnd_falencia') {
+      const result = atualizarCndFalenciaTjmg_(payload);
+      return ContentService.createTextOutput(JSON.stringify(result, null, 2))
+        .setMimeType(ContentService.MimeType.JSON);
+    }
+
     return ContentService.createTextOutput(JSON.stringify({ ok: false, error: 'UNAUTHORIZED_ACTION: ' + action }))
       .setMimeType(ContentService.MimeType.JSON);
   } catch (globalErr) {
@@ -6424,4 +6430,54 @@ function processarDocumentosERascunhos_() {
 
 function executarProcessamentoDocumentos() {
   return processarDocumentosERascunhos_();
+}
+
+function atualizarCndFalenciaTjmg_(payload) {
+  const base64Data = payload.pdfBase64;
+  if (!base64Data) throw new Error('PDF_BASE64_REQUIRED');
+  const bytes = Utilities.base64Decode(base64Data);
+  const blob = Utilities.newBlob(bytes, 'application/pdf', 'DEXMED - Certidao Falencia Concordata TJMG - validade 2027-01-21.pdf');
+
+  const folder = DriveApp.getFolderById('16Dw9pUbpv_ViCP6a2MAgUbW1h37t3859');
+  const file = folder.createFile(blob);
+  const fileId = file.getId();
+  const fileUrl = 'https://drive.google.com/file/d/' + fileId + '/view';
+
+  const ssCnd = abrirPlanilhaCnds_();
+  const sheet = ssCnd.getSheetByName('CNDs');
+  if (!sheet) throw new Error('Aba CNDs não encontrada');
+
+  const data = sheet.getDataRange().getValues();
+  let targetRow = -1;
+  for (let i = 1; i < data.length; i++) {
+    const tipo = String(data[i][2] || '').toLowerCase();
+    if (tipo.includes('falência') || tipo.includes('falencia')) {
+      targetRow = i + 1;
+      break;
+    }
+  }
+  if (targetRow === -1) throw new Error('Linha Falência/Concordata não encontrada na aba CNDs');
+
+  const emissaoDate = new Date(2026, 9, 21);
+  const validadeDate = new Date(2027, 0, 21);
+
+  sheet.getRange(targetRow, 5).setValue(emissaoDate);
+  sheet.getRange(targetRow, 6).setValue(validadeDate);
+  sheet.getRange(targetRow, 7).setFormula('=IF(F' + targetRow + '="";"";IF(F' + targetRow + '<TODAY();"VENCIDA";IF(F' + targetRow + '<=TODAY()+15;"VENCE ≤15d";"VÁLIDA")))');
+  sheet.getRange(targetRow, 8).setFormula('=HYPERLINK("' + fileUrl + '";"Abrir PDF")');
+  sheet.getRange(targetRow, 9).setValue(fileId);
+  sheet.getRange(targetRow, 10).setValue(payload.controle || '2610-2120-2700-0673-4664');
+  sheet.getRange(targetRow, 11).setValue('Emitida via TJMG RUPE em 21/10/2026 às 20:27 (autenticação: 2610-2120-2700-0673-4664), válida por 3 meses.');
+  sheet.getRange(targetRow, 14).setValue('TJMG RUPE Oficial — Certidão Negativa');
+  sheet.getRange(targetRow, 15).setValue(new Date());
+  sheet.getRange(targetRow, 16).setValue('Emitida com sucesso');
+
+  return {
+    ok: true,
+    fileId: fileId,
+    targetRow: targetRow,
+    emissao: '2026-10-21',
+    validade: '2027-01-21',
+    status: sheet.getRange(targetRow, 7).getDisplayValue() || 'VÁLIDA'
+  };
 }
