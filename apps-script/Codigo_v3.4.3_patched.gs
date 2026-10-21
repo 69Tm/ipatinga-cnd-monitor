@@ -5428,7 +5428,7 @@ function processarSolicitacaoNfOperacional_(candidate) {
   });
 
   // Idempotência estrita: se já existir e estiver em processamento ou finalizada, ZERO novo dispatch
-  const nonRedispatchStatuses = ['DISPATCHED', 'WAITING_FISCAL', 'ISSUED', 'WAITING_SYNC', 'DOCUMENT_PENDING', 'DRY_RUN_SUCCESS', 'E2E_DRY_RUN_VALIDATED', 'CONCLUÍDA', 'PROVIDER_PREFLIGHT_BLOCKED'];
+  const nonRedispatchStatuses = ['DISPATCHED', 'WAITING_FISCAL', 'ISSUED', 'WAITING_SYNC', 'DOCUMENT_PENDING', 'DRY_RUN_SUCCESS', 'E2E_DRY_RUN_VALIDATED', 'CONCLUÍDA', 'COMPLETED_SENT', 'PROVIDER_PREFLIGHT_BLOCKED'];
   if (reg.alreadyExists && (nonRedispatchStatuses.includes(reg.currentStatus) || nonRedispatchStatuses.includes(reg.pipelineState))) {
     return { ok: true, alreadyCompleted: true, existingDemand: true, messageId: messageId, dispatched: false };
   }
@@ -5535,7 +5535,7 @@ function continuarDemandasNfPendentes_() {
     const notasSol = String(row[4] || '').split(';').filter(Boolean);
     const totalRequired = Math.max(notasSol.length, 1);
 
-    if (!reqId || status === 'CONCLUÍDA' || status === 'DRY_RUN_SUCCESS' || pipelineState === 'DRAFT_CREATED' || pipelineState === 'LEGACY_TEST_INVALID') continue;
+    if (!reqId || status === 'CONCLUÍDA' || status === 'COMPLETED_SENT' || status === 'DRY_RUN_SUCCESS' || pipelineState === 'DRAFT_CREATED' || pipelineState === 'COMPLETED_SENT' || pipelineState === 'LEGACY_TEST_INVALID') continue;
 
     // Busca RPS emitidos correspondentes ao request_id
     const matchingRps = [];

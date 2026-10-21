@@ -26,6 +26,7 @@ assert.ok(!code.includes(removedSyntheticXmlFunction), 'função de XML sintéti
 assert.ok(code.includes("const dataDemanda = row[colDataDem]; // Col A: Data demanda; nunca usar competência") || code.includes("const dataDemanda = row[0];"), 'retomada deve usar Demandas.Data demanda (Col A)');
 assert.ok(code.includes("dataDemanda: (typeof message.getDate === 'function' && message.getDate()) ? message.getDate() : new Date()"), 'demanda inicial deve persistir message.getDate()');
 assert.ok(code.includes("cndsExigidas: parsed.cndsExigidas || ''"), 'CNDs solicitadas devem ser persistidas na demanda');
+assert.ok(code.includes("'COMPLETED_SENT'"), 'COMPLETED_SENT deve impedir redispatch e recuperação indevida como demanda pendente');
 assert.ok(code.includes('confirmedBillableCalls: confirmedBillableCount') && code.includes('paidApiCallsExecuted: confirmedBillableCount'), 'audit local deve mapear confirmedBillableCalls e manter paidApiCallsExecuted como alias');
 assert.ok(code.includes('renewalsSucceeded: renewalsSucceeded'), 'audit local deve registrar renovações bem-sucedidas');
 assert.ok(code.includes('renewalsFailed: renewalsFailed'), 'audit local deve registrar renovações falhas');

@@ -454,6 +454,20 @@ function prepareDemand({ requestId, demandas, tomadores, patterns, notas = [], n
     };
   }
 
+  // A completed, already-sent demand is immutable on replay. Its official
+  // documents may use the national DPS model and therefore have no RPS row.
+  if (demanda.status === 'COMPLETED_SENT' && demanda.nfseResultantes) {
+    return {
+      operation: 'prepare',
+      status: 'SUCCESS',
+      validationStatus: 'ALREADY_COMPLETED',
+      requestId,
+      candidates: [],
+      blockingReasons: [],
+      warnings: []
+    };
+  }
+
   if (demanda.status === 'CONCLUÍDA' || demanda.nfseResultantes) {
     return {
       operation: 'prepare',

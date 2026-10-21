@@ -6,12 +6,14 @@ const {
   buildConsultarNfsePorRpsEnvio,
   parseGerarNfseResposta,
   reconcileRps,
-  issueNfse
+  issueNfse: issueNfseEngine
 } = require('../issue');
 const { checkPendingEntries } = require('../main');
 const { RPS_STATUS, RECONCILIATION_STATUS } = require('../ledger');
 
 console.log('Running test-issue.js...');
+
+const issueNfse = (args, dependencies = {}) => issueNfseEngine(args, { issueDate: '2026-08-24', ...dependencies });
 
 // Cria certificado autoassinado em memória para os testes
 const keypair = forge.pki.rsa.generateKeyPair(1024);
@@ -54,6 +56,7 @@ function mockSheetReader(overrides = {}) {
     if (norm.includes('demanda')) return overrides.demandas || mockDemandas;
     if (norm.includes('tomador')) return overrides.tomadores || mockTomadores;
     if (norm.includes('padro')) return overrides.padroes || mockPatterns;
+    if (norm.includes('documentos')) return overrides.documentos || [];
     if (norm.includes('nota')) return overrides.notas || [];
     return [];
   };
@@ -306,6 +309,61 @@ async function run() {
     assert.ok(e.message.includes('CONTROLLED_PRODUCTION_TEST_DISABLED'));
   }
   assert.strictEqual(threwControlled, true, 'Fixture controlada em producao deve ser barrada sem flag');
+
+  // Replay de demanda nacional já enviada: sem ledger legado, escrita ou chamada ao provedor.
+  const sentDemand = [
+    ['Message ID', 'Período', 'Notas solicitadas', 'Valores', 'Descrição obrigatória', 'Status', 'NFS-e resultantes'],
+    ['sent-request', '09/2026', 'Plantões; Produção', '7700,00; 1560,00', 'Plantões || Produção', 'COMPLETED_SENT', '25; 26']
+  ];
+  let ledgerCreateCalls = 0;
+  for (const [itemIndex, nfseNumero] of [[1, '25'], [2, '26']]) {
+    const replay = await issueNfseEngine({ requestId: 'sent-request', itemIndex, dryRun: false }, {
+      readSheetValues: mockSheetReader({ demandas: sentDemand }),
+      createSheetIfNotExists: async () => { ledgerCreateCalls++; },
+      updateSheetValues: async () => { throw new Error('unexpected write'); },
+      appendSheetValues: async () => { throw new Error('unexpected write'); },
+      callSoapOperation: async () => { throw new Error('unexpected provider call'); }
+    });
+    assert.strictEqual(replay.status, 'ALREADY_COMPLETED');
+    assert.strictEqual(replay.nfseNumero, nfseNumero);
+    assert.deepStrictEqual([replay.newDps, replay.newRps, replay.newNfse, replay.newEmails, replay.newDrafts, replay.newProviderWrites], [0, 0, 0, 0, 0, 0]);
+  }
+  assert.strictEqual(ledgerCreateCalls, 0);
+
+  const officialDocs = [
+    ['request_id', 'item_index', 'rps_numero', 'nfse_numero', 'tipo', 'source', 'drive_file_id', 'sha256', 'status', 'created_at', 'error'],
+    ['external-request', '1', '', '25', 'OFFICIAL_DANFSE_PDF', 'GMAIL_SENT_ATTACHMENT', 'drive-25', 'hash-25', 'READY', '', '']
+  ];
+  const officialNotes = [
+    ['Nº NFS-e', 'Período referência', 'Competência NFS-e', 'Emissão', 'Tomador', 'CNPJ tomador', 'Categoria', 'Descrição do serviço', 'Valor serviço', 'Cód. trib. nacional', 'Cód. trib. municipal', 'Local prestação', 'Alíquota ISS', 'ISS apurado', 'NBS', 'Chave de acesso', 'Fonte', 'E-mail origem', 'Status', 'Observações', 'Fonte API', 'Última sincronização API', 'Código de verificação', 'Situação API'],
+    ['25', '09/2026', '20/10/2026', '20/10/2026', 'ASSOCIACAO DE CARIDADE NOSSA SENHORA DO CARMO', '20724357000120', 'HIC', 'Plantões', 'R$ 7.700,00', '', '040301', 'Guanhães/MG', '2,390%', 'R$ 184,03', '123011900', 'key-25', 'Gmail — DANFSe oficial enviado', 'thread-1', 'NORMAL', '', 'DANFSe v2.0', '', '', 'NFS-e Gerada']
+  ];
+  const docsReplay = await issueNfseEngine({ requestId: 'external-request', itemIndex: 1, dryRun: false }, {
+    readSheetValues: mockSheetReader({ documentos: officialDocs, notas: officialNotes }),
+    createSheetIfNotExists: async () => { throw new Error('must not create legacy ledger'); },
+    callSoapOperation: async () => { throw new Error('must not invoke provider'); }
+  });
+  assert.strictEqual(docsReplay.status, 'ALREADY_COMPLETED');
+  assert.strictEqual(docsReplay.nfseNumero, '25');
+  assert.strictEqual(docsReplay.reconciledFromOfficialDocument, true);
+
+  // Para uma nova emissão corrente, a rota nacional é selecionada e bloqueia o ABRASF antes de criar o ledger.
+  let currentLedgerCreateCalls = 0;
+  await assert.rejects(() => issueNfseEngine({ requestId: 'new-current-request', itemIndex: 1, certData, dryRun: false }, {
+    issueDate: '2026-10-21',
+    readSheetValues: mockSheetReader(),
+    createSheetIfNotExists: async () => { currentLedgerCreateCalls++; },
+    callSoapOperation: async () => { throw new Error('ABRASF write must not run'); }
+  }), /NATIONAL_ISSUER_WRITE_NOT_VALIDATED/);
+  assert.strictEqual(currentLedgerCreateCalls, 0);
+  const currentDryRun = await issueNfseEngine({ requestId: 'new-current-request', itemIndex: 1, certData, dryRun: true }, {
+    issueDate: '2026-10-21',
+    readSheetValues: mockSheetReader(),
+    createSheetIfNotExists: async () => { currentLedgerCreateCalls++; },
+    updateSheetValues: async () => { throw new Error('current-route dry-run must not model ABRASF'); }
+  });
+  assert.strictEqual(currentDryRun.status, 'DRY_RUN_BLOCKED_PROVIDER_ROUTING');
+  assert.strictEqual(currentLedgerCreateCalls, 0);
 
   // 10. Testa pending_check (checkPendingEntries)
   const rpsPendingSample = [
