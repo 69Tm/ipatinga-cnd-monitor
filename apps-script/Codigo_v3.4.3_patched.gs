@@ -1090,10 +1090,18 @@ function doGet(e) {
         const sheetDemandas = ssNfse.getSheetByName('Demandas');
         const sheetRps = ssNfse.getSheetByName('RPS');
         const sheetNotas = ssNfse.getSheetByName('Notas');
+        const sheetDocs = ssNfse.getSheetByName('Documentos NFS-e');
         result = {
           demandas: sheetDemandas ? sheetDemandas.getDataRange().getValues() : [],
           rps: sheetRps ? sheetRps.getDataRange().getValues() : [],
-          notas: sheetNotas ? sheetNotas.getDataRange().getValues() : []
+          notas: sheetNotas ? sheetNotas.getDataRange().getValues() : [],
+          documentos: sheetDocs ? sheetDocs.getDataRange().getValues() : []
+        };
+      } else if (action === 'readCndSheet') {
+        const ssCnd = abrirPlanilhaCnds_();
+        const sheetCnd = ssCnd ? ssCnd.getSheetByName('CNDs') : null;
+        result = {
+          cnds: sheetCnd ? sheetCnd.getDataRange().getValues() : []
         };
       } else if (action === 'processDocumentsAndDrafts') {
         result = processarDocumentosERascunhos_();
