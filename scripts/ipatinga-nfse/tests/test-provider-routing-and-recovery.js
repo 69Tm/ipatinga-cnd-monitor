@@ -13,7 +13,7 @@ const historical = routeProvider({ taxRegime: 'SIMPLES_NACIONAL', emissionDate: 
 assert.strictEqual(historical.provider, 'LEGACY_ABRASF');
 assert.strictEqual(historical.writeAllowed, true);
 assert.strictEqual(routeProvider({ taxRegime: 'SIMPLES_NACIONAL', emissionDate: '2026-10-21' }).provider, 'NATIONAL_ISSUER');
-assert.strictEqual(routeProvider({ taxRegime: 'SIMPLES_NACIONAL', emissionDate: '2026-10-21' }).writeAllowed, false);
+assert.strictEqual(routeProvider({ taxRegime: 'SIMPLES_NACIONAL', emissionDate: '2026-10-21' }).writeAllowed, true);
 assert.strictEqual(routeProvider({ taxRegime: 'SIMPLES_NACIONAL', emissionDate: '2026-10-21', historicalRead: true }).mode, 'historical_read');
 assert.strictEqual(routeProvider({ taxRegime: 'SIMPLES_NACIONAL', emissionDate: '' }).reason, 'EMISSION_DATE_REQUIRED');
 
@@ -34,7 +34,7 @@ assert.strictEqual(nationalPost.url, 'https://adn.nfse.gov.br/contribuintes/nfse
 assert.strictEqual(nationalPost.tls.rejectUnauthorized, true);
 assert.strictEqual(buildNationalNfseReadRequest({ accessKey: 'key-25' }).method, 'GET');
 assert.strictEqual(buildNationalDpsReadRequest({ dpsId: 'DPS-id', method: 'HEAD' }).method, 'HEAD');
-assert.throws(() => createNationalIssuerProvider().submit(), /NATIONAL_ISSUER_WRITE_NOT_VALIDATED/);
+await assert.rejects(() => createNationalIssuerProvider().submit({ dpsXml: '' }), /NATIONAL_DPS_XML_REQUIRED/);
 assert.throws(() => buildNationalSubmitRequest({ dpsXml: '<DPS/>', baseUrl: 'http://unsafe.example' }), /HTTPS_REQUIRED/);
 let legacyCalls = 0;
 const legacyHistorical = new LegacyAbrasfProvider({ issueDate: '2026-10-20', callSoapOperation: async () => { legacyCalls++; return 'ok'; } });

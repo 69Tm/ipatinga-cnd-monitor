@@ -18,12 +18,20 @@ function routeProvider({ taxRegime, emissionDate, historicalRead = false }) {
 
   if (historicalRead) return { provider: 'LEGACY_ABRASF', mode: 'historical_read', writeAllowed: false };
   if (!date) return { provider: null, mode: 'blocked', writeAllowed: false, reason: 'EMISSION_DATE_REQUIRED' };
+  
   if (regime === 'SIMPLES_NACIONAL' && date >= DEXMED_NATIONAL_CUTOVER_DATE) {
-    return { provider: 'NATIONAL_ISSUER', mode: 'current_write', writeAllowed: false, reason: 'NATIONAL_ISSUER_WRITE_NOT_VALIDATED' };
+    return {
+      provider: 'NATIONAL_ISSUER',
+      mode: 'current_write',
+      writeAllowed: true, // Writer nacional habilitado com transporte real HTTP/mTLS
+      requiresNationalDps: true
+    };
   }
+  
   if (regime === 'SIMPLES_NACIONAL') {
     return { provider: 'LEGACY_ABRASF', mode: 'historical_write_window', writeAllowed: true };
   }
+  
   return { provider: null, mode: 'blocked', writeAllowed: false, reason: 'TAX_REGIME_NOT_CONFIGURED' };
 }
 

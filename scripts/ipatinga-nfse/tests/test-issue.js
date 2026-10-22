@@ -347,23 +347,33 @@ async function run() {
   assert.strictEqual(docsReplay.nfseNumero, '25');
   assert.strictEqual(docsReplay.reconciledFromOfficialDocument, true);
 
-  // Para uma nova emissão corrente, a rota nacional é selecionada e bloqueia o ABRASF antes de criar o ledger.
+  // Para uma nova emissão corrente, a rota nacional é selecionada e o safety gate de produção bloqueia antes de criar o ledger.
   let currentLedgerCreateCalls = 0;
   await assert.rejects(() => issueNfseEngine({ requestId: 'new-current-request', itemIndex: 1, certData, dryRun: false }, {
     issueDate: '2026-10-21',
     readSheetValues: mockSheetReader(),
     createSheetIfNotExists: async () => { currentLedgerCreateCalls++; },
     callSoapOperation: async () => { throw new Error('ABRASF write must not run'); }
-  }), /NATIONAL_ISSUER_WRITE_NOT_VALIDATED/);
+  }), /NATIONAL_PRODUCTION_WRITE_DISABLED/);
   assert.strictEqual(currentLedgerCreateCalls, 0);
+
+  let currentDryRunUpdatedRows = 0;
   const currentDryRun = await issueNfseEngine({ requestId: 'new-current-request', itemIndex: 1, certData, dryRun: true }, {
     issueDate: '2026-10-21',
-    readSheetValues: mockSheetReader(),
+    readSheetValues: mockSheetReader({
+      demandas: [
+        ['Message ID', 'Período', 'Notas solicitadas', 'Valores', 'Descrição obrigatória', 'Status', 'NFS-e resultantes'],
+        ['new-current-request', '09/2026', 'HIC — Plantões PS SUS', '100,00', 'Descrição corrente', 'PENDENTE', '']
+      ]
+    }),
     createSheetIfNotExists: async () => { currentLedgerCreateCalls++; },
-    updateSheetValues: async () => { throw new Error('current-route dry-run must not model ABRASF'); }
+    updateSheetValues: async () => { currentDryRunUpdatedRows++; },
+    callSoapOperation: async () => { throw new Error('ABRASF write must not run'); }
   });
-  assert.strictEqual(currentDryRun.status, 'DRY_RUN_BLOCKED_PROVIDER_ROUTING');
+  assert.strictEqual(currentDryRun.status, 'DRY_RUN_SUCCESS');
+  assert.strictEqual(currentDryRun.provider, 'NATIONAL_ISSUER');
   assert.strictEqual(currentLedgerCreateCalls, 0);
+  assert.strictEqual(currentDryRunUpdatedRows, 1);
 
   // 10. Testa pending_check (checkPendingEntries)
   const rpsPendingSample = [

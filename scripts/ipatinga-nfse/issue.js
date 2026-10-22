@@ -29,7 +29,7 @@ const { callSoapOperation } = require('./soap');
 const { buildCabecalho, parseConsultarNfseResposta } = require('./abrasf');
 const { getXmlNode, getXmlValue, findXmlNode, findXmlValue, ensureArray, parseXml } = require('./xml');
 const { routeProvider } = require('./provider-router');
-const { createNationalIssuerProvider } = require('./national-emissor-provider');
+const { createNationalIssuerProvider, buildNationalDpsXml } = require('./national-emissor-provider');
 const { LegacyAbrasfProvider } = require('./legacy-abrasf-provider');
 
 function escapeXml(value) {
@@ -484,6 +484,10 @@ async function issueNfse({ requestId, itemIndex = 1, certData, dryRun = false },
     throw new Error(`PROVIDER_ROUTING_BLOCKED: ${route.reason || 'NO_SAFE_PROVIDER_ROUTE'}`);
   }
 
+  if (route.provider === 'NATIONAL_ISSUER' && !dryRun && environment === 'production' && process.env.NATIONAL_PRODUCTION_WRITE_ENABLED !== 'true') {
+    throw new Error('NATIONAL_PRODUCTION_WRITE_DISABLED: Emissão em produção nacional requer autorização explícita via NATIONAL_PRODUCTION_WRITE_ENABLED=true.');
+  }
+
   if (!certData || !certData.loaded || !certData.isValid) {
     throw new Error('CERT_INVALID: Emissão requer certificado A1 válido.');
   }
@@ -727,6 +731,132 @@ async function issueNfse({ requestId, itemIndex = 1, certData, dryRun = false },
   candidate.rpsSerie = ledgerEntry.rps_serie;
   candidate.rpsTipo = ledgerEntry.rps_tipo;
   candidate.xmlId = `RPS${ledgerEntry.rps_numero}${ledgerEntry.rps_serie.replace(/[^A-Za-z0-9]/g, '')}`;
+
+  if (route.provider === 'NATIONAL_ISSUER') {
+    const dpsNumero = ledgerEntry.rps_numero;
+    const dpsSerie = ledgerEntry.rps_serie;
+    const builtDps = buildNationalDpsXml({
+      dpsId: `DPS${CONFIG.PRESTADOR.INSCRICAO_MUNICIPAL}${dpsNumero}`,
+      ambiente: environment === 'production' ? 1 : 2,
+      prestador: {
+        cnpj: CONFIG.PRESTADOR.CNPJ_DIGITS,
+        inscricaoMunicipal: CONFIG.PRESTADOR.INSCRICAO_MUNICIPAL,
+        codigoMunicipio: candidate.codigoMunicipioPrestacao || '3131307'
+      },
+      tomador: {
+        cnpj: candidate.cnpjTomador,
+        razaoSocial: candidate.tomador,
+        logradouro: candidate.enderecoTomador?.logradouro,
+        numero: candidate.enderecoTomador?.numero,
+        bairro: candidate.enderecoTomador?.bairro,
+        codigoMunicipio: candidate.enderecoTomador?.codigoMunicipio,
+        uf: candidate.enderecoTomador?.uf,
+        cep: candidate.enderecoTomador?.cep
+      },
+      servico: {
+        codigoMunicipioPrestacao: candidate.codigoMunicipioPrestacao,
+        codigoTribNacional: candidate.codigoTribNacional,
+        codigoTribMunicipal: candidate.codigoTribMunicipal,
+        descricao: candidate.descricao,
+        nbs: candidate.nbs
+      },
+      valores: {
+        valorServicos: candidate.valor,
+        aliquotaIss: candidate.aliquotaIss,
+        valorIss: candidate.valorIss,
+        issRetido: candidate.issRetido
+      },
+      certData
+    });
+    const dpsXml = typeof builtDps === 'string' ? builtDps : builtDps.xml;
+    const xmlSha256 = crypto.createHash('sha256').update(dpsXml).digest('hex');
+
+    if (dryRun) {
+      let sheetWritebacks = 0;
+      if (candidate && candidate.rowIndex) {
+        try {
+          const update = dependencies.updateSheetValues || updateSheetValues;
+          const nowIso = new Date().toISOString();
+          await update(spreadsheetId, `${CONFIG.SHEETS.TABS.DEMANDAS}!I${candidate.rowIndex}:O${candidate.rowIndex}`, [
+            ['DRY_RUN_SUCCESS', '', '', '', 'E2E_DRY_RUN_VALIDATED', nowIso, '']
+          ]);
+          sheetWritebacks = 1;
+        } catch (errWriteBack) {
+          throw new Error('DRY_RUN_WRITEBACK_FAILED: ' + sanitize(errWriteBack.message));
+        }
+      }
+
+      return {
+        status: 'DRY_RUN_SUCCESS',
+        environment,
+        requestId,
+        itemIndex,
+        provider: 'NATIONAL_ISSUER',
+        rpsNumero: dpsNumero,
+        rpsSerie: dpsSerie,
+        rpsTipo: candidate.rpsTipo,
+        xmlSha256,
+        gerarNfseCalls: 0,
+        fiscalWrites: 0,
+        sheetWritebacks
+      };
+    }
+
+    if (environment === 'production' && process.env.NATIONAL_PRODUCTION_WRITE_ENABLED !== 'true') {
+      throw new Error('NATIONAL_PRODUCTION_WRITE_DISABLED: Emissão em produção nacional requer autorização explícita via NATIONAL_PRODUCTION_WRITE_ENABLED=true.');
+    }
+
+    ledgerEntry = await markSubmitting(ledgerEntry, dependencies);
+
+    const nationalProvider = createNationalIssuerProvider({
+      environment,
+      dependencies: {
+        transport: dependencies.transport || dependencies.executeHttpRequest
+      }
+    });
+
+    let submitResult;
+    try {
+      submitResult = await nationalProvider.submit({
+        dpsXml,
+        certData,
+        environment
+      });
+    } catch (err) {
+      if (err.message && err.message.includes('TIMEOUT')) {
+        ledgerEntry = await markUnknownAfterTimeout(ledgerEntry, { error: err.message }, dependencies);
+      } else {
+        ledgerEntry = await markFailedSafe(ledgerEntry, { error: err.message }, dependencies);
+      }
+      throw err;
+    }
+
+    if (submitResult.status === 'ISSUED') {
+      ledgerEntry = await markIssued(ledgerEntry, {
+        nfseNumero: submitResult.nfseNumero,
+        nfseChave: submitResult.chaveAcesso,
+        xmlOficial: submitResult.xmlOficial
+      }, dependencies);
+
+      return {
+        status: 'ISSUED',
+        environment,
+        requestId,
+        itemIndex,
+        provider: 'NATIONAL_ISSUER',
+        rpsNumero: dpsNumero,
+        nfseNumero: submitResult.nfseNumero,
+        nfseChave: submitResult.chaveAcesso,
+        protocolo: submitResult.protocolo,
+        dataEmissao: submitResult.dhEmi,
+        xmlOficial: submitResult.xmlOficial,
+        newProviderWrites: 1
+      };
+    }
+
+    throw new Error(`NATIONAL_SUBMIT_UNEXPECTED_STATUS: ${submitResult.status}`);
+  }
+
 
   // 5. Montagem do XML estrito com Tomador e Endereço Completo
   const itemLista = String(candidate.codigoTribNacional || '').split('.').slice(0, 2).join('.');
