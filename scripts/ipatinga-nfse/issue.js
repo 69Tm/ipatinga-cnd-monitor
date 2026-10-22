@@ -30,6 +30,20 @@ const { buildCabecalho, parseConsultarNfseResposta } = require('./abrasf');
 const { getXmlNode, getXmlValue, findXmlNode, findXmlValue, ensureArray, parseXml } = require('./xml');
 const { routeProvider } = require('./provider-router');
 const { createNationalIssuerProvider, buildNationalDpsXml } = require('./national-emissor-provider');
+const {
+  NATIONAL_DPS_STATUS,
+  ensureNationalLedgerSheet,
+  loadNationalLedger,
+  findNationalLedgerEntry,
+  allocateDpsAtomically,
+  markNationalSubmitting,
+  markNationalIssued,
+  markNationalRejected,
+  markNationalTimeout,
+  markNationalFailedSafe,
+  buildOfficialDpsId
+} = require('./national-ledger');
+const { validateNationalDpsAgainstOfficialXsd } = require('./xsd-validator');
 const { LegacyAbrasfProvider } = require('./legacy-abrasf-provider');
 
 function escapeXml(value) {
@@ -403,6 +417,298 @@ async function reconcileRps({ environment = 'production', requestId = null, item
 /**
  * Emite NFS-e em ambiente especificado (production ou homologation)
  */
+
+/**
+ * Emissão de Nota Fiscal no Emissor Nacional (DPS) com isolamento total do RPS legado (NEW_RPS=0)
+ */
+async function issueNationalDemandItem({ environment, requestId, itemIndex = 1, certData, dryRun = false, dependencies = {}, route }) {
+  if (environment === 'production' && !dryRun && process.env.NATIONAL_PRODUCTION_WRITE_ENABLED !== 'true') {
+    throw new Error('NATIONAL_PRODUCTION_WRITE_DISABLED: Emissão em produção nacional requer autorização explícita via NATIONAL_PRODUCTION_WRITE_ENABLED=true.');
+  }
+
+  if (!certData || !certData.loaded || !certData.isValid) {
+    throw new Error('CERT_INVALID: Emissão requer certificado A1 válido.');
+  }
+
+  const spreadsheetId = dependencies.spreadsheetId || CONFIG.SHEETS.SPREADSHEET_ID;
+  const read = dependencies.readSheetValues || readSheetValues;
+
+  if (!dryRun) {
+    await ensureNationalLedgerSheet(dependencies);
+  }
+
+  // 1. Consulta Ledger Nacional (DPS) antes de qualquer ação
+  let nationalEntries = await loadNationalLedger(dependencies);
+  let nationalEntry = findNationalLedgerEntry(nationalEntries, {
+    environment,
+    requestId,
+    itemIndex
+  });
+
+  if (nationalEntry) {
+    if (nationalEntry.status === NATIONAL_DPS_STATUS.ISSUED) {
+      return {
+        status: 'ALREADY_ISSUED',
+        environment,
+        requestId,
+        itemIndex,
+        provider: 'NATIONAL_ISSUER',
+        dpsId: nationalEntry.dps_id,
+        dpsNumero: nationalEntry.dps_numero,
+        dpsSerie: nationalEntry.dps_serie,
+        nfseNumero: nationalEntry.nfse_numero,
+        nfseChave: nationalEntry.nfse_chave,
+        newRps: 0,
+        newDps: 0,
+        newNfse: 0,
+        gerarNfseCalls: 0,
+        message: 'Nota já emitida anteriormente para este request_id e item_index no Emissor Nacional (idempotente).'
+      };
+    }
+
+    if (nationalEntry.status === NATIONAL_DPS_STATUS.FAILED_SAFE) {
+      return {
+        status: 'REVISAO_MANUAL',
+        environment,
+        requestId,
+        itemIndex,
+        provider: 'NATIONAL_ISSUER',
+        dpsId: nationalEntry.dps_id,
+        error: nationalEntry.error,
+        newRps: 0,
+        newDps: 0,
+        newNfse: 0,
+        gerarNfseCalls: 0,
+        message: 'Registro em FAILED_SAFE requer intervenção/revisão manual; reemissão automática proibida.'
+      };
+    }
+  }
+
+  // 2. Prepara a demanda
+  let prepared;
+  if (requestId.startsWith('fixture-homologation') || requestId.startsWith('fixture-controlada')) {
+    if (environment === 'production' && process.env.NFE_ALLOW_CONTROLLED_PRODUCTION_TEST !== 'true') {
+      throw new Error('CONTROLLED_PRODUCTION_TEST_DISABLED: Fixtures controladas em produção exigem NFE_ALLOW_CONTROLLED_PRODUCTION_TEST=true.');
+    }
+    prepared = buildControlledCandidate({ requestId, environment });
+  } else {
+    const [demandasRaw, tomadoresRaw, patternsRaw, notasRaw] = await Promise.all([
+      read(spreadsheetId, `${CONFIG.SHEETS.TABS.DEMANDAS}!A:Z`),
+      read(spreadsheetId, `${CONFIG.SHEETS.TABS.TOMADORES}!A:S`),
+      read(spreadsheetId, `${CONFIG.SHEETS.TABS.PADROES}!A:X`),
+      read(spreadsheetId, `${CONFIG.SHEETS.TABS.NOTAS}!A:X`)
+    ]);
+
+    prepared = prepareDemand({
+      requestId,
+      demandas: demandRows(demandasRaw),
+      tomadores: tomadorRows(tomadoresRaw),
+      patterns: patternRows(patternsRaw),
+      notas: notasRaw
+    });
+  }
+
+  if (prepared.validationStatus !== 'READY_TO_ISSUE' || !prepared.candidates.length) {
+    throw new Error(`PREPARE_NOT_READY: ${prepared.blockingReasons.join(', ')}`);
+  }
+
+  const candidate = prepared.candidates[itemIndex - 1];
+  if (!candidate) {
+    throw new Error(`CANDIDATE_INDEX_OUT_OF_BOUNDS: index ${itemIndex}`);
+  }
+
+  // 3. Alocação Atômica de DPS (se ainda não existia)
+  if (!nationalEntry) {
+    if (!dryRun) {
+      nationalEntry = await allocateDpsAtomically({
+        environment,
+        requestId,
+        itemIndex,
+        serie: '1'
+      }, dependencies);
+    } else {
+      const dpsIdMock = buildOfficialDpsId({
+        codMun: CONFIG.PRESTADOR.CODIGO_MUNICIPIO_IPATINGA || '3131307',
+        tipoInscricao: '1',
+        inscricaoFederal: CONFIG.PRESTADOR.CNPJ_DIGITS || '31302407000105',
+        serie: '1',
+        numero: '1'
+      });
+      nationalEntry = {
+        environment,
+        request_id: requestId,
+        item_index: String(itemIndex),
+        dps_id: dpsIdMock,
+        dps_numero: '1',
+        dps_serie: '1',
+        status: NATIONAL_DPS_STATUS.ALLOCATED,
+        allocated_at: new Date().toISOString(),
+        attempt_count: 0
+      };
+    }
+  }
+
+  // 4. Monta e Valida XML da DPS Nacional v1.01
+  const dpsData = buildNationalDpsXml({
+    dpsNumero: nationalEntry.dps_numero,
+    dpsSerie: nationalEntry.dps_serie,
+    ambiente: (environment === 'production') ? 1 : 2,
+    emissao: candidate.dataEmissao || new Date(),
+    competenciaData: candidate.competenciaData,
+    prestador: {
+      cnpj: CONFIG.PRESTADOR.CNPJ_DIGITS,
+      inscricaoMunicipal: CONFIG.PRESTADOR.INSCRICAO_MUNICIPAL,
+      codigoMunicipio: candidate.codigoMunicipioPrestacao || '3131307',
+      razaoSocial: CONFIG.PRESTADOR.RAZAO_SOCIAL
+    },
+    tomador: {
+      cnpj: candidate.cnpjTomador,
+      razaoSocial: candidate.tomador,
+      logradouro: candidate.enderecoTomador?.logradouro,
+      numero: candidate.enderecoTomador?.numero,
+      bairro: candidate.enderecoTomador?.bairro,
+      codigoMunicipio: candidate.enderecoTomador?.codigoMunicipio,
+      cep: candidate.enderecoTomador?.cep
+    },
+    servico: {
+      codigoMunicipioPrestacao: candidate.codigoMunicipioPrestacao,
+      codigoTribNacional: candidate.codigoTribNacional,
+      codigoTribMunicipal: candidate.codigoTribMunicipal,
+      descricao: candidate.descricao,
+      nbs: candidate.nbs
+    },
+    valores: {
+      valorServicos: candidate.valor,
+      aliquotaIss: candidate.aliquotaIss,
+      issRetido: candidate.issRetido
+    },
+    certData
+  });
+
+  const xmlSha256 = crypto.createHash('sha256').update(dpsData.xml).digest('hex');
+
+  // Validação prévia de XSD
+  const xsdValidation = await validateNationalDpsAgainstOfficialXsd(dpsData.xml);
+  if (!xsdValidation.valid) {
+    throw new Error(`NATIONAL_DPS_XSD_VALIDATION_FAILED: ${xsdValidation.errors.join('; ')}`);
+  }
+
+  // 5. Se DRY-RUN:
+  if (dryRun) {
+    let sheetWritebacks = 0;
+    if (candidate && candidate.rowIndex) {
+      try {
+        const update = dependencies.updateSheetValues || updateSheetValues;
+        const nowIso = new Date().toISOString();
+        await update(spreadsheetId, `${CONFIG.SHEETS.TABS.DEMANDAS}!I${candidate.rowIndex}:O${candidate.rowIndex}`, [
+          ['DRY_RUN_SUCCESS', '', '', '', 'E2E_DRY_RUN_VALIDATED', nowIso, '']
+        ]);
+        sheetWritebacks = 1;
+      } catch (errWriteBack) {
+        throw new Error('DRY_RUN_WRITEBACK_FAILED: ' + sanitize(errWriteBack.message));
+      }
+    }
+
+    return {
+      status: 'DRY_RUN_SUCCESS',
+      environment,
+      requestId,
+      itemIndex,
+      provider: 'NATIONAL_ISSUER',
+      dpsId: dpsData.dpsId,
+      dpsNumero: nationalEntry.dps_numero,
+      dpsSerie: nationalEntry.dps_serie,
+      xmlSha256,
+      newRps: 0,
+      newDps: 0,
+      newNfse: 0,
+      gerarNfseCalls: 0,
+      fiscalWrites: 0,
+      sheetWritebacks
+    };
+  }
+
+  // 6. Submissão Real via National Provider
+  nationalEntry = await markNationalSubmitting(nationalEntry, dependencies);
+
+  const nationalProvider = createNationalIssuerProvider({
+    environment,
+    transport: dependencies.transport || dependencies.executeHttpRequest
+  });
+
+  let submitResult;
+  try {
+    submitResult = await nationalProvider.submit({
+      dpsXml: dpsData.xml,
+      dpsId: dpsData.dpsId,
+      certData,
+      dryRun: false
+    });
+  } catch (err) {
+    if (err.message && err.message.includes('TIMEOUT')) {
+      nationalEntry = await markNationalTimeout(nationalEntry, { error: err.message }, dependencies);
+    } else {
+      nationalEntry = await markNationalFailedSafe(nationalEntry, { error: err.message }, dependencies);
+    }
+    throw err;
+  }
+
+  if (submitResult.status === 'ISSUED') {
+    nationalEntry = await markNationalIssued(nationalEntry, {
+      nfseNumero: submitResult.nfseNumero,
+      nfseChave: submitResult.chaveAcesso,
+      protocolo: submitResult.protocolo,
+      xmlOficial: submitResult.xmlOficial
+    }, dependencies);
+
+    return {
+      status: 'ISSUED',
+      environment,
+      requestId,
+      itemIndex,
+      provider: 'NATIONAL_ISSUER',
+      dpsId: dpsData.dpsId,
+      dpsNumero: nationalEntry.dps_numero,
+      dpsSerie: nationalEntry.dps_serie,
+      nfseNumero: submitResult.nfseNumero,
+      nfseChave: submitResult.chaveAcesso,
+      protocolo: submitResult.protocolo,
+      dataEmissao: submitResult.dhEmi,
+      xmlOficial: submitResult.xmlOficial,
+      newRps: 0,
+      newDps: 1,
+      newNfse: 1,
+      gerarNfseCalls: 0,
+      newProviderWrites: 1
+    };
+  }
+
+  if (submitResult.status === 'REJECTED_CORRECTABLE') {
+    nationalEntry = await markNationalRejected(nationalEntry, {
+      errorCodes: submitResult.errorCodes,
+      message: submitResult.message
+    }, dependencies);
+
+    return {
+      status: 'REJECTED_CORRECTABLE',
+      environment,
+      requestId,
+      itemIndex,
+      provider: 'NATIONAL_ISSUER',
+      dpsId: dpsData.dpsId,
+      errorCodes: submitResult.errorCodes,
+      message: submitResult.message,
+      newRps: 0,
+      newDps: 1,
+      newNfse: 0,
+      gerarNfseCalls: 0,
+      newProviderWrites: 1
+    };
+  }
+
+  throw new Error(`NATIONAL_SUBMIT_UNEXPECTED_STATUS: ${submitResult.status}`);
+}
+
 async function issueNfse({ requestId, itemIndex = 1, certData, dryRun = false }, dependencies = {}) {
   const environment = process.env.INPUT_ENVIRONMENT || 'production';
 
@@ -484,8 +790,17 @@ async function issueNfse({ requestId, itemIndex = 1, certData, dryRun = false },
     throw new Error(`PROVIDER_ROUTING_BLOCKED: ${route.reason || 'NO_SAFE_PROVIDER_ROUTE'}`);
   }
 
-  if (route.provider === 'NATIONAL_ISSUER' && !dryRun && environment === 'production' && process.env.NATIONAL_PRODUCTION_WRITE_ENABLED !== 'true') {
-    throw new Error('NATIONAL_PRODUCTION_WRITE_DISABLED: Emissão em produção nacional requer autorização explícita via NATIONAL_PRODUCTION_WRITE_ENABLED=true.');
+  // DESACOPLAMENTO TOTAL: Se a rota for NATIONAL_ISSUER, despacha para issueNationalDemandItem (NEW_RPS=0)
+  if (route.provider === 'NATIONAL_ISSUER') {
+    return await issueNationalDemandItem({
+      environment,
+      requestId,
+      itemIndex,
+      certData,
+      dryRun,
+      dependencies,
+      route
+    });
   }
 
   if (!certData || !certData.loaded || !certData.isValid) {
@@ -731,132 +1046,6 @@ async function issueNfse({ requestId, itemIndex = 1, certData, dryRun = false },
   candidate.rpsSerie = ledgerEntry.rps_serie;
   candidate.rpsTipo = ledgerEntry.rps_tipo;
   candidate.xmlId = `RPS${ledgerEntry.rps_numero}${ledgerEntry.rps_serie.replace(/[^A-Za-z0-9]/g, '')}`;
-
-  if (route.provider === 'NATIONAL_ISSUER') {
-    const dpsNumero = ledgerEntry.rps_numero;
-    const dpsSerie = ledgerEntry.rps_serie;
-    const builtDps = buildNationalDpsXml({
-      dpsId: `DPS${CONFIG.PRESTADOR.INSCRICAO_MUNICIPAL}${dpsNumero}`,
-      ambiente: environment === 'production' ? 1 : 2,
-      prestador: {
-        cnpj: CONFIG.PRESTADOR.CNPJ_DIGITS,
-        inscricaoMunicipal: CONFIG.PRESTADOR.INSCRICAO_MUNICIPAL,
-        codigoMunicipio: candidate.codigoMunicipioPrestacao || '3131307'
-      },
-      tomador: {
-        cnpj: candidate.cnpjTomador,
-        razaoSocial: candidate.tomador,
-        logradouro: candidate.enderecoTomador?.logradouro,
-        numero: candidate.enderecoTomador?.numero,
-        bairro: candidate.enderecoTomador?.bairro,
-        codigoMunicipio: candidate.enderecoTomador?.codigoMunicipio,
-        uf: candidate.enderecoTomador?.uf,
-        cep: candidate.enderecoTomador?.cep
-      },
-      servico: {
-        codigoMunicipioPrestacao: candidate.codigoMunicipioPrestacao,
-        codigoTribNacional: candidate.codigoTribNacional,
-        codigoTribMunicipal: candidate.codigoTribMunicipal,
-        descricao: candidate.descricao,
-        nbs: candidate.nbs
-      },
-      valores: {
-        valorServicos: candidate.valor,
-        aliquotaIss: candidate.aliquotaIss,
-        valorIss: candidate.valorIss,
-        issRetido: candidate.issRetido
-      },
-      certData
-    });
-    const dpsXml = typeof builtDps === 'string' ? builtDps : builtDps.xml;
-    const xmlSha256 = crypto.createHash('sha256').update(dpsXml).digest('hex');
-
-    if (dryRun) {
-      let sheetWritebacks = 0;
-      if (candidate && candidate.rowIndex) {
-        try {
-          const update = dependencies.updateSheetValues || updateSheetValues;
-          const nowIso = new Date().toISOString();
-          await update(spreadsheetId, `${CONFIG.SHEETS.TABS.DEMANDAS}!I${candidate.rowIndex}:O${candidate.rowIndex}`, [
-            ['DRY_RUN_SUCCESS', '', '', '', 'E2E_DRY_RUN_VALIDATED', nowIso, '']
-          ]);
-          sheetWritebacks = 1;
-        } catch (errWriteBack) {
-          throw new Error('DRY_RUN_WRITEBACK_FAILED: ' + sanitize(errWriteBack.message));
-        }
-      }
-
-      return {
-        status: 'DRY_RUN_SUCCESS',
-        environment,
-        requestId,
-        itemIndex,
-        provider: 'NATIONAL_ISSUER',
-        rpsNumero: dpsNumero,
-        rpsSerie: dpsSerie,
-        rpsTipo: candidate.rpsTipo,
-        xmlSha256,
-        gerarNfseCalls: 0,
-        fiscalWrites: 0,
-        sheetWritebacks
-      };
-    }
-
-    if (environment === 'production' && process.env.NATIONAL_PRODUCTION_WRITE_ENABLED !== 'true') {
-      throw new Error('NATIONAL_PRODUCTION_WRITE_DISABLED: Emissão em produção nacional requer autorização explícita via NATIONAL_PRODUCTION_WRITE_ENABLED=true.');
-    }
-
-    ledgerEntry = await markSubmitting(ledgerEntry, dependencies);
-
-    const nationalProvider = createNationalIssuerProvider({
-      environment,
-      dependencies: {
-        transport: dependencies.transport || dependencies.executeHttpRequest
-      }
-    });
-
-    let submitResult;
-    try {
-      submitResult = await nationalProvider.submit({
-        dpsXml,
-        certData,
-        environment
-      });
-    } catch (err) {
-      if (err.message && err.message.includes('TIMEOUT')) {
-        ledgerEntry = await markUnknownAfterTimeout(ledgerEntry, { error: err.message }, dependencies);
-      } else {
-        ledgerEntry = await markFailedSafe(ledgerEntry, { error: err.message }, dependencies);
-      }
-      throw err;
-    }
-
-    if (submitResult.status === 'ISSUED') {
-      ledgerEntry = await markIssued(ledgerEntry, {
-        nfseNumero: submitResult.nfseNumero,
-        nfseChave: submitResult.chaveAcesso,
-        xmlOficial: submitResult.xmlOficial
-      }, dependencies);
-
-      return {
-        status: 'ISSUED',
-        environment,
-        requestId,
-        itemIndex,
-        provider: 'NATIONAL_ISSUER',
-        rpsNumero: dpsNumero,
-        nfseNumero: submitResult.nfseNumero,
-        nfseChave: submitResult.chaveAcesso,
-        protocolo: submitResult.protocolo,
-        dataEmissao: submitResult.dhEmi,
-        xmlOficial: submitResult.xmlOficial,
-        newProviderWrites: 1
-      };
-    }
-
-    throw new Error(`NATIONAL_SUBMIT_UNEXPECTED_STATUS: ${submitResult.status}`);
-  }
-
 
   // 5. Montagem do XML estrito com Tomador e Endereço Completo
   const itemLista = String(candidate.codigoTribNacional || '').split('.').slice(0, 2).join('.');

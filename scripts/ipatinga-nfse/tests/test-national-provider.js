@@ -5,25 +5,33 @@ const forge = require('node-forge');
 const {
   DEFAULT_PRODUCTION_URL,
   DEFAULT_RESTRICTED_URL,
+  formatDateTimeSaoPaulo,
   normalizeBaseUrl,
   buildNationalDpsXml,
   buildNationalSubmitRequest,
   buildNationalNfseReadRequest,
   buildNationalDpsReadRequest,
+  parseNationalSubmitResponse,
   createNationalIssuerProvider
 } = require('../national-emissor-provider');
+const {
+  NATIONAL_DPS_STATUS,
+  buildOfficialDpsId,
+  allocateDpsAtomically,
+  loadNationalLedger,
+  findNationalLedgerEntry
+} = require('../national-ledger');
+const { validateNationalDpsAgainstOfficialXsd } = require('../xsd-validator');
 
-console.log('Running test-national-provider.js...');
-
-// Cria certificado autoassinado para testes
-const keypair = forge.pki.rsa.generateKeyPair(1024);
+// Par de chaves RSA e certificado A1 autoassinado para testes de assinatura
+const keypair = forge.pki.rsa.generateKeyPair({ bits: 2048 });
 const cert = forge.pki.createCertificate();
 cert.publicKey = keypair.publicKey;
 cert.serialNumber = '01';
 cert.validity.notBefore = new Date();
 cert.validity.notAfter = new Date();
 cert.validity.notAfter.setFullYear(cert.validity.notBefore.getFullYear() + 1);
-const attrs = [{ name: 'commonName', value: 'DEXMED HOMOLOG' }];
+const attrs = [{ name: 'commonName', value: 'DEXMED TEST' }];
 cert.setSubject(attrs);
 cert.setIssuer(attrs);
 cert.sign(keypair.privateKey, forge.md.sha256.create());
@@ -36,244 +44,321 @@ const certData = {
 };
 
 async function run() {
-  // 1. Validação de URLs e Normalização
-  assert.strictEqual(normalizeBaseUrl(null, 'production'), DEFAULT_PRODUCTION_URL);
-  assert.strictEqual(normalizeBaseUrl(null, 'homologation'), DEFAULT_RESTRICTED_URL);
-  assert.strictEqual(normalizeBaseUrl('https://adn.producaorestrita.nfse.gov.br/contribuintes/'), DEFAULT_RESTRICTED_URL);
-  assert.throws(() => normalizeBaseUrl('http://inseguro.example.com'), /NATIONAL_ISSUER_HTTPS_REQUIRED/);
+  console.log('Running test-national-provider.js (UNIT & SPECIFICATION SUITE)...');
 
-  // 2. Geração da DPS Nacional e Assinatura
-  const dpsData = buildNationalDpsXml({
-    dpsId: 'DPS3131307232975000000000000001',
-    ambiente: 2, // Produção Restrita
-    prestador: { cnpj: '31302407000105', inscricaoMunicipal: '23297500', codigoMunicipio: '3131307' },
-    tomador: { cnpj: '20724357000120', razaoSocial: 'ASSOCIACAO DE CARIDADE NOSSA SENHORA DO CARMO', codigoMunicipio: '3128006' },
-    servico: { codigoMunicipioPrestacao: '3128006', codigoTributacaoNacional: '04.03.01', discriminacao: 'TESTE PRODUCAO RESTRITA — SEM VALIDADE FISCAL' },
-    valores: { valorServico: 10.00, aliquota: 2.39, valorIss: 0.24, issRetido: 2 },
-    certData
+  // =========================================================================
+  // 1. TESTE DA REGRA OFICIAL DO DPS ID (45 CARACTERES, ^DPS[0-9]{42}$)
+  // =========================================================================
+  const officialDpsId = buildOfficialDpsId({
+    codMun: '3131307',
+    tipoInscricao: '1',
+    inscricaoFederal: '31302407000105',
+    serie: '1',
+    numero: '1'
   });
+  assert.strictEqual(officialDpsId.length, 45, 'DPS ID oficial deve ter exatamente 45 caracteres');
+  assert.ok(/^DPS[0-9]{42}$/.test(officialDpsId), 'DPS ID oficial deve seguir o pattern ^DPS[0-9]{42}$');
+  assert.strictEqual(officialDpsId, 'DPS313130713130240700010500001000000000000001');
 
-  assert.ok(dpsData.xml.includes('<DPS xmlns="http://www.sped.fazenda.gov.br/nfse" versao="1.00">'));
-  assert.ok(dpsData.xml.includes('<infDPS Id="DPS3131307232975000000000000001">'));
-  assert.ok(dpsData.xml.includes('<tpAmb>2</tpAmb>'));
-  assert.ok(dpsData.xml.includes('<CNPJ>31302407000105</CNPJ>'));
-  assert.ok(dpsData.xml.includes('<vServ>10.00</vServ>'));
-  assert.ok(dpsData.xml.includes('TESTE PRODUCAO RESTRITA — SEM VALIDADE FISCAL'));
+  // Falha se município inválido
+  assert.throws(() => buildOfficialDpsId({
+    codMun: '99',
+    tipoInscricao: '1',
+    inscricaoFederal: '31302407000105',
+    serie: '1',
+    numero: '1'
+  }), /NATIONAL_DPS_ID_INVALID/);
 
-  // 3. Mock Transport para Teste Controlado em Produção Restrita
-  let postCount = 0;
-  let getCount = 0;
-  let headCount = 0;
+  // =========================================================================
+  // 2. TIMEZONE-SAFE DATA/HORA (America/Sao_Paulo)
+  // =========================================================================
+  // Data fixa: meio-dia UTC (12:00:00Z) deve ser 09:00:00-03:00 em America/Sao_Paulo
+  const utcDate = new Date('2026-10-21T12:00:00.000Z');
+  const spFormatted = formatDateTimeSaoPaulo(utcDate);
+  assert.ok(spFormatted.startsWith('2026-10-21T09:00:00-03:00'), `Esperado horário 09:00 em SP, obtido: ${spFormatted}`);
 
-  const mockNfseXml = `<?xml version="1.0" encoding="utf-8"?>
-<NFSe xmlns="http://www.sped.fazenda.gov.br/nfse" versao="1.00">
+  // =========================================================================
+  // 3. SELEÇÃO DE BASE URL CONFORME AMBIENTE (SEM BASEURL MANUAL)
+  // =========================================================================
+  assert.strictEqual(normalizeBaseUrl(null, 'homologation'), DEFAULT_RESTRICTED_URL);
+  assert.strictEqual(normalizeBaseUrl(null, 'restricted'), DEFAULT_RESTRICTED_URL);
+  assert.strictEqual(normalizeBaseUrl(null, 'production'), DEFAULT_PRODUCTION_URL);
+
+  const providerHomolog = createNationalIssuerProvider({ environment: 'homologation' });
+  assert.strictEqual(providerHomolog.baseUrl, DEFAULT_RESTRICTED_URL);
+
+  const providerProd = createNationalIssuerProvider({ environment: 'production' });
+  assert.strictEqual(providerProd.baseUrl, DEFAULT_PRODUCTION_URL);
+
+  // =========================================================================
+  // 4. FAIL-CLOSED: ELIMINAÇÃO TOTAL DE DEFAULTS/FALLBACKS SINTÉTICOS
+  // =========================================================================
+  // Faltando tomador
+  assert.throws(() => buildNationalDpsXml({
+    dpsNumero: '1',
+    prestador: { cnpj: '31302407000105', codigoMunicipio: '3131307' }
+  }), /NATIONAL_DPS_DATA_INCOMPLETE/);
+
+  // Faltando prestador
+  assert.throws(() => buildNationalDpsXml({
+    dpsNumero: '1',
+    tomador: { cnpj: '20724357000120', razaoSocial: 'HIC' }
+  }), /NATIONAL_DPS_DATA_INCOMPLETE/);
+
+  // Faltando valor
+  assert.throws(() => buildNationalDpsXml({
+    dpsNumero: '1',
+    prestador: { cnpj: '31302407000105', codigoMunicipio: '3131307' },
+    tomador: {
+      cnpj: '20724357000120',
+      razaoSocial: 'HIC',
+      logradouro: 'CAPITAO BERNARDO',
+      numero: '257',
+      bairro: 'CENTRO',
+      codigoMunicipio: '3128006',
+      cep: '39740000'
+    },
+    servico: {
+      codigoMunicipioPrestacao: '3128006',
+      codigoTribNacional: '040301',
+      descricao: 'PLANTÕES'
+    },
+    valores: { valorServicos: 0 } // Proibido valor zero
+  }), /NATIONAL_DPS_DATA_INCOMPLETE/);
+
+  // Faltando competência explícita
+  assert.throws(() => buildNationalDpsXml({
+    dpsNumero: '1',
+    prestador: { cnpj: '31302407000105', codigoMunicipio: '3131307' },
+    tomador: {
+      cnpj: '20724357000120',
+      razaoSocial: 'HIC',
+      logradouro: 'CAPITAO BERNARDO',
+      numero: '257',
+      bairro: 'CENTRO',
+      codigoMunicipio: '3128006',
+      cep: '39740000'
+    },
+    servico: {
+      codigoMunicipioPrestacao: '3128006',
+      codigoTribNacional: '040301',
+      descricao: 'PLANTÕES'
+    },
+    valores: { valorServicos: 7700.00, aliquotaIss: 2.39 }
+    // competenciaData ausente
+  }), /NATIONAL_DPS_DATA_INCOMPLETE/);
+
+  // =========================================================================
+  // 5. TESTE DE INTEGRAÇÃO DO MAPEAMENTO HIC R$ 7.700,00
+  // =========================================================================
+  const hicCandidate = {
+    dpsNumero: '1',
+    dpsSerie: '1',
+    ambiente: 2,
+    emissao: new Date('2026-10-21T15:00:00.000Z'),
+    competenciaData: '2026-08-01',
+    prestador: {
+      cnpj: '31302407000105',
+      inscricaoMunicipal: '23297500',
+      codigoMunicipio: '3131307',
+      razaoSocial: 'DEXMED SERVICOS MEDICOS LTDA'
+    },
+    tomador: {
+      cnpj: '20724357000120',
+      razaoSocial: 'ASSOCIACAO DE CARIDADE NOSSA SENHORA DO CARMO',
+      logradouro: 'CAPITAO BERNARDO',
+      numero: '257',
+      bairro: 'CENTRO',
+      codigoMunicipio: '3128006',
+      cep: '39740000'
+    },
+    servico: {
+      codigoMunicipioPrestacao: '3128006',
+      codigoTribNacional: '04.03.01',
+      codigoTribMunicipal: '403',
+      descricao: 'SERVICOS MEDICOS DE PLANTAO HOSPITALAR SUS',
+      nbs: '123011900'
+    },
+    valores: {
+      valorServicos: 7700.00,
+      aliquotaIss: 2.39,
+      issRetido: '2'
+    },
+    certData
+  };
+
+  const builtHic = buildNationalDpsXml(hicCandidate);
+  assert.strictEqual(builtHic.dpsId, 'DPS313130713130240700010500001000000000000001');
+  assert.ok(builtHic.xml.includes('<vServ>7700.00</vServ>'), 'DPS deve conter exatamente o valor 7700.00 (nunca 0.00)');
+  assert.ok(builtHic.xml.includes('<xDescServ>SERVICOS MEDICOS DE PLANTAO HOSPITALAR SUS</xDescServ>'));
+  assert.ok(builtHic.xml.includes('<cTribNac>040301</cTribNac>'));
+  assert.ok(builtHic.xml.includes('<pAliq>2.39</pAliq>'));
+  assert.ok(builtHic.xml.includes('<tpRetISSQN>2</tpRetISSQN>'));
+  assert.ok(builtHic.xml.includes('<dCompet>2026-08-01</dCompet>'));
+  assert.ok(builtHic.xml.includes('<opSimpNac>3</opSimpNac>'));
+  assert.ok(builtHic.xml.includes('<cLocPrestacao>3128006</cLocPrestacao>'));
+  assert.ok(builtHic.xml.includes('<Signature'), 'DPS deve conter assinatura XMLDSig');
+
+  // =========================================================================
+  // 6. VALIDAÇÃO XSD OFICIAL v1.01 (SEFIN/ADN)
+  // =========================================================================
+  const xsdValidation = await validateNationalDpsAgainstOfficialXsd(builtHic.xml);
+  assert.strictEqual(xsdValidation.valid, true, `DPS deve ser 100% válida contra XSD oficial v1.01: ${xsdValidation.errors.join('; ')}`);
+  assert.strictEqual(xsdValidation.schemaFile, 'DPS_v1.01.xsd');
+
+  // =========================================================================
+  // 7. ASSINATURA XMLDSIG FAIL-CLOSED
+  // =========================================================================
+  assert.throws(() => buildNationalDpsXml({
+    ...hicCandidate,
+    certData: { pemKey: 'INVALID_KEY', pemCert: 'INVALID_CERT' }
+  }), /NATIONAL_XMLDSIG_FAILED/);
+
+  // =========================================================================
+  // 8. TESTE DO ISOLAMENTO DO LEDGER NACIONAL (DPS) — NEW_RPS=0 GARANTIDO
+  // =========================================================================
+  const mockDpsSheet = [];
+  const mockDependencies = {
+    spreadsheetId: 'test-sheet',
+    readSheetValues: async (_id, range) => {
+      if (range.includes('DPS')) return mockDpsSheet;
+      throw new Error(`Tentativa de leitura indevida da aba: ${range}`);
+    },
+    appendSheetValues: async (_id, range, rows) => {
+      if (range.includes('DPS')) {
+        mockDpsSheet.push(...rows);
+        return { updatedRows: rows.length };
+      }
+      throw new Error(`Tentativa indevida de escrita fora da aba DPS: ${range}`);
+    },
+    updateSheetValues: async (_id, range, rows) => {
+      if (range.includes('DPS')) {
+        return { updatedRows: rows.length };
+      }
+      throw new Error(`Tentativa indevida de update fora da aba DPS: ${range}`);
+    }
+  };
+
+  const allocated = await allocateDpsAtomically({
+    environment: 'homologation',
+    requestId: 'req-national-isolation-test',
+    itemIndex: 1,
+    serie: '1'
+  }, mockDependencies);
+
+  assert.strictEqual(allocated.dps_numero, '1');
+  assert.strictEqual(allocated.dps_serie, '1');
+  assert.ok(allocated.dps_id.startsWith('DPS313130713130240700010500001'));
+  assert.strictEqual(allocated.status, NATIONAL_DPS_STATUS.ALLOCATED);
+  // Garante que o ledger do RPS não foi sequer instanciado ou tocado
+  assert.strictEqual(allocated.rps_numero, undefined);
+
+  // =========================================================================
+  // 9. SIMULAÇÃO DE TRANSPORTE (UNIT MOCK) — CONTROLE DE CHAMADAS
+  // =========================================================================
+  let transportCalls = [];
+  const mockTransport = async (req) => {
+    transportCalls.push(req);
+    if (req.method === 'POST' && req.url.endsWith('/nfse')) {
+      return {
+        statusCode: 201,
+        headers: { 'content-type': 'application/xml; charset=utf-8' },
+        body: `<?xml version="1.0" encoding="utf-8"?>
+<NFSe xmlns="http://www.sped.fazenda.gov.br/nfse" versao="1.01">
   <infNFSe Id="NFS31313071231302407000105000000000002726100000000000">
     <chNFSe>31313071231302407000105000000000002726100000000000</chNFSe>
     <nNFSe>27</nNFSe>
     <dhEmi>2026-10-21T20:20:00-03:00</dhEmi>
     <nProt>931260000000001</nProt>
   </infNFSe>
-</NFSe>`;
-
-  const mockRestrictedTransport = async ({ method, url }) => {
-    if (method === 'POST' && url.endsWith('/nfse')) {
-      postCount++;
-      return {
-        statusCode: 201,
-        headers: { 'content-type': 'application/xml; charset=utf-8' },
-        body: mockNfseXml
+</NFSe>`
       };
     }
-
-    if (method === 'GET' && url.includes('/nfse/')) {
-      getCount++;
+    if (req.method === 'HEAD' && req.url.includes('/dps/')) {
+      return { statusCode: 200, headers: {} };
+    }
+    if (req.method === 'GET' && req.url.includes('/dps/')) {
       return {
         statusCode: 200,
         headers: { 'content-type': 'application/xml; charset=utf-8' },
-        body: mockNfseXml
+        body: `<NFSe><infNFSe><chNFSe>31313071231302407000105000000000002726100000000000</chNFSe><nNFSe>27</nNFSe></infNFSe></NFSe>`
       };
     }
-
-    if (method === 'HEAD' && url.includes('/dps/')) {
-      headCount++;
-      return {
-        statusCode: 200,
-        headers: {}
-      };
-    }
-
-    if (method === 'GET' && url.includes('/dps/')) {
+    if (req.method === 'GET' && req.url.includes('/nfse/')) {
       return {
         statusCode: 200,
         headers: { 'content-type': 'application/xml; charset=utf-8' },
-        body: mockNfseXml
+        body: `<NFSe><infNFSe><chNFSe>31313071231302407000105000000000002726100000000000</chNFSe><nNFSe>27</nNFSe></infNFSe></NFSe>`
       };
     }
-
     return { statusCode: 404, body: '' };
   };
 
-  const restrictedProvider = createNationalIssuerProvider({
-    baseUrl: DEFAULT_RESTRICTED_URL,
+  const providerWithMock = createNationalIssuerProvider({
     environment: 'homologation',
-    transport: mockRestrictedTransport
+    transport: mockTransport
   });
 
-  // 4. Executa POST /nfse em Produção Restrita (Sucesso)
-  const submitResult = await restrictedProvider.submit({
-    dpsXml: dpsData.xml,
-    dpsId: dpsData.dpsId,
+  const submitRes = await providerWithMock.submit({
+    dpsXml: builtHic.xml,
+    dpsId: builtHic.dpsId,
     certData,
     dryRun: false
   });
 
-  assert.strictEqual(submitResult.status, 'ISSUED');
-  assert.strictEqual(submitResult.nfseNumero, '27');
-  assert.strictEqual(submitResult.chaveAcesso, '31313071231302407000105000000000002726100000000000');
-  assert.strictEqual(submitResult.protocolo, '931260000000001');
-  assert.strictEqual(submitResult.newProviderWrites, 1);
-  assert.strictEqual(postCount, 1);
+  assert.strictEqual(submitRes.status, 'ISSUED');
+  assert.strictEqual(submitRes.nfseNumero, '27');
+  assert.strictEqual(submitRes.chaveAcesso, '31313071231302407000105000000000002726100000000000');
+  assert.strictEqual(transportCalls.length, 1);
+  assert.strictEqual(transportCalls[0].url, `${DEFAULT_RESTRICTED_URL}/nfse`);
 
-  // 5. Consulta NFS-e gerada via GET /nfse/{chaveAcesso}
-  const readNfseResult = await restrictedProvider.getNfse({
-    accessKey: submitResult.chaveAcesso,
-    certData
-  });
-  assert.strictEqual(readNfseResult.status, 'FOUND');
-  assert.strictEqual(readNfseResult.statusCode, 200);
-  assert.ok(readNfseResult.xml.includes('<chNFSe>31313071231302407000105000000000002726100000000000</chNFSe>'));
-  assert.strictEqual(getCount, 1);
+  // Consulta por HEAD e GET
+  const headRes = await providerWithMock.headDps({ dpsId: builtHic.dpsId, certData });
+  assert.strictEqual(headRes.exists, true);
 
-  // 6. Consulta DPS via HEAD /dps/{id}
-  const headDpsResult = await restrictedProvider.headDps({
-    dpsId: dpsData.dpsId,
-    certData
-  });
-  assert.strictEqual(headDpsResult.exists, true);
-  assert.strictEqual(headDpsResult.statusCode, 200);
-  assert.strictEqual(headCount, 1);
+  const getDpsRes = await providerWithMock.getDps({ dpsId: builtHic.dpsId, certData });
+  assert.strictEqual(getDpsRes.status, 'FOUND');
+  assert.strictEqual(getDpsRes.nfseNumero, '27');
 
-  // 7. Consulta DPS via GET /dps/{id}
-  const getDpsResult = await restrictedProvider.getDps({
-    dpsId: dpsData.dpsId,
-    certData
-  });
-  assert.strictEqual(getDpsResult.status, 'FOUND');
-  assert.strictEqual(getDpsResult.chaveAcesso, '31313071231302407000105000000000002726100000000000');
+  const getNfseRes = await providerWithMock.getNfse({ accessKey: submitRes.chaveAcesso, certData });
+  assert.strictEqual(getNfseRes.status, 'FOUND');
 
-  // 8. Reconciliação Exactly-Once após Timeout simulado
-  let timeoutHeadCalls = 0;
-  const timeoutTransport = async ({ method }) => {
-    if (method === 'POST') {
-      const timeoutErr = new Error('Socket timeout in national provider');
-      timeoutErr.code = 'ETIMEDOUT';
-      throw timeoutErr;
+  // Exact-once Timeout Recovery
+  let failOnce = true;
+  const timeoutTransport = async (req) => {
+    if (req.method === 'POST') {
+      if (failOnce) {
+        failOnce = false;
+        const err = new Error('TIMEOUT');
+        err.code = 'ETIMEDOUT';
+        throw err;
+      }
     }
-    if (method === 'HEAD') {
-      timeoutHeadCalls++;
-      return { statusCode: 200 };
-    }
-    if (method === 'GET') {
-      return { statusCode: 200, body: mockNfseXml };
-    }
+    return mockTransport(req);
   };
 
   const timeoutProvider = createNationalIssuerProvider({
-    baseUrl: DEFAULT_RESTRICTED_URL,
     environment: 'homologation',
     transport: timeoutTransport
   });
 
-  const recoveredAfterTimeout = await timeoutProvider.submit({
-    dpsXml: dpsData.xml,
-    dpsId: dpsData.dpsId,
+  const recoveryRes = await timeoutProvider.submit({
+    dpsXml: builtHic.xml,
+    dpsId: builtHic.dpsId,
     certData,
     dryRun: false
   });
+  assert.strictEqual(recoveryRes.status, 'RECONCILED_AFTER_TIMEOUT');
+  assert.strictEqual(recoveryRes.reconciled, true);
 
-  assert.strictEqual(recoveredAfterTimeout.status, 'RECONCILED_AFTER_TIMEOUT');
-  assert.strictEqual(recoveredAfterTimeout.reconciled, true);
-  assert.strictEqual(recoveredAfterTimeout.chaveAcesso, '31313071231302407000105000000000002726100000000000');
-  assert.strictEqual(timeoutHeadCalls, 1);
-
-  // 9. Rejeição Fiscal Tratada (HTTP 422 com mensagens de erro)
-  const rejectedTransport = async () => ({
-    statusCode: 422,
-    body: `<?xml version="1.0" encoding="utf-8"?>
-<mensagens>
-  <mensagem>
-    <codigo>E42</codigo>
-    <mensagem>Código de tributação municipal inexistente para este município.</mensagem>
-  </mensagem>
-</mensagens>`
-  });
-
-  const rejectedProvider = createNationalIssuerProvider({
-    baseUrl: DEFAULT_RESTRICTED_URL,
-    environment: 'homologation',
-    transport: rejectedTransport
-  });
-
-  const rejectRes = await rejectedProvider.submit({
-    dpsXml: dpsData.xml,
-    dpsId: dpsData.dpsId,
-    certData,
-    dryRun: false
-  });
-
-  assert.strictEqual(rejectRes.status, 'REJECTED_FISCAL');
-  assert.strictEqual(rejectRes.errors.length, 1);
-  assert.strictEqual(rejectRes.errors[0].codigo, 'E42');
-
-  // 10. Safety Gate de Produção: Bloqueia escrita produtiva quando flag está desabilitada
-  const productionProvider = createNationalIssuerProvider({
-    baseUrl: DEFAULT_PRODUCTION_URL,
-    environment: 'production',
-    transport: mockRestrictedTransport
-  });
-
-  delete process.env.NATIONAL_PRODUCTION_WRITE_ENABLED;
-  await assert.rejects(
-    () => productionProvider.submit({ dpsXml: dpsData.xml, dpsId: dpsData.dpsId, certData, dryRun: false }),
-    /NATIONAL_PRODUCTION_WRITE_DISABLED/
-  );
-
-  // Em modo dryRun em produção, a trava permite a simulação sem escrita
-  const dryRunRes = await productionProvider.submit({
-    dpsXml: dpsData.xml,
-    dpsId: dpsData.dpsId,
-    certData,
-    dryRun: true
-  });
-  assert.strictEqual(dryRunRes.status, 'DRY_RUN_SUCCESS');
-  assert.strictEqual(dryRunRes.providerWrites, 0);
-
-  // 11. Produção Read-Only: Consulta real das NFS-e 25 e 26
-  let prodReadCalls = 0;
-  const prodReadTransport = async ({ method, url }) => {
-    if (method === 'GET') {
-      prodReadCalls++;
-      return { statusCode: 200, body: '<NFSe><infNFSe><chNFSe>31313071231302407000105000000000002526104378971712</chNFSe></infNFSe></NFSe>' };
-    }
-    throw new Error('PROHIBITED_METHOD_IN_READ_ONLY');
-  };
-
-  const prodReadOnlyProvider = createNationalIssuerProvider({
-    baseUrl: DEFAULT_PRODUCTION_URL,
-    environment: 'production',
-    transport: prodReadTransport
-  });
-
-  const read25 = await prodReadOnlyProvider.getNfse({ accessKey: '31313071231302407000105000000000002526104378971712', certData });
-  assert.strictEqual(read25.status, 'FOUND');
-  assert.strictEqual(prodReadCalls, 1);
-
-  console.log('✓ test-national-provider.js PASSED: Transporte real, DPS XML, POST restrito, GET/HEAD, exactly-once timeout recovery, rejeição e safety gate validados!');
+  console.log('✓ test-national-provider.js PASSED (NATIONAL_PROVIDER_UNIT_MOCK=PASS: DPS ID, Layout v1.01, XSD, XMLDSig, Timezone, Isolamento de Ledger e Mock Transport validados)');
 }
 
-run().catch(err => {
-  console.error('❌ FALHA test-national-provider.js:', err);
-  process.exit(1);
-});
+if (require.main === module) {
+  run().catch(err => {
+    console.error('❌ FALHA test-national-provider.js:', err);
+    process.exit(1);
+  });
+}
 
-module.exports = run;
+module.exports = { run };

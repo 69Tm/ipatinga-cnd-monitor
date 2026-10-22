@@ -44,7 +44,8 @@ const CONFIG = Object.freeze({
       API: 'API Ipatinga',
       DEMANDAS: 'Demandas',
       DOCUMENTOS: 'Documentos NFS-e',
-      RPS: 'RPS'
+      RPS: 'RPS',
+      DPS: 'DPS'
     }
   },
   DRIVE: {

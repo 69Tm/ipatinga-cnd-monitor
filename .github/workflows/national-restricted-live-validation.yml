@@ -1,0 +1,61 @@
+name: Validação Real Produção Restrita Nacional (SEFIN/ADN)
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - 'scripts/ipatinga-nfse/**'
+      - '.github/workflows/national-restricted-live-validation.yml'
+
+concurrency:
+  group: nfse-national-restricted-validation
+  cancel-in-progress: false
+
+jobs:
+  validate-national-restricted:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout repositório
+        uses: actions/checkout@v4
+
+      - name: Instalar ferramentas nativas XML (xmlsec1 e libxml2)
+        run: sudo apt-get update && sudo apt-get install -y xmlsec1 libxml2-utils
+
+      - name: Configurar Node.js 20.x
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20.x
+
+      - name: Instalar dependências fixadas
+        working-directory: ./scripts/ipatinga-nfse
+        run: npm ci
+
+      - name: Executar bateria de testes unitários e de especificação
+        working-directory: ./scripts/ipatinga-nfse
+        run: node tests/test-runner.js
+
+      - name: Executar teste do provedor nacional
+        working-directory: ./scripts/ipatinga-nfse
+        run: node tests/test-national-provider.js
+
+      - name: Executar Validação Real mTLS no Ambiente Oficial de Produção Restrita
+        working-directory: ./scripts/ipatinga-nfse
+        env:
+          GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
+          NFE_SPREADSHEET_ID: ${{ vars.NFE_SPREADSHEET_ID || '1-qnJjv0YuZkrAHnfiyJuyKiU3lR3VzFl76nNQ1DCHWo' }}
+          DRIVE_FOLDER_ID: ${{ vars.DRIVE_FOLDER_ID || '16Dw9pUbpv_ViCP6a2MAgUbW1h37t3859' }}
+          NFE_CERT_DRIVE_FILE_ID: ${{ vars.NFE_CERT_DRIVE_FILE_ID || '14TajJJtjSurR2tuYakbdW4dCHPHkqulb' }}
+          NFE_CERT_PASSWORD: ${{ secrets.NFE_CERT_PASSWORD }}
+          NATIONAL_PRODUCTION_WRITE_ENABLED: 'false'
+        run: node live-restricted-validation.js
+
+      - name: Upload Relatório de Validação Restrita
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: national-restricted-live-report-${{ github.run_id }}
+          path: scripts/ipatinga-nfse/report/
+          retention-days: 30
