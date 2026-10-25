@@ -189,10 +189,10 @@ function buildNationalDpsXml({
   const numDpsStr = String(dpsNumero).trim();
   const serieDpsStr = String(dpsSerie || '1').trim();
 
-  // Constrói ID oficial canônico de 45 posições
+  // Constrói ID oficial canônico de 45 posições (1 = CPF, 2 = CNPJ)
   const canonicalId = buildOfficialDpsId({
     codMun: prestMun,
-    tipoInscricao: '1',
+    tipoInscricao: prestCnpj.length === 11 ? '1' : '2',
     inscricaoFederal: prestCnpj,
     serie: serieDpsStr,
     numero: numDpsStr

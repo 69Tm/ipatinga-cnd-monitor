@@ -55,14 +55,14 @@ async function run() {
   // =========================================================================
   const officialDpsId = buildOfficialDpsId({
     codMun: '3131307',
-    tipoInscricao: '1',
+    tipoInscricao: '2', // 2 = CNPJ, 1 = CPF
     inscricaoFederal: '31302407000105',
     serie: '1',
     numero: '1'
   });
   assert.strictEqual(officialDpsId.length, 45, 'DPS ID oficial deve ter exatamente 45 caracteres');
   assert.ok(/^DPS[0-9]{42}$/.test(officialDpsId), 'DPS ID oficial deve seguir o pattern ^DPS[0-9]{42}$');
-  assert.strictEqual(officialDpsId, 'DPS313130713130240700010500001000000000000001');
+  assert.strictEqual(officialDpsId, 'DPS313130723130240700010500001000000000000001');
 
   // Falha se município inválido
   assert.throws(() => buildOfficialDpsId({
@@ -192,7 +192,7 @@ async function run() {
   };
 
   const builtHic = buildNationalDpsXml(hicCandidate);
-  assert.strictEqual(builtHic.dpsId, 'DPS313130713130240700010500001000000000000001');
+  assert.strictEqual(builtHic.dpsId, 'DPS313130723130240700010500001000000000000001');
   assert.ok(builtHic.xml.includes('<vServ>7700.00</vServ>'), 'DPS deve conter exatamente o valor 7700.00 (nunca 0.00)');
   assert.ok(builtHic.xml.includes('<xDescServ>SERVICOS MEDICOS DE PLANTAO HOSPITALAR SUS</xDescServ>'));
   assert.ok(builtHic.xml.includes('<cTribNac>040301</cTribNac>'));
@@ -252,7 +252,7 @@ async function run() {
 
   assert.strictEqual(allocated.dps_numero, '1');
   assert.strictEqual(allocated.dps_serie, '1');
-  assert.ok(allocated.dps_id.startsWith('DPS313130713130240700010500001'));
+  assert.ok(allocated.dps_id.startsWith('DPS313130723130240700010500001'));
   assert.strictEqual(allocated.status, NATIONAL_DPS_STATUS.ALLOCATED);
   // Garante que o ledger do RPS não foi sequer instanciado ou tocado
   assert.strictEqual(allocated.rps_numero, undefined);

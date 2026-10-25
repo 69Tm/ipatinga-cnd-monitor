@@ -37,7 +37,7 @@ const NATIONAL_LEDGER_HEADERS = [
  * Constrói o ID oficial da DPS com 45 posições (DPS + 42 dígitos numéricos)
  * Regra: "DPS" + Cód.Mun (7) + Tipo Inscrição (1) + Inscrição Federal (14) + Série DPS (5) + Núm. DPS (15)
  */
-function buildOfficialDpsId({ codMun, tipoInscricao = '1', inscricaoFederal, serie = '1', numero }) {
+function buildOfficialDpsId({ codMun, tipoInscricao, inscricaoFederal, serie = '1', numero }) {
   const cleanMun = String(codMun || '').replace(/\D/g, '');
   if (cleanMun.length !== 7) {
     throw new Error(`NATIONAL_DPS_ID_INVALID: Código do município deve ter exatamente 7 dígitos (recebido: '${codMun}').`);
@@ -47,7 +47,11 @@ function buildOfficialDpsId({ codMun, tipoInscricao = '1', inscricaoFederal, ser
     throw new Error(`NATIONAL_DPS_ID_INVALID: Inscrição federal deve ter 14 dígitos (CNPJ) ou 11 dígitos (CPF) (recebido: '${inscricaoFederal}').`);
   }
   const munStr = cleanMun;
-  const tipoStr = String(tipoInscricao || '1').replace(/\D/g, '').slice(0, 1) || '1';
+  // Regra Oficial NFS-e Nacional: 1 = CPF, 2 = CNPJ
+  const defaultTipo = cleanDoc.length === 11 ? '1' : '2';
+  const tipoStr = (tipoInscricao !== undefined && tipoInscricao !== null && String(tipoInscricao).trim())
+    ? String(tipoInscricao).replace(/\D/g, '').slice(0, 1)
+    : defaultTipo;
   const docStr = cleanDoc.padStart(14, '0');
   const serieStr = String(serie || '1').replace(/\D/g, '').padStart(5, '0');
   const numStr = String(numero || '1').replace(/\D/g, '').padStart(15, '0');
@@ -160,8 +164,8 @@ async function allocateDpsAtomically({ environment, requestId, itemIndex = 1, se
   const now = new Date().toISOString();
 
   const codMun = CONFIG.PRESTADOR.CODIGO_MUNICIPIO_IPATINGA || '3131307';
-  const tipoInscricao = '1'; // CNPJ
   const inscricaoFederal = CONFIG.PRESTADOR.CNPJ_DIGITS || '31302407000105';
+  const tipoInscricao = inscricaoFederal.length === 11 ? '1' : '2'; // 1 = CPF, 2 = CNPJ
   const dpsId = buildOfficialDpsId({
     codMun,
     tipoInscricao,
