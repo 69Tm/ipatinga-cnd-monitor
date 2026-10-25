@@ -192,6 +192,9 @@ async function runLiveRestrictedValidation() {
     console.log('\n[3/6] Construindo DPS oficial v1.01 via Factory Canônica...');
     const prep = buildControlledCandidate({ requestId: 'live-restricted-test', environment: 'homologation' });
     const candidate = prep.candidates[0];
+    // No padrão nacional da NFS-e, cTribMun é opcional e não deve receber códigos legados de Ipatinga (ex: 403)
+    // quando o município de prestação/incidência for outro ou não exigir código complementar, evitando rejeição E0314
+    candidate.codigoTribMunicipal = null;
 
     const testDpsNumber = String(Date.now()).slice(-9); // 9 dígitos
     const testSerie = '900';
