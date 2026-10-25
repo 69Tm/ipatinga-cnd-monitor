@@ -419,7 +419,7 @@ async function run() {
   assert.ok(unifiedBuilt.xml.includes('<cLocPrestacao>3128006</cLocPrestacao>'), 'XML deve conter município de prestação Guanhães');
   assert.ok(unifiedBuilt.xml.includes('<xLgr>CAPITAO BERNARDO</xLgr>'), 'XML deve conter logradouro do tomador');
   assert.ok(unifiedBuilt.xml.includes('<cTribNac>040301</cTribNac>'), 'XML deve conter cTribNac');
-  assert.ok(unifiedBuilt.xml.includes('<cNBS>123011900</cNBS>'), 'XML deve conter NBS');
+  assert.ok(unifiedBuilt.xml.includes('<finNFSe>0</finNFSe>'), 'XML deve conter finNFSe=0 para conformidade RTC/SEFIN');
 
   const xsdCheck = await validateNationalDpsAgainstOfficialXsd(unifiedBuilt.xml);
   assert.strictEqual(xsdCheck.valid, true, `XML unificado deve validar 100% no XSD v1.01 oficial: ${xsdCheck.errors.join('; ')}`);
@@ -458,7 +458,7 @@ async function run() {
   assert.strictEqual(parsedJsonSuccess.nfseNumero, '28');
   assert.ok(parsedJsonSuccess.xml.includes('<chNFSe>31313071231302407000105000000000002826100000000000</chNFSe>'), 'XML descompactado deve conter a chave de acesso');
 
-  // Teste de rejeição com erros em JSON
+  // Teste de rejeição com erros em JSON (formato camelCase)
   const jsonReject = JSON.stringify({
     erros: [
       { codigo: 'E999', descricao: 'Erro catalogado na regra de negócio' }
@@ -467,6 +467,17 @@ async function run() {
   const parsedJsonReject = parseNationalSubmitResponse(jsonReject, 400);
   assert.strictEqual(parsedJsonReject.status, 'REJECTED');
   assert.strictEqual(parsedJsonReject.errors[0].codigo, 'E999');
+
+  // Teste de rejeição com retorno oficial PascalCase da SEFIN Nacional (objeto único com Codigo, Descricao, Complemento)
+  const sefinPascalCaseReject = JSON.stringify({
+    Codigo: 'E1235',
+    Descricao: 'Falha no esquema XML do DF-e.',
+    Complemento: 'The element infDPS has invalid child element'
+  });
+  const parsedSefinReject = parseNationalSubmitResponse(sefinPascalCaseReject, 400);
+  assert.strictEqual(parsedSefinReject.status, 'REJECTED');
+  assert.strictEqual(parsedSefinReject.errors[0].codigo, 'E1235');
+  assert.ok(parsedSefinReject.errors[0].descricao.includes('The element infDPS'));
 
   // Teste de erro 404 em rota
   const parsed404 = parseNationalSubmitResponse('Not Found', 404);

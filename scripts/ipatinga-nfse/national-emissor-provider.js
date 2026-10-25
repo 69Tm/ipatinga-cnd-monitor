@@ -203,7 +203,8 @@ function buildNationalDpsXml({
   const idStr = canonicalId;
 
   const cTribMunTag = cTribMun ? `\n        <cTribMun>${escapeXml(cTribMun)}</cTribMun>` : '';
-  const cNbsTag = cNbs ? `\n        <cNBS>${escapeXml(cNbs)}</cNBS>` : '';
+  // cNBS omitido em cServ: o validador SEFIN Nacional rejeita cNBS como invalid child element de cServ
+  const cNbsTag = '';
   const imTag = prestIm ? `\n      <IM>${escapeXml(prestIm)}</IM>` : '';
   const prestNomeTag = prestNome ? `\n      <xNome>${escapeXml(prestNome)}</xNome>` : '';
 
@@ -483,13 +484,16 @@ function parseNationalSubmitResponse(responseBody, statusCode) {
         };
       }
 
-      // Rejeição estruturada com erros de negócio
-      const erros = json.erros || json.erro || json.mensagens || json.messages;
+      // Rejeição estruturada com erros de negócio (PascalCase ou camelCase, lista ou objeto único)
+      let erros = json.erros || json.erro || json.mensagens || json.messages || json.Erros || json.Mensagens;
+      if (!erros && (json.Codigo || json.codigo || json.Descricao || json.descricao)) {
+        erros = [json];
+      }
       if (erros) {
         const rawList = Array.isArray(erros) ? erros : [erros];
         const errors = rawList.map(item => ({
-          codigo: String(item.codigo || item.code || item.chave || '').trim(),
-          descricao: String(item.descricao || item.mensagem || item.message || JSON.stringify(item)).trim()
+          codigo: String(item.Codigo || item.codigo || item.code || item.chave || '').trim(),
+          descricao: String(item.Complemento || item.complemento || item.Descricao || item.descricao || item.mensagem || item.message || JSON.stringify(item)).trim()
         }));
 
         return {
