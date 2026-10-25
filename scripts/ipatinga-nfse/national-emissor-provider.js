@@ -1,6 +1,7 @@
 'use strict';
 
 const https = require('https');
+const zlib = require('zlib');
 const { URL } = require('url');
 const { XMLParser } = require('fast-xml-parser');
 const { signXmlNode, verifyXmlSignature } = require('./xmldsig');
@@ -8,8 +9,17 @@ const { validateNationalDpsAgainstOfficialXsd } = require('./xsd-validator');
 const { buildOfficialDpsId } = require('./national-ledger');
 const { CONFIG } = require('./config');
 
-const DEFAULT_PRODUCTION_URL = 'https://adn.nfse.gov.br/contribuintes';
-const DEFAULT_RESTRICTED_URL = 'https://adn.producaorestrita.nfse.gov.br/contribuintes';
+// URLs Oficiais do Emissor Público Nacional (SEFIN Nacional)
+const DEFAULT_SEFIN_PRODUCTION_URL = 'https://sefin.nfse.gov.br/SefinNacional';
+const DEFAULT_SEFIN_RESTRICTED_URL = 'https://sefin.producaorestrita.nfse.gov.br/SefinNacional';
+
+// URLs Oficiais do Ambiente de Dados Nacional (ADN - Distribuição / Consultas)
+const DEFAULT_ADN_PRODUCTION_URL = 'https://adn.nfse.gov.br/contribuintes';
+const DEFAULT_ADN_RESTRICTED_URL = 'https://adn.producaorestrita.nfse.gov.br/contribuintes';
+
+// Aliases para emissão fiscal canônica
+const DEFAULT_PRODUCTION_URL = DEFAULT_SEFIN_PRODUCTION_URL;
+const DEFAULT_RESTRICTED_URL = DEFAULT_SEFIN_RESTRICTED_URL;
 
 const xmlParser = new XMLParser({
   ignoreAttributes: false,
@@ -44,6 +54,7 @@ function formatDateTimeSaoPaulo(date = new Date()) {
 
 /**
  * Normaliza a Base URL removendo trailing slashes
+ * Aponta por padrão para os endpoints oficiais do SEFIN Issuer
  */
 function normalizeBaseUrl(baseUrl, environment = 'production') {
   let candidate = '';
@@ -52,8 +63,8 @@ function normalizeBaseUrl(baseUrl, environment = 'production') {
   } else {
     const normEnv = String(environment || '').toLowerCase();
     candidate = (normEnv === 'homologation' || normEnv === 'restricted')
-      ? DEFAULT_RESTRICTED_URL
-      : DEFAULT_PRODUCTION_URL;
+      ? DEFAULT_SEFIN_RESTRICTED_URL
+      : DEFAULT_SEFIN_PRODUCTION_URL;
   }
   if (!candidate.startsWith('https://')) {
     throw new Error('HTTPS_REQUIRED: Endpoints da NFS-e Nacional exigem HTTPS.');
@@ -335,23 +346,57 @@ function buildNationalDpsPayloadFromCandidate({
   };
 }
 
-function buildNationalSubmitRequest({ dpsXml, baseUrl = DEFAULT_PRODUCTION_URL }) {
+/**
+ * Empacota o XML da DPS assinado em GZip + Base64 dentro do payload JSON oficial da SEFIN Nacional
+ */
+function encodeDpsPayload(dpsXml) {
+  const xmlBuf = Buffer.from(String(dpsXml || '').trim(), 'utf-8');
+  const gzipBuf = zlib.gzipSync(xmlBuf);
+  const dpsXmlGZipB64 = gzipBuf.toString('base64');
+  return JSON.stringify({ dpsXmlGZipB64 });
+}
+
+/**
+ * Decodifica o XML da NFS-e a partir do retorno da SEFIN (Base64 + GZip) ou retorna XML direto
+ */
+function decodeNfseXmlGZipB64(payloadOrJson) {
+  if (!payloadOrJson) return '';
+  let target = payloadOrJson;
+  if (typeof payloadOrJson === 'string' && payloadOrJson.trim().startsWith('{')) {
+    try {
+      target = JSON.parse(payloadOrJson);
+    } catch (_) {
+      return payloadOrJson;
+    }
+  }
+  if (target && target.nfseXmlGZipB64) {
+    try {
+      return zlib.gunzipSync(Buffer.from(target.nfseXmlGZipB64, 'base64')).toString('utf-8');
+    } catch (_) {
+      return target.nfseXmlGZipB64;
+    }
+  }
+  return typeof payloadOrJson === 'string' ? payloadOrJson : JSON.stringify(payloadOrJson);
+}
+
+function buildNationalSubmitRequest({ dpsXml, baseUrl = DEFAULT_SEFIN_PRODUCTION_URL }) {
   if (!String(dpsXml || '').trim()) throw new Error('NATIONAL_DPS_XML_REQUIRED');
   const normBase = normalizeBaseUrl(baseUrl);
   const endpointUrl = `${normBase}/nfse`;
+  const jsonBody = encodeDpsPayload(dpsXml);
   return {
     method: 'POST',
     url: endpointUrl,
     headers: {
-      'Content-Type': 'application/xml; charset=utf-8',
-      'Accept': 'application/xml, text/xml, application/json'
+      'Content-Type': 'application/json; charset=utf-8',
+      'Accept': 'application/json, application/xml, text/xml'
     },
-    body: String(dpsXml),
+    body: jsonBody,
     tls: { clientCertificateRequired: true, rejectUnauthorized: true }
   };
 }
 
-function buildNationalNfseReadRequest({ accessKey, baseUrl = DEFAULT_PRODUCTION_URL }) {
+function buildNationalNfseReadRequest({ accessKey, baseUrl = DEFAULT_SEFIN_PRODUCTION_URL }) {
   if (!String(accessKey || '').trim()) throw new Error('NATIONAL_NFSE_ACCESS_KEY_REQUIRED');
   const normBase = normalizeBaseUrl(baseUrl);
   const key = String(accessKey || '').replace(/\D/g, '');
@@ -359,27 +404,27 @@ function buildNationalNfseReadRequest({ accessKey, baseUrl = DEFAULT_PRODUCTION_
     method: 'GET',
     url: `${normBase}/nfse/${key}`,
     headers: {
-      'Accept': 'application/xml, text/xml, application/json'
+      'Accept': 'application/json, application/xml, text/xml'
     },
     tls: { clientCertificateRequired: true, rejectUnauthorized: true }
   };
 }
 
-function buildNationalDpsReadRequest({ dpsId, method = 'GET', baseUrl = DEFAULT_PRODUCTION_URL }) {
+function buildNationalDpsReadRequest({ dpsId, method = 'GET', baseUrl = DEFAULT_SEFIN_PRODUCTION_URL }) {
   if (!String(dpsId || '').trim()) throw new Error('NATIONAL_DPS_ID_REQUIRED');
   const normBase = normalizeBaseUrl(baseUrl);
   return {
     method: String(method).toUpperCase(),
     url: `${normBase}/dps/${dpsId}`,
     headers: {
-      'Accept': 'application/xml, text/xml, application/json'
+      'Accept': 'application/json, application/xml, text/xml'
     },
     tls: { clientCertificateRequired: true, rejectUnauthorized: true }
   };
 }
 
 /**
- * Parsing da resposta síncrona de emissão da NFS-e Nacional
+ * Parsing da resposta síncrona de emissão da NFS-e Nacional (SEFIN Nacional / ADN)
  */
 function parseNationalSubmitResponse(responseBody, statusCode) {
   const text = String(responseBody || '').trim();
@@ -392,10 +437,76 @@ function parseNationalSubmitResponse(responseBody, statusCode) {
     };
   }
 
+  // Falhas de rota / endpoint não encontrado
+  if (statusCode === 404) {
+    return {
+      status: 'NOT_FOUND_ENDPOINT',
+      statusCode: 404,
+      success: false,
+      error: `SEFIN_ENDPOINT_NOT_FOUND_HTTP_404: Endpoint não encontrado na SEFIN Nacional (${text.slice(0, 200)})`
+    };
+  }
+
+  // 1. Tenta parsear como JSON (padrão oficial SEFIN Nacional)
+  if (text.startsWith('{')) {
+    try {
+      const json = JSON.parse(text);
+
+      // Sucesso na emissão (retorna chaveAcesso e/ou nfseXmlGZipB64)
+      if (json.nfseXmlGZipB64 || json.chaveAcesso) {
+        let unzippedXml = '';
+        if (json.nfseXmlGZipB64) {
+          try {
+            unzippedXml = zlib.gunzipSync(Buffer.from(json.nfseXmlGZipB64, 'base64')).toString('utf-8');
+          } catch (_) {
+            unzippedXml = json.nfseXmlGZipB64;
+          }
+        }
+
+        let nfseNumero = '';
+        if (unzippedXml) {
+          const numMatch = unzippedXml.match(/<nNFSe>(\d+)<\/nNFSe>/i);
+          if (numMatch) nfseNumero = numMatch[1];
+        }
+
+        return {
+          status: 'ISSUED',
+          statusCode,
+          success: true,
+          chaveAcesso: String(json.chaveAcesso || '').replace(/\D/g, ''),
+          nfseNumero: String(json.numero || nfseNumero || '').trim(),
+          dhEmi: json.dataHoraGeracao || json.dhEmi || new Date().toISOString(),
+          protocolo: String(json.protocolo || json.nProt || '').trim(),
+          xml: unzippedXml || text,
+          rawJson: json
+        };
+      }
+
+      // Rejeição estruturada com erros de negócio
+      const erros = json.erros || json.erro || json.mensagens || json.messages;
+      if (erros) {
+        const rawList = Array.isArray(erros) ? erros : [erros];
+        const errors = rawList.map(item => ({
+          codigo: String(item.codigo || item.code || item.chave || '').trim(),
+          descricao: String(item.descricao || item.mensagem || item.message || JSON.stringify(item)).trim()
+        }));
+
+        return {
+          status: 'REJECTED',
+          statusCode,
+          success: false,
+          errors,
+          rawJson: json
+        };
+      }
+    } catch (_) {}
+  }
+
+  // 2. Parser XML direto (fallback para endpoints compatíveis)
   try {
     const parsed = xmlParser.parse(text);
     
-    // 1. Caso de Sucesso: NFS-e emitida
+    // Sucesso XML
     const nfseNode = parsed.NFSe || parsed.nfse || parsed.GerarNfseResposta?.ListaNfse?.CompNfse?.Nfse;
     if (nfseNode) {
       const infNfse = nfseNode.infNFSe || nfseNode.InfNfse || nfseNode;
@@ -416,7 +527,7 @@ function parseNationalSubmitResponse(responseBody, statusCode) {
       };
     }
 
-    // 2. Erros ou Mensagens de Rejeição
+    // Erros XML
     const errosNode = parsed.erros || parsed.ListaMensagemRetorno || parsed.mensagens || parsed.error;
     if (errosNode) {
       const rawList = Array.isArray(errosNode) ? errosNode : (errosNode.erro || errosNode.MensagemRetorno || [errosNode]);
@@ -654,7 +765,7 @@ function createNationalIssuerProvider(options = {}) {
         return {
           status: 'FOUND',
           accessKey,
-          xml: res.body,
+          xml: decodeNfseXmlGZipB64(res.body),
           statusCode: 200
         };
       }
@@ -686,7 +797,7 @@ function createNationalIssuerProvider(options = {}) {
           dpsId,
           chaveAcesso: parsed.chaveAcesso,
           nfseNumero: parsed.nfseNumero,
-          xml: res.body,
+          xml: parsed.xml || decodeNfseXmlGZipB64(res.body),
           statusCode: 200
         };
       }
@@ -721,8 +832,14 @@ function createNationalIssuerProvider(options = {}) {
 }
 
 module.exports = {
+  DEFAULT_SEFIN_PRODUCTION_URL,
+  DEFAULT_SEFIN_RESTRICTED_URL,
+  DEFAULT_ADN_PRODUCTION_URL,
+  DEFAULT_ADN_RESTRICTED_URL,
   DEFAULT_PRODUCTION_URL,
   DEFAULT_RESTRICTED_URL,
+  encodeDpsPayload,
+  decodeNfseXmlGZipB64,
   formatDateTimeSaoPaulo,
   normalizeBaseUrl,
   buildNationalDpsXml,

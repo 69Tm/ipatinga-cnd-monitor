@@ -315,6 +315,8 @@ async function run() {
   assert.strictEqual(submitRes.chaveAcesso, '31313071231302407000105000000000002726100000000000');
   assert.strictEqual(transportCalls.length, 1);
   assert.strictEqual(transportCalls[0].url, `${DEFAULT_RESTRICTED_URL}/nfse`);
+  const sentPayload = JSON.parse(transportCalls[0].body);
+  assert.ok(sentPayload.dpsXmlGZipB64, 'POST /nfse deve conter dpsXmlGZipB64 compactado em Base64');
 
   // Consulta por HEAD e GET
   const headRes = await providerWithMock.headDps({ dpsId: builtHic.dpsId, certData });
@@ -437,6 +439,38 @@ async function run() {
   const nowCheck = new Date();
   const isActuallyExpired = nowCheck.getTime() > expiredCert.validity.notAfter.getTime();
   assert.strictEqual(isActuallyExpired, true, 'Certificado de teste deve ser avaliado como expirado');
+
+  // =========================================================================
+  // 13. TESTE DE PARSING DE RETORNO JSON DA SEFIN NACIONAL (GZIP / BASE64 / ERROS)
+  // =========================================================================
+  const zlib = require('zlib');
+  const sampleNfseXml = `<NFSe versao="1.01"><infNFSe><chNFSe>31313071231302407000105000000000002826100000000000</chNFSe><nNFSe>28</nNFSe></infNFSe></NFSe>`;
+  const gzipSample = zlib.gzipSync(Buffer.from(sampleNfseXml, 'utf-8')).toString('base64');
+  const jsonSuccess = JSON.stringify({
+    chaveAcesso: '31313071231302407000105000000000002826100000000000',
+    numero: '28',
+    nfseXmlGZipB64: gzipSample
+  });
+
+  const parsedJsonSuccess = parseNationalSubmitResponse(jsonSuccess, 200);
+  assert.strictEqual(parsedJsonSuccess.status, 'ISSUED');
+  assert.strictEqual(parsedJsonSuccess.chaveAcesso, '31313071231302407000105000000000002826100000000000');
+  assert.strictEqual(parsedJsonSuccess.nfseNumero, '28');
+  assert.ok(parsedJsonSuccess.xml.includes('<chNFSe>31313071231302407000105000000000002826100000000000</chNFSe>'), 'XML descompactado deve conter a chave de acesso');
+
+  // Teste de rejeição com erros em JSON
+  const jsonReject = JSON.stringify({
+    erros: [
+      { codigo: 'E999', descricao: 'Erro catalogado na regra de negócio' }
+    ]
+  });
+  const parsedJsonReject = parseNationalSubmitResponse(jsonReject, 400);
+  assert.strictEqual(parsedJsonReject.status, 'REJECTED');
+  assert.strictEqual(parsedJsonReject.errors[0].codigo, 'E999');
+
+  // Teste de erro 404 em rota
+  const parsed404 = parseNationalSubmitResponse('Not Found', 404);
+  assert.strictEqual(parsed404.status, 'NOT_FOUND_ENDPOINT');
 
   console.log('✓ test-national-provider.js PASSED (NATIONAL_PROVIDER_UNIT_MOCK=PASS: DPS ID, Layout v1.01, XSD, XMLDSig, Timezone, Isolamento de Ledger e Mock Transport validados)');
 }
