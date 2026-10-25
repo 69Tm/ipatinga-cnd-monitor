@@ -206,7 +206,8 @@ function buildNationalDpsXml({
   // cNBS omitido em cServ: o validador SEFIN Nacional rejeita cNBS como invalid child element de cServ
   const cNbsTag = '';
   const imTag = prestIm ? `\n      <IM>${escapeXml(prestIm)}</IM>` : '';
-  const prestNomeTag = prestNome ? `\n      <xNome>${escapeXml(prestNome)}</xNome>` : '';
+  // Regra E0121 SEFIN Nacional: xNome do prestador NÃO deve ser informado quando o emitente da DPS for o próprio prestador (tpEmit = 1)
+  const prestNomeTag = '';
 
   let xml = `<?xml version="1.0" encoding="utf-8"?>
 <DPS xmlns="http://www.sped.fazenda.gov.br/nfse" versao="1.01">
