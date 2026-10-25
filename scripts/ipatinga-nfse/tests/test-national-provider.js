@@ -17,11 +17,25 @@ const {
 } = require('../national-emissor-provider');
 const {
   NATIONAL_DPS_STATUS,
+  CANONICAL_NATIONAL_LEDGER_TAB,
+  CANONICAL_NATIONAL_LEDGER_HEADERS,
   buildOfficialDpsId,
+  getNationalLedgerTabName,
+  ensureNationalLedgerSheet,
+  buildHeaderMapping,
+  allocateNextDpsNumber,
   allocateDpsAtomically,
   loadNationalLedger,
-  findNationalLedgerEntry
+  findNationalLedgerEntry,
+  markNationalIssued,
+  markNationalTimeout
 } = require('../national-ledger');
+const {
+  CANONICAL_SIMPLES_NACIONAL_RATES,
+  getSimplesNacionalRate,
+  resolveSimplesNacionalRate
+} = require('../simples-nacional-rates');
+const { reconcileNationalDps, issueNationalDemandItem } = require('../issue');
 const { validateNationalDpsAgainstOfficialXsd } = require('../xsd-validator');
 const { CONFIG } = require('../config');
 const { buildControlledCandidate } = require('../prepare');
@@ -127,7 +141,7 @@ async function run() {
       codigoTribNacional: '040301',
       descricao: 'PLANTÕES'
     },
-    valores: { valorServicos: 0 } // Proibido valor zero
+    valores: { valorServicos: 0, pTotTribSN: 2.39 } // Proibido valor zero
   }), /NATIONAL_DPS_DATA_INCOMPLETE/);
 
   // Faltando competência explícita
@@ -148,7 +162,7 @@ async function run() {
       codigoTribNacional: '040301',
       descricao: 'PLANTÕES'
     },
-    valores: { valorServicos: 7700.00, aliquotaIss: 2.39 }
+    valores: { valorServicos: 7700.00, aliquotaIss: 2.39, pTotTribSN: 2.39 }
     // competenciaData ausente
   }), /NATIONAL_DPS_DATA_INCOMPLETE/);
 
@@ -186,6 +200,7 @@ async function run() {
     valores: {
       valorServicos: 7700.00,
       aliquotaIss: 2.39,
+      pTotTribSN: '2.39',
       issRetido: '2'
     },
     certData
@@ -225,21 +240,24 @@ async function run() {
   const mockDependencies = {
     spreadsheetId: 'test-sheet',
     readSheetValues: async (_id, range) => {
-      if (range.includes('DPS')) return mockDpsSheet;
+      if (range.includes('Ledger NFS-e Nacional') || range.includes('DPS')) {
+        if (range.includes('!1:1')) return [CANONICAL_NATIONAL_LEDGER_HEADERS];
+        return [CANONICAL_NATIONAL_LEDGER_HEADERS, ...mockDpsSheet];
+      }
       throw new Error(`Tentativa de leitura indevida da aba: ${range}`);
     },
     appendSheetValues: async (_id, range, rows) => {
-      if (range.includes('DPS')) {
+      if (range.includes('Ledger NFS-e Nacional') || range.includes('DPS')) {
         mockDpsSheet.push(...rows);
         return { updatedRows: rows.length };
       }
-      throw new Error(`Tentativa indevida de escrita fora da aba DPS: ${range}`);
+      throw new Error(`Tentativa indevida de escrita fora da aba Ledger NFS-e Nacional: ${range}`);
     },
     updateSheetValues: async (_id, range, rows) => {
-      if (range.includes('DPS')) {
+      if (range.includes('Ledger NFS-e Nacional') || range.includes('DPS')) {
         return { updatedRows: rows.length };
       }
-      throw new Error(`Tentativa indevida de update fora da aba DPS: ${range}`);
+      throw new Error(`Tentativa indevida de update fora da aba Ledger NFS-e Nacional: ${range}`);
     }
   };
 
@@ -483,7 +501,212 @@ async function run() {
   const parsed404 = parseNationalSubmitResponse('Not Found', 404);
   assert.strictEqual(parsed404.status, 'NOT_FOUND_ENDPOINT');
 
-  console.log('✓ test-national-provider.js PASSED (NATIONAL_PROVIDER_UNIT_MOCK=PASS: DPS ID, Layout v1.01, XSD, XMLDSig, Timezone, Isolamento de Ledger e Mock Transport validados)');
+  // =========================================================================
+  // 12. GATE 1 — UNIFICAÇÃO DA ABA, SCHEMA 27 COLUNAS, HISTÓRICO E CONCORRÊNCIA
+  // =========================================================================
+  console.log('Testing GATE 1: Canonical Ledger, 27 Columns, Historical Isolation & Concurrency...');
+
+  // 1.1 Unificação da aba canônica
+  assert.strictEqual(CANONICAL_NATIONAL_LEDGER_TAB, 'Ledger NFS-e Nacional');
+  assert.strictEqual(getNationalLedgerTabName(), 'Ledger NFS-e Nacional');
+
+  // Proibição de aba paralela 'DPS'
+  await assert.rejects(async () => {
+    await ensureNationalLedgerSheet({
+      spreadsheetId: 'test-sheet',
+      tabName: 'DPS',
+      createSheetIfNotExists: async () => {},
+      readSheetValues: async () => [[]],
+      updateSheetValues: async () => {}
+    });
+  }, /CANONICAL_TAB_ERROR/);
+
+  // 1.2 Schema de 27 colunas
+  assert.strictEqual(CANONICAL_NATIONAL_LEDGER_HEADERS.length, 27);
+  assert.ok(CANONICAL_NATIONAL_LEDGER_HEADERS.includes('document_model'));
+  assert.ok(CANONICAL_NATIONAL_LEDGER_HEADERS.includes('official_pdf_drive_file_id'));
+  assert.ok(CANONICAL_NATIONAL_LEDGER_HEADERS.includes('source_type'));
+
+  // 1.3 Preservação retrocompatível e integridade do histórico (NFS-e 25 e 26 da demanda 1a159de45542fc14)
+  const historicalSpreadsheet = [
+    ['Ambiente', 'Request ID', 'Item', 'ID DPS', 'Número DPS', 'Série DPS', 'Status', 'Data Alocação', 'Data Submissão', 'Número NFS-e', 'Chave NFS-e'],
+    ['production', '1a159de45542fc14', '1', 'DPS313130723130240700010500001000000000000025', '25', '1', 'ISSUED', '2026-10-21T10:00:00Z', '2026-10-21T10:05:00Z', '25', '31313071231302407000105000000000002526100000000000'],
+    ['production', '1a159de45542fc14', '2', 'DPS313130723130240700010500001000000000000026', '26', '1', 'ISSUED', '2026-10-21T10:00:00Z', '2026-10-21T10:05:00Z', '26', '31313071231302407000105000000000002626100000000000']
+  ];
+
+  const loadedHistorical = await loadNationalLedger({
+    spreadsheetId: 'hist-sheet',
+    readSheetValues: async () => historicalSpreadsheet
+  });
+
+  assert.strictEqual(loadedHistorical.length, 2);
+  assert.strictEqual(loadedHistorical[0].request_id, '1a159de45542fc14');
+  assert.strictEqual(loadedHistorical[0].dps_numero, '25');
+  assert.strictEqual(loadedHistorical[0].nfse_numero, '25');
+  assert.strictEqual(loadedHistorical[1].dps_numero, '26');
+  assert.strictEqual(loadedHistorical[1].nfse_numero, '26');
+
+  // 1.4 Sequência em produção: próxima alocação DEVE ser >= 27 e NUNCA DPS 1
+  const nextProd = allocateNextDpsNumber(loadedHistorical, 'production', '1');
+  assert.strictEqual(nextProd.dpsNumero, '27', 'Próxima DPS em produção deve iniciar após 26 (mínimo 27)');
+
+  const emptyProd = allocateNextDpsNumber([], 'production', '1');
+  assert.strictEqual(emptyProd.dpsNumero, '27', 'Produção vazia deve respeitar piso histórico 26 (próximo 27)');
+
+  // 1.5 Concorrência atômica: 10 chamadas simultâneas via Promise.all
+  const concurrentSheet = [];
+  const concurrentDeps = {
+    spreadsheetId: 'concurrent-sheet',
+    readSheetValues: async (_id, range) => {
+      if (range.includes('!1:1')) return [CANONICAL_NATIONAL_LEDGER_HEADERS];
+      return [CANONICAL_NATIONAL_LEDGER_HEADERS, ...concurrentSheet];
+    },
+    appendSheetValues: async (_id, range, rows) => {
+      concurrentSheet.push(...rows);
+      return { updatedRows: rows.length };
+    },
+    updateSheetValues: async () => ({ updatedRows: 1 }),
+    createSheetIfNotExists: async () => true
+  };
+
+  const concurrencyPromises = Array.from({ length: 10 }, (_, i) => {
+    return allocateDpsAtomically({
+      environment: 'homologation',
+      requestId: `req-concurrent-${i + 1}`,
+      itemIndex: 1,
+      serie: '1'
+    }, concurrentDeps);
+  });
+
+  const concurrentResults = await Promise.all(concurrencyPromises);
+  const allocatedIds = concurrentResults.map(r => r.dps_id);
+  const uniqueIds = new Set(allocatedIds);
+
+  assert.strictEqual(uniqueIds.size, 10, 'Todas as 10 alocações concorrentes devem gerar DPS IDs únicos');
+  const duplicateCount = allocatedIds.length - uniqueIds.size;
+  assert.strictEqual(duplicateCount, 0, 'DUPLICATE_DPS_ID deve ser estritamente 0');
+  console.log('   ✓ DPS_ALLOCATION_CONCURRENCY=PASS (10/10 únicas, DUPLICATE_DPS_ID=0)');
+
+  // =========================================================================
+  // 13. GATE 3 — ALÍQUOTA DO SIMPLES NACIONAL (pTotTribSN) FISCALMENTE CORRETA
+  // =========================================================================
+  console.log('Testing GATE 3: Simples Nacional Rates (pTotTribSN) Fail-Closed & Canonical Rates...');
+
+  // 3.1 Busca canônica por competência
+  const rate08 = resolveSimplesNacionalRate({ competencia: '08/2026' });
+  assert.strictEqual(rate08.pTotTribSN, '2.39');
+  assert.strictEqual(rate08.source, 'PGDAS-D_EXTRATO_DEF');
+
+  const rate10 = resolveSimplesNacionalRate({ competencia: '2026-10-01' });
+  assert.strictEqual(rate10.pTotTribSN, '2.39');
+
+  // 3.2 Competência desconhecida sem apuração lança NATIONAL_PTOTTRIBSN_MISSING
+  assert.throws(() => {
+    resolveSimplesNacionalRate({ competencia: '01/2020' });
+  }, /NATIONAL_PTOTTRIBSN_MISSING/);
+
+  // 3.3 Fail-Closed no buildNationalDpsXml: ausência de pTotTribSN lança erro imediato
+  assert.throws(() => {
+    buildNationalDpsXml({
+      ...hicCandidate,
+      valores: {
+        valorServicos: 100,
+        aliquotaIss: 2.00, // Mesmo com aliquotaIss presente, não há fallback silencioso
+        pTotTribSN: null
+      }
+    });
+  }, /NATIONAL_PTOTTRIBSN_MISSING/);
+
+  // 3.4 Estrita separação: aliquotaIss é municipal e não interfere em pTotTribSN
+  const dpsWithBoth = buildNationalDpsXml({
+    ...hicCandidate,
+    valores: {
+      valorServicos: 100,
+      aliquotaIss: 5.00,
+      pTotTribSN: '2.39'
+    }
+  });
+  assert.ok(dpsWithBoth.xml.includes('<pAliq>5.00</pAliq>'));
+  assert.ok(dpsWithBoth.xml.includes('<pTotTribSN>2.39</pTotTribSN>'));
+  console.log('   ✓ GATE 3 PASS: pTotTribSN fail-closed e separação estrita validados');
+
+  // =========================================================================
+  // 14. GATE 2 — EXACTLY-ONCE REAL & RECONCILIAÇÃO DE TIMEOUT (SEM RPS)
+  // =========================================================================
+  console.log('Testing GATE 2: Exactly-Once Idempotency & Realistic Timeout Recovery...');
+
+  // 14.1 Replay idempotente relendo entrada ISSUED do ledger
+  const testIssuedSheet = [
+    CANONICAL_NATIONAL_LEDGER_HEADERS,
+    [
+      'homologation', 'req-already-issued', '1',
+      'DPS313130723130240700010500001000000000000099', '99', '1',
+      'ISSUED', '2026-10-21T10:00:00Z', '2026-10-21T10:05:00Z',
+      '99', '31313071231302407000105000000000009926100000000000'
+    ]
+  ];
+
+  const replayResult = await issueNationalDemandItem({
+    environment: 'homologation',
+    requestId: 'req-already-issued',
+    itemIndex: 1,
+    certData,
+    dependencies: {
+      createSheetIfNotExists: async () => true,
+      readSheetValues: async () => testIssuedSheet,
+      appendSheetValues: async () => { throw new Error('Append proibido no replay!'); },
+      updateSheetValues: async () => { throw new Error('Update proibido no replay!'); }
+    }
+  });
+
+  assert.strictEqual(replayResult.status, 'ALREADY_ISSUED');
+  assert.strictEqual(replayResult.newDps, 0);
+  assert.strictEqual(replayResult.newNfse, 0);
+  assert.strictEqual(replayResult.newRps, 0);
+  assert.strictEqual(replayResult.gerarNfseCalls, 0);
+  console.log('   ✓ EXACTLY-ONCE REPLAY PASS: status ALREADY_ISSUED, ZERO novo POST, ZERO new DPS');
+
+  // 14.2 Reconciliação de UNKNOWN_AFTER_TIMEOUT via HEAD/GET DPS
+  const timeoutSheet = [
+    CANONICAL_NATIONAL_LEDGER_HEADERS,
+    [
+      'homologation', 'req-timeout-recovery', '1',
+      'DPS313130723130240700010500001000000000000088', '88', '1',
+      'UNKNOWN_AFTER_TIMEOUT', '2026-10-21T10:00:00Z', '2026-10-21T10:05:00Z',
+      '', ''
+    ]
+  ];
+
+  let sheetUpdatedToIssued = false;
+  const timeoutDeps = {
+    createSheetIfNotExists: async () => true,
+    readSheetValues: async () => timeoutSheet,
+    updateSheetValues: async (_id, _range, rows) => {
+      if (rows[0] && rows[0].includes('ISSUED')) {
+        sheetUpdatedToIssued = true;
+      }
+      return { updatedRows: 1 };
+    },
+    provider: {
+      headDps: async () => ({ exists: true, chaveAcesso: '31313079999999999999999999999999999999999999', nfseNumero: '88' }),
+      getDps: async () => ({ status: 'FOUND', chaveAcesso: '31313079999999999999999999999999999999999999', nfseNumero: '88' })
+    }
+  };
+
+  const timeoutReconcileResult = await reconcileNationalDps({
+    environment: 'homologation',
+    requestId: 'req-timeout-recovery',
+    itemIndex: 1,
+    certData
+  }, timeoutDeps);
+
+  assert.strictEqual(timeoutReconcileResult.status, 'ISSUED');
+  assert.strictEqual(timeoutReconcileResult.recoveredViaDpsQuery, true);
+  assert.strictEqual(timeoutReconcileResult.nfseNumero, '88');
+  assert.strictEqual(sheetUpdatedToIssued, true);
+  console.log('   ✓ TIMEOUT RECOVERY PASS: Reconciliado para ISSUED sem RPS e sem novo POST');
+
+  console.log('✓ test-national-provider.js PASSED (GATE 1, GATE 2 & GATE 3 VERIFIED: Canonical Ledger 27 cols, DPS Concurrency, PGDAS-D Rates Fail-Closed, Exactly-Once Replay & Timeout Recovery)');
 }
 
 if (require.main === module) {

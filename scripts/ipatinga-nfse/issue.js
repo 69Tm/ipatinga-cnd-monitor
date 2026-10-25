@@ -423,6 +423,92 @@ async function reconcileRps({ environment = 'production', requestId = null, item
  */
 
 /**
+ * Reconciliação direta de DPS no Emissor Nacional (sem uso de RPS legado)
+ */
+async function reconcileNationalDps({ environment = 'homologation', requestId = null, itemIndex = 1, dpsId = null, certData = null }, dependencies = {}) {
+  await ensureNationalLedgerSheet(dependencies);
+  const nationalEntries = await loadNationalLedger(dependencies);
+
+  let nationalEntry = null;
+  if (requestId) {
+    nationalEntry = findNationalLedgerEntry(nationalEntries, { environment, requestId, itemIndex });
+  } else if (dpsId) {
+    nationalEntry = nationalEntries.find(e =>
+      e.environment?.toLowerCase() === String(environment).toLowerCase() &&
+      e.dps_id === dpsId
+    ) || null;
+  }
+
+  const targetDpsId = nationalEntry ? nationalEntry.dps_id : dpsId;
+  if (!targetDpsId) {
+    throw new Error('RECONCILE_NATIONAL_TARGET_NOT_FOUND: Nenhuma DPS especificada ou localizada no Ledger Nacional.');
+  }
+
+  const nationalProvider = dependencies.provider || createNationalIssuerProvider({
+    environment,
+    transport: dependencies.transport || dependencies.executeHttpRequest
+  });
+
+  let headRes;
+  try {
+    headRes = await nationalProvider.headDps({ dpsId: targetDpsId, certData });
+  } catch (errHead) {
+    return {
+      status: 'QUERY_FAILED',
+      environment,
+      requestId: nationalEntry?.request_id || requestId,
+      itemIndex: nationalEntry?.item_index || itemIndex,
+      dpsId: targetDpsId,
+      error: errHead.message
+    };
+  }
+
+  if (headRes && headRes.exists) {
+    let getDpsRes = null;
+    try {
+      getDpsRes = await nationalProvider.getDps({ dpsId: targetDpsId, certData });
+    } catch (errGet) {
+      // Ignora erro eventual no GET se HEAD já confirmou existência
+    }
+
+    const nfseChave = getDpsRes?.chaveAcesso || headRes?.chaveAcesso || nationalEntry?.nfse_chave || '';
+    const nfseNumero = getDpsRes?.nfseNumero || nationalEntry?.nfse_numero || '';
+
+    if (nationalEntry) {
+      nationalEntry = await markNationalIssued(nationalEntry, {
+        nfseNumero,
+        nfseChave,
+        protocolo: nationalEntry.protocolo || ''
+      }, dependencies);
+    }
+
+    return {
+      status: 'ISSUED',
+      environment,
+      requestId: nationalEntry?.request_id || requestId,
+      itemIndex: nationalEntry?.item_index || itemIndex,
+      dpsId: targetDpsId,
+      dpsNumero: nationalEntry?.dps_numero,
+      dpsSerie: nationalEntry?.dps_serie,
+      nfseNumero,
+      nfseChave,
+      newRps: 0,
+      newDps: 0,
+      newNfse: 1,
+      recoveredViaDpsQuery: true
+    };
+  }
+
+  return {
+    status: 'DPS_NOT_FOUND_CONFIRMED',
+    environment,
+    requestId: nationalEntry?.request_id || requestId,
+    itemIndex: nationalEntry?.item_index || itemIndex,
+    dpsId: targetDpsId
+  };
+}
+
+/**
  * Emissão de Nota Fiscal no Emissor Nacional (DPS) com isolamento total do RPS legado (NEW_RPS=0)
  */
 async function issueNationalDemandItem({ environment, requestId, itemIndex = 1, certData, dryRun = false, dependencies = {}, route }) {
@@ -485,6 +571,50 @@ async function issueNationalDemandItem({ environment, requestId, itemIndex = 1, 
         gerarNfseCalls: 0,
         message: 'Registro em FAILED_SAFE requer intervenção/revisão manual; reemissão automática proibida.'
       };
+    }
+
+    if (nationalEntry.status === NATIONAL_DPS_STATUS.UNKNOWN_AFTER_TIMEOUT ||
+        nationalEntry.status === NATIONAL_DPS_STATUS.PROVIDER_INFRA_UNAVAILABLE) {
+      const reconcile = await reconcileNationalDps({
+        environment,
+        requestId,
+        itemIndex,
+        certData
+      }, dependencies);
+
+      if (reconcile.status === 'ISSUED') {
+        return {
+          status: 'ISSUED',
+          environment,
+          requestId,
+          itemIndex,
+          provider: 'NATIONAL_ISSUER',
+          dpsId: nationalEntry.dps_id,
+          dpsNumero: nationalEntry.dps_numero,
+          dpsSerie: nationalEntry.dps_serie,
+          nfseNumero: reconcile.nfseNumero,
+          nfseChave: reconcile.nfseChave,
+          newRps: 0,
+          newDps: 0,
+          newNfse: 0,
+          gerarNfseCalls: 0,
+          recoveredViaDpsQuery: true,
+          message: 'Nota recuperada com sucesso via reconciliação prévia DPS da SEFIN Nacional.'
+        };
+      }
+
+      if (reconcile.status !== 'DPS_NOT_FOUND_CONFIRMED') {
+        return {
+          status: 'PROVIDER_INFRA_UNAVAILABLE',
+          environment,
+          requestId,
+          itemIndex,
+          provider: 'NATIONAL_ISSUER',
+          dpsId: nationalEntry.dps_id,
+          message: `Reconciliação DPS retornou ${reconcile.status}. Provedor SEFIN Nacional continua instável ou com status inconclusivo.`
+        };
+      }
+      // Se DPS_NOT_FOUND_CONFIRMED, prossegue com o mesmo registro de DPS já alocado sem alocar novo
     }
   }
 
@@ -1401,6 +1531,8 @@ module.exports = {
   buildConsultarNfsePorRpsEnvio,
   parseGerarNfseResposta,
   reconcileRps,
+  reconcileNationalDps,
+  issueNationalDemandItem,
   issueNfse,
   issueHomologation: issueNfse,
   runAutoRecoveryBatch

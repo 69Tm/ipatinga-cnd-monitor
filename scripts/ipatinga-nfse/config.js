@@ -45,7 +45,7 @@ const CONFIG = Object.freeze({
       DEMANDAS: 'Demandas',
       DOCUMENTOS: 'Documentos NFS-e',
       RPS: 'RPS',
-      DPS: 'DPS'
+      DPS: 'Ledger NFS-e Nacional'
     }
   },
   DRIVE: {

@@ -14,6 +14,7 @@ const {
   onlyDigits
 } = require('./validators');
 const { KNOWN_PATTERNS, TOMADORES_DEFAULTS } = require('./patterns');
+const { resolveSimplesNacionalRate } = require('./simples-nacional-rates');
 
 function normalizeLabel(text) {
   return String(text || '')
@@ -284,6 +285,13 @@ function buildHomologationFixture(options = {}) {
   const competenciaData = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-01`;
   const paymentBlock = getPaymentInstructions();
 
+  let rateInfo = null;
+  try {
+    rateInfo = resolveSimplesNacionalRate({ competencia });
+  } catch (errRate) {
+    rateInfo = resolveSimplesNacionalRate({ competencia: '10/2026' });
+  }
+
   const candidate = {
     requestId,
     sequence: 1,
@@ -317,6 +325,8 @@ function buildHomologationFixture(options = {}) {
     nbs: '123011900',
     codigoCnae: null,
     aliquotaIss: null,
+    pTotTribSN: rateInfo ? rateInfo.pTotTribSN : null,
+    pTotTribSNSource: rateInfo ? rateInfo.source : null,
     valorIss: null,
     rpsStatus: 'PENDING_ALLOCATION',
     rpsNumero: '',
@@ -349,6 +359,13 @@ function buildControlledCandidate({ requestId, environment = 'production' }) {
   const competencia = `${String(now.getMonth() + 1).padStart(2, '0')}/${now.getFullYear()}`;
   const competenciaData = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-01`;
   const paymentBlock = getPaymentInstructions();
+
+  let rateInfo = null;
+  try {
+    rateInfo = resolveSimplesNacionalRate({ competencia });
+  } catch (errRate) {
+    rateInfo = resolveSimplesNacionalRate({ competencia: '10/2026' });
+  }
 
   const candidate = {
     requestId,
@@ -384,6 +401,8 @@ function buildControlledCandidate({ requestId, environment = 'production' }) {
     nbs: '123011900',
     codigoCnae: null,
     aliquotaIss: null,
+    pTotTribSN: rateInfo ? rateInfo.pTotTribSN : null,
+    pTotTribSNSource: rateInfo ? rateInfo.source : null,
     valorIss: null,
     rpsStatus: 'PENDING_ALLOCATION',
     rpsNumero: '',
@@ -556,6 +575,14 @@ function prepareDemand({ requestId, demandas, tomadores, patterns, notas = [], n
       blockingReasons.push(`CISURG_REQUIRES_EXPLICIT_MONTHLY_MIRROR_DESCRIPTION: item ${idx + 1}`);
     }
 
+    // Resolução da alíquota do Simples Nacional (pTotTribSN) baseada na competência
+    let rateInfo = null;
+    try {
+      rateInfo = resolveSimplesNacionalRate({ competencia });
+    } catch (errRate) {
+      blockingReasons.push(errRate.message);
+    }
+
     const candidate = {
       requestId,
       rowIndex: demanda.rowIndex || null,
@@ -588,6 +615,8 @@ function prepareDemand({ requestId, demandas, tomadores, patterns, notas = [], n
       nbs: pattern.nbs,
       codigoCnae: null,
       aliquotaIss: null, // Motor fiscal não fixa alíquota; prefeitura apura no Simples Nacional
+      pTotTribSN: rateInfo ? rateInfo.pTotTribSN : null,
+      pTotTribSNSource: rateInfo ? rateInfo.source : null,
       valorIss: null,
       rpsStatus: 'PENDING_ALLOCATION',
       rpsNumero: '',

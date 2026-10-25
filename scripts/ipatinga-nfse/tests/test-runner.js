@@ -25,7 +25,7 @@ async function run() {
     await require('./test-prepare');
     await require('./test-issue');
     await require('./test-provider-routing-and-recovery');
-    await require('./test-national-provider');
+    await require('./test-national-provider').run();
     await require('./test-reconciliation-rps');
     await require('./test-cnd-and-draft-pipeline');
     await require('./test-all-six-certificates');

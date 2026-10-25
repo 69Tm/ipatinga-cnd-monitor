@@ -7,6 +7,7 @@ const { XMLParser } = require('fast-xml-parser');
 const { signXmlNode, verifyXmlSignature } = require('./xmldsig');
 const { validateNationalDpsAgainstOfficialXsd } = require('./xsd-validator');
 const { buildOfficialDpsId } = require('./national-ledger');
+const { resolveSimplesNacionalRate } = require('./simples-nacional-rates');
 const { CONFIG } = require('./config');
 
 // URLs Oficiais do Emissor Público Nacional (SEFIN Nacional)
@@ -161,6 +162,12 @@ function buildNationalDpsXml({
   }
   const cNbs = servico.nbs ? String(servico.nbs).replace(/\D/g, '') : '';
 
+  // Competência fiscal: AAAA-MM-DD
+  if (!competenciaData || !/^\d{4}-\d{2}-\d{2}$/.test(competenciaData)) {
+    throw new Error(`NATIONAL_DPS_DATA_INCOMPLETE: competenciaData deve estar no formato AAAA-MM-DD (${competenciaData}).`);
+  }
+  const dCompet = competenciaData;
+
   if (!valores) {
     throw new Error('NATIONAL_DPS_DATA_INCOMPLETE: Grupo valores é obrigatório.');
   }
@@ -183,15 +190,13 @@ function buildNationalDpsXml({
   const issRetido = (rawRet === '1' || rawRet === 'SIM' || rawRet === 'TRUE' || rawRet === 'RETIDO') ? '2' : '1';
 
   // Regra E0712 SEFIN Nacional: Para optantes Simples Nacional ME/EPP (opSimpNac = 3),
-  // indTotTrib nunca pode ser informado. Deve-se informar pTotTribSN com a alíquota estimada do SN
-  const rawTotTribSN = valores.pTotTribSN ?? valores.aliquotaIss ?? valores.aliquota ?? 2.39;
-  const numTotTribSN = !isNaN(Number(rawTotTribSN)) && Number(rawTotTribSN) > 0 ? Number(rawTotTribSN).toFixed(2) : '2.39';
-
-  // Competência fiscal: AAAA-MM-DD
-  if (!competenciaData || !/^\d{4}-\d{2}-\d{2}$/.test(competenciaData)) {
-    throw new Error(`NATIONAL_DPS_DATA_INCOMPLETE: competenciaData deve estar no formato AAAA-MM-DD (${competenciaData}).`);
+  // indTotTrib nunca pode ser informado. Deve-se informar pTotTribSN com a alíquota estimada do SN.
+  // FAIL-CLOSED: Estritamente proibido fallback para aliquotaIss, aliquota ou constante sintética.
+  const rawTotTribSN = valores.pTotTribSN;
+  if (rawTotTribSN === undefined || rawTotTribSN === null || rawTotTribSN === '' || isNaN(Number(rawTotTribSN)) || Number(rawTotTribSN) <= 0) {
+    throw new Error(`NATIONAL_PTOTTRIBSN_MISSING: Alíquota total de tributos do Simples Nacional (pTotTribSN) é obrigatória e deve ser um número positivo (recebido: '${rawTotTribSN}'). Proibido fallback para aliquotaIss ou valores sintéticos.`);
   }
-  const dCompet = competenciaData;
+  const numTotTribSN = Number(rawTotTribSN).toFixed(2);
 
   const dhEmi = formatDateTimeSaoPaulo(emissao);
   const numDpsStr = String(dpsNumero).trim();
@@ -352,7 +357,8 @@ function buildNationalDpsPayloadFromCandidate({
     valores: {
       valorServicos: candidate.valor,
       aliquotaIss: candidate.aliquotaIss,
-      issRetido: candidate.issRetido
+      issRetido: candidate.issRetido,
+      pTotTribSN: candidate.pTotTribSN || (candidate.competencia || candidate.competenciaData ? resolveSimplesNacionalRate({ competencia: candidate.competencia || candidate.competenciaData }).pTotTribSN : null)
     },
     certData
   };
