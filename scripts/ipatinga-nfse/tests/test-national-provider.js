@@ -197,7 +197,7 @@ async function run() {
   assert.ok(builtHic.xml.includes('<xDescServ>SERVICOS MEDICOS DE PLANTAO HOSPITALAR SUS</xDescServ>'));
   assert.ok(builtHic.xml.includes('<cTribNac>040301</cTribNac>'));
   assert.ok(builtHic.xml.includes('<pAliq>2.39</pAliq>'));
-  assert.ok(builtHic.xml.includes('<tpRetISSQN>2</tpRetISSQN>'));
+  assert.ok(builtHic.xml.includes('<tpRetISSQN>1</tpRetISSQN>'), 'DPS para HIC (issRetido=2 no ABRASF) deve mapear para tpRetISSQN=1 (Não Retido) na SEFIN Nacional');
   assert.ok(builtHic.xml.includes('<dCompet>2026-08-01</dCompet>'));
   assert.ok(builtHic.xml.includes('<opSimpNac>3</opSimpNac>'));
   assert.ok(builtHic.xml.includes('<cLocPrestacao>3128006</cLocPrestacao>'));

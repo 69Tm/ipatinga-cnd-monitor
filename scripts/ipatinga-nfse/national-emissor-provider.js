@@ -176,8 +176,11 @@ function buildNationalDpsXml({
     pAliqTag = `\n          <pAliq>${Number(rawAliq).toFixed(2)}</pAliq>`;
   }
 
-  const rawRet = String(valores.issRetido ?? '1').trim();
-  const issRetido = (rawRet === '2' || rawRet === 'true' || rawRet === 'SIM') ? '2' : '1';
+  // Mapeamento semântico ABRASF -> Padrão Nacional:
+  // ABRASF: 1 = Retido, 2 = Não Retido
+  // SEFIN Nacional: 1 = Não Retido, 2 = Retido pelo Tomador
+  const rawRet = String(valores.issRetido ?? '2').trim().toUpperCase();
+  const issRetido = (rawRet === '1' || rawRet === 'SIM' || rawRet === 'TRUE' || rawRet === 'RETIDO') ? '2' : '1';
 
   // Competência fiscal: AAAA-MM-DD
   if (!competenciaData || !/^\d{4}-\d{2}-\d{2}$/.test(competenciaData)) {
