@@ -182,6 +182,11 @@ function buildNationalDpsXml({
   const rawRet = String(valores.issRetido ?? '2').trim().toUpperCase();
   const issRetido = (rawRet === '1' || rawRet === 'SIM' || rawRet === 'TRUE' || rawRet === 'RETIDO') ? '2' : '1';
 
+  // Regra E0712 SEFIN Nacional: Para optantes Simples Nacional ME/EPP (opSimpNac = 3),
+  // indTotTrib nunca pode ser informado. Deve-se informar pTotTribSN com a alíquota estimada do SN
+  const rawTotTribSN = valores.pTotTribSN ?? valores.aliquotaIss ?? valores.aliquota ?? 2.39;
+  const numTotTribSN = !isNaN(Number(rawTotTribSN)) && Number(rawTotTribSN) > 0 ? Number(rawTotTribSN).toFixed(2) : '2.39';
+
   // Competência fiscal: AAAA-MM-DD
   if (!competenciaData || !/^\d{4}-\d{2}-\d{2}$/.test(competenciaData)) {
     throw new Error(`NATIONAL_DPS_DATA_INCOMPLETE: competenciaData deve estar no formato AAAA-MM-DD (${competenciaData}).`);
@@ -264,7 +269,7 @@ function buildNationalDpsXml({
           <tpRetISSQN>${issRetido}</tpRetISSQN>${pAliqTag}
         </tribMun>
         <totTrib>
-          <indTotTrib>0</indTotTrib>
+          <pTotTribSN>${numTotTribSN}</pTotTribSN>
         </totTrib>
       </trib>
     </valores>
