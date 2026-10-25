@@ -217,6 +217,7 @@ function buildNationalDpsXml({
     <nDPS>${escapeXml(numDpsStr)}</nDPS>
     <dCompet>${dCompet}</dCompet>
     <tpEmit>1</tpEmit>
+    <finNFSe>0</finNFSe>
     <cLocEmi>${prestMun}</cLocEmi>
     <prest>
       <CNPJ>${prestCnpj}</CNPJ>${imTag}${prestNomeTag}
