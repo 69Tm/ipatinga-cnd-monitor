@@ -225,6 +225,7 @@ function buildNationalDpsXml({
       <CNPJ>${prestCnpj}</CNPJ>${imTag}${prestNomeTag}
       <regTrib>
         <opSimpNac>3</opSimpNac>
+        <regApTribSN>1</regApTribSN>
         <regEspTrib>0</regEspTrib>
       </regTrib>
     </prest>
