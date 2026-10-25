@@ -105,11 +105,13 @@ async function checkCertificateAccess() {
 /**
  * Carrega e valida o Certificado Digital A1 (PFX / PKCS#12)
  */
-async function loadCertificate() {
-  const password = CONFIG.CERT.PASSWORD;
+async function loadCertificate(options = {}) {
+  const password = (options && options.certPassword) || CONFIG.CERT.PASSWORD;
+  const allowExpired = Boolean(options && options.allowExpired);
   if (!password) {
     return {
       loaded: false,
+      isValid: false,
       status: 'BLOCKED_ONLY_BY_NFE_CERT_PASSWORD',
       reason: 'NFE_CERT_PASSWORD ausente no ambiente'
     };
@@ -189,7 +191,10 @@ async function loadCertificate() {
 
   const isExpired = now.getTime() > notAfter.getTime();
   const isNotYetValid = now.getTime() < notBefore.getTime();
-  if (isExpired || isNotYetValid) throw new Error('CERTIFICATE_INVALID_DATE: certificado expirado ou ainda nao valido.');
+  const isDateValid = !isExpired && !isNotYetValid;
+  if (!isDateValid && !allowExpired) {
+    throw new Error(`CERTIFICATE_INVALID_DATE: certificado ${isExpired ? 'expirado' : 'ainda nao valido'} (validade: ${notAfter.toISOString()}).`);
+  }
 
   // Informacoes do Titular
   let commonName = '';
@@ -221,7 +226,8 @@ async function loadCertificate() {
     notAfter,
     isExpired,
     isNotYetValid,
-    isValid: true,
+    isValid: isDateValid,
+    status: isExpired ? 'CERT_EXPIRED' : (isNotYetValid ? 'CERT_NOT_YET_VALID' : 'VALID'),
     keyMatchesCertificate: true,
     certificateCnpj,
     eku,

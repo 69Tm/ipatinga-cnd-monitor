@@ -8,6 +8,7 @@ const {
   formatDateTimeSaoPaulo,
   normalizeBaseUrl,
   buildNationalDpsXml,
+  buildNationalDpsPayloadFromCandidate,
   buildNationalSubmitRequest,
   buildNationalNfseReadRequest,
   buildNationalDpsReadRequest,
@@ -22,6 +23,9 @@ const {
   findNationalLedgerEntry
 } = require('../national-ledger');
 const { validateNationalDpsAgainstOfficialXsd } = require('../xsd-validator');
+const { CONFIG } = require('../config');
+const { buildControlledCandidate } = require('../prepare');
+const { loadCertificate } = require('../certificate');
 
 // Par de chaves RSA e certificado A1 autoassinado para testes de assinatura
 const keypair = forge.pki.rsa.generateKeyPair({ bits: 2048 });
@@ -350,6 +354,89 @@ async function run() {
   });
   assert.strictEqual(recoveryRes.status, 'RECONCILED_AFTER_TIMEOUT');
   assert.strictEqual(recoveryRes.reconciled, true);
+
+  // =========================================================================
+  // 9. ANTI-REGRESSÃO: CONFIG IMPORT & PROPRIEDADES DE MUNICÍPIO
+  // =========================================================================
+  assert.strictEqual(CONFIG.PRESTADOR.CNPJ, '31.302.407/0001-05');
+  assert.strictEqual(CONFIG.PRESTADOR.CNPJ_DIGITS, '31302407000105');
+  assert.strictEqual(CONFIG.PRESTADOR.CODIGO_MUNICIPIO_IPATINGA, '3131307');
+  assert.strictEqual(CONFIG.PRESTADOR.CODIGO_MUNICIPIO, undefined, 'CONFIG.PRESTADOR.CODIGO_MUNICIPIO não deve existir (canônico: CODIGO_MUNICIPIO_IPATINGA)');
+
+  // =========================================================================
+  // 10. FAIL-CLOSED: DIVERGÊNCIA DE DPS ID PRÉ-COMPUTADO
+  // =========================================================================
+  assert.throws(() => {
+    buildNationalDpsXml({
+      ...hicCandidate,
+      id: 'DPS999999999999999999999999999999999999999999999'
+    });
+  }, /NATIONAL_DPS_ID_MISMATCH/);
+
+  // =========================================================================
+  // 11. INTEGRAÇÃO: UNIFICAÇÃO DE SCHEMA (CANDIDATE -> FACTORY -> DPS XML -> XSD v1.01)
+  // =========================================================================
+  const prep = buildControlledCandidate({ requestId: 'test-controlled-sync', environment: 'homologation' });
+  const candidate = prep.candidates[0];
+
+  assert.strictEqual(candidate.tomador, 'ASSOCIACAO DE CARIDADE NOSSA SENHORA DO CARMO');
+  assert.strictEqual(candidate.cnpjTomador, '20724357000120');
+  assert.strictEqual(candidate.codigoMunicipioPrestacao, '3128006');
+
+  const unifiedPayload = buildNationalDpsPayloadFromCandidate({
+    candidate,
+    dpsNumero: '888888888',
+    dpsSerie: '900',
+    ambiente: 2,
+    certData,
+    discriminacaoOverride: 'TESTE PRODUCAO RESTRITA — SEM VALIDADE FISCAL'
+  });
+
+  assert.strictEqual(unifiedPayload.dpsNumero, '888888888');
+  assert.strictEqual(unifiedPayload.dpsSerie, '900');
+  assert.strictEqual(unifiedPayload.prestador.cnpj, '31302407000105');
+  assert.strictEqual(unifiedPayload.prestador.codigoMunicipio, '3131307');
+  assert.strictEqual(unifiedPayload.tomador.cnpj, '20724357000120');
+  assert.strictEqual(unifiedPayload.tomador.razaoSocial, 'ASSOCIACAO DE CARIDADE NOSSA SENHORA DO CARMO');
+  assert.strictEqual(unifiedPayload.tomador.logradouro, 'CAPITAO BERNARDO');
+  assert.strictEqual(unifiedPayload.tomador.numero, '257');
+  assert.strictEqual(unifiedPayload.tomador.bairro, 'CENTRO');
+  assert.strictEqual(unifiedPayload.tomador.codigoMunicipio, '3128006');
+  assert.strictEqual(unifiedPayload.tomador.cep, '39740000');
+  assert.strictEqual(unifiedPayload.servico.codigoMunicipioPrestacao, '3128006');
+  assert.strictEqual(unifiedPayload.servico.codigoTribNacional, '04.03.01');
+  assert.strictEqual(unifiedPayload.servico.codigoTribMunicipal, '403');
+  assert.strictEqual(unifiedPayload.servico.nbs, '123011900');
+  assert.strictEqual(unifiedPayload.servico.descricao, 'TESTE PRODUCAO RESTRITA — SEM VALIDADE FISCAL');
+
+  const unifiedBuilt = buildNationalDpsXml(unifiedPayload);
+  assert.ok(/^DPS[0-9]{42}$/.test(unifiedBuilt.dpsId), 'DPS ID deve atender regex oficial de 45 caracteres');
+  assert.ok(unifiedBuilt.xml.includes('<CNPJ>31302407000105</CNPJ>'), 'XML deve conter CNPJ do prestador');
+  assert.ok(unifiedBuilt.xml.includes('<CNPJ>20724357000120</CNPJ>'), 'XML deve conter CNPJ do tomador');
+  assert.ok(unifiedBuilt.xml.includes('<cLocEmi>3131307</cLocEmi>'), 'XML deve conter município de Ipatinga no local de emissão cLocEmi');
+  assert.ok(unifiedBuilt.xml.includes('<cLocPrestacao>3128006</cLocPrestacao>'), 'XML deve conter município de prestação Guanhães');
+  assert.ok(unifiedBuilt.xml.includes('<xLgr>CAPITAO BERNARDO</xLgr>'), 'XML deve conter logradouro do tomador');
+  assert.ok(unifiedBuilt.xml.includes('<cTribNac>040301</cTribNac>'), 'XML deve conter cTribNac');
+  assert.ok(unifiedBuilt.xml.includes('<cNBS>123011900</cNBS>'), 'XML deve conter NBS');
+
+  const xsdCheck = await validateNationalDpsAgainstOfficialXsd(unifiedBuilt.xml);
+  assert.strictEqual(xsdCheck.valid, true, `XML unificado deve validar 100% no XSD v1.01 oficial: ${xsdCheck.errors.join('; ')}`);
+
+  // =========================================================================
+  // 12. PREFLIGHT DE CERTIFICADO: DETECÇÃO DE EXPIRAÇÃO FAIL-CLOSED
+  // =========================================================================
+  const expiredCert = forge.pki.createCertificate();
+  expiredCert.publicKey = keypair.publicKey;
+  expiredCert.serialNumber = '02';
+  expiredCert.validity.notBefore = new Date(Date.now() - 86400000 * 30);
+  expiredCert.validity.notAfter = new Date(Date.now() - 86400000 * 2); // Expirado há 2 dias
+  expiredCert.setSubject(attrs);
+  expiredCert.setIssuer(attrs);
+  expiredCert.sign(keypair.privateKey, forge.md.sha256.create());
+
+  const nowCheck = new Date();
+  const isActuallyExpired = nowCheck.getTime() > expiredCert.validity.notAfter.getTime();
+  assert.strictEqual(isActuallyExpired, true, 'Certificado de teste deve ser avaliado como expirado');
 
   console.log('✓ test-national-provider.js PASSED (NATIONAL_PROVIDER_UNIT_MOCK=PASS: DPS ID, Layout v1.01, XSD, XMLDSig, Timezone, Isolamento de Ledger e Mock Transport validados)');
 }

@@ -29,7 +29,11 @@ const { callSoapOperation } = require('./soap');
 const { buildCabecalho, parseConsultarNfseResposta } = require('./abrasf');
 const { getXmlNode, getXmlValue, findXmlNode, findXmlValue, ensureArray, parseXml } = require('./xml');
 const { routeProvider } = require('./provider-router');
-const { createNationalIssuerProvider, buildNationalDpsXml } = require('./national-emissor-provider');
+const {
+  createNationalIssuerProvider,
+  buildNationalDpsXml,
+  buildNationalDpsPayloadFromCandidate
+} = require('./national-emissor-provider');
 const {
   NATIONAL_DPS_STATUS,
   ensureNationalLedgerSheet,
@@ -548,42 +552,15 @@ async function issueNationalDemandItem({ environment, requestId, itemIndex = 1, 
     }
   }
 
-  // 4. Monta e Valida XML da DPS Nacional v1.01
-  const dpsData = buildNationalDpsXml({
+  // 4. Monta e Valida XML da DPS Nacional v1.01 via Factory Canônica Unificada
+  const dpsPayload = buildNationalDpsPayloadFromCandidate({
+    candidate,
     dpsNumero: nationalEntry.dps_numero,
     dpsSerie: nationalEntry.dps_serie,
     ambiente: (environment === 'production') ? 1 : 2,
-    emissao: candidate.dataEmissao || new Date(),
-    competenciaData: candidate.competenciaData,
-    prestador: {
-      cnpj: CONFIG.PRESTADOR.CNPJ_DIGITS,
-      inscricaoMunicipal: CONFIG.PRESTADOR.INSCRICAO_MUNICIPAL,
-      codigoMunicipio: candidate.codigoMunicipioPrestacao || '3131307',
-      razaoSocial: CONFIG.PRESTADOR.RAZAO_SOCIAL
-    },
-    tomador: {
-      cnpj: candidate.cnpjTomador,
-      razaoSocial: candidate.tomador,
-      logradouro: candidate.enderecoTomador?.logradouro,
-      numero: candidate.enderecoTomador?.numero,
-      bairro: candidate.enderecoTomador?.bairro,
-      codigoMunicipio: candidate.enderecoTomador?.codigoMunicipio,
-      cep: candidate.enderecoTomador?.cep
-    },
-    servico: {
-      codigoMunicipioPrestacao: candidate.codigoMunicipioPrestacao,
-      codigoTribNacional: candidate.codigoTribNacional,
-      codigoTribMunicipal: candidate.codigoTribMunicipal,
-      descricao: candidate.descricao,
-      nbs: candidate.nbs
-    },
-    valores: {
-      valorServicos: candidate.valor,
-      aliquotaIss: candidate.aliquotaIss,
-      issRetido: candidate.issRetido
-    },
     certData
   });
+  const dpsData = buildNationalDpsXml(dpsPayload);
 
   const xmlSha256 = crypto.createHash('sha256').update(dpsData.xml).digest('hex');
 

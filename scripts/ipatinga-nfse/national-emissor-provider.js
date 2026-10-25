@@ -87,7 +87,8 @@ function buildNationalDpsXml({
   tomador,
   servico,
   valores,
-  certData = null
+  certData = null,
+  id = null
 }) {
   // Validações estritas de dados obrigatórios — FAIL-CLOSED
   if (!dpsNumero) {
@@ -177,14 +178,18 @@ function buildNationalDpsXml({
   const numDpsStr = String(dpsNumero).trim();
   const serieDpsStr = String(dpsSerie || '1').trim();
 
-  // Constrói ID oficial de 45 posições
-  const idStr = buildOfficialDpsId({
+  // Constrói ID oficial canônico de 45 posições
+  const canonicalId = buildOfficialDpsId({
     codMun: prestMun,
     tipoInscricao: '1',
     inscricaoFederal: prestCnpj,
     serie: serieDpsStr,
     numero: numDpsStr
   });
+  if (id && id !== canonicalId) {
+    throw new Error(`NATIONAL_DPS_ID_MISMATCH: id fornecido '${id}' diverge do ID oficial canônico computado '${canonicalId}'.`);
+  }
+  const idStr = canonicalId;
 
   const cTribMunTag = cTribMun ? `\n        <cTribMun>${escapeXml(cTribMun)}</cTribMun>` : '';
   const cNbsTag = cNbs ? `\n        <cNBS>${escapeXml(cNbs)}</cNBS>` : '';
@@ -271,6 +276,63 @@ function buildNationalDpsXml({
   }
 
   return { dpsId: idStr, xml };
+}
+
+/**
+ * Converte um candidate fiscal preparado (de prepareDemand / buildControlledCandidate)
+ * no objeto canônico estruturado consumido por buildNationalDpsXml().
+ * Garante contrato unificado entre issueNationalDemandItem e suites de teste.
+ */
+function buildNationalDpsPayloadFromCandidate({
+  candidate,
+  dpsNumero,
+  dpsSerie = '900',
+  ambiente = 2,
+  certData = null,
+  discriminacaoOverride = null
+}) {
+  if (!candidate) {
+    throw new Error('NATIONAL_DPS_DATA_INCOMPLETE: candidate é obrigatório.');
+  }
+
+  const endToma = candidate.enderecoTomador || {};
+  const servicoDescricao = discriminacaoOverride || candidate.descricao;
+
+  return {
+    dpsNumero: String(dpsNumero || '').trim(),
+    dpsSerie: String(dpsSerie || '900').trim(),
+    ambiente: Number(ambiente) === 1 ? 1 : 2,
+    emissao: candidate.dataEmissao || new Date(),
+    competenciaData: candidate.competenciaData,
+    prestador: {
+      cnpj: CONFIG.PRESTADOR.CNPJ_DIGITS,
+      inscricaoMunicipal: CONFIG.PRESTADOR.INSCRICAO_MUNICIPAL,
+      codigoMunicipio: CONFIG.PRESTADOR.CODIGO_MUNICIPIO_IPATINGA,
+      razaoSocial: CONFIG.PRESTADOR.RAZAO_SOCIAL
+    },
+    tomador: {
+      cnpj: candidate.cnpjTomador,
+      razaoSocial: candidate.tomador,
+      logradouro: endToma.logradouro,
+      numero: endToma.numero,
+      bairro: endToma.bairro,
+      codigoMunicipio: endToma.codigoMunicipio,
+      cep: endToma.cep
+    },
+    servico: {
+      codigoMunicipioPrestacao: candidate.codigoMunicipioPrestacao,
+      codigoTribNacional: candidate.codigoTribNacional,
+      codigoTribMunicipal: candidate.codigoTribMunicipal,
+      descricao: servicoDescricao,
+      nbs: candidate.nbs
+    },
+    valores: {
+      valorServicos: candidate.valor,
+      aliquotaIss: candidate.aliquotaIss,
+      issRetido: candidate.issRetido
+    },
+    certData
+  };
 }
 
 function buildNationalSubmitRequest({ dpsXml, baseUrl = DEFAULT_PRODUCTION_URL }) {
@@ -664,6 +726,7 @@ module.exports = {
   formatDateTimeSaoPaulo,
   normalizeBaseUrl,
   buildNationalDpsXml,
+  buildNationalDpsPayloadFromCandidate,
   buildNationalSubmitRequest,
   buildNationalNfseReadRequest,
   buildNationalDpsReadRequest,
